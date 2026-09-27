@@ -5453,8 +5453,10 @@ def install_native_movement_bridge_v48(hproc):
     print("[AFDEV-v48] Direct ClientLoc->Pawn.Location writes: NONE")
     print("[AFDEV-v51] Controller ViewRot={ViewPitch,ViewYaw,0}; ClientRoll is pawn-facing only")
     print("[AFDEV-v48] Projectile spawn positions are NOT patched")
-    print("[AFDEV-v51] DeltaRot ground/falling={ViewPitch,0,-ClientRoll*256}")\n    print("[AFDEV-v51] physics path: PVE +0x4D0 -> 0x008F24B0")
-    print("[AFDEV-v51] correction path: PVE +0x4CC -> 0x008F2620 (CALLED after physics)")\n    print("[AFDEV-v51] Remaining stock gap: Pawn.FaceRotation + swim/fly pitch clamp")
+    print("[AFDEV-v51] DeltaRot ground/falling={ViewPitch,0,-ClientRoll*256}")
+    print("[AFDEV-v51] physics path: PVE +0x4D0 -> 0x008F24B0")
+    print("[AFDEV-v51] correction path: PVE +0x4CC -> 0x008F2620 (CALLED after physics)")
+    print("[AFDEV-v51] Remaining stock gap: Pawn.FaceRotation + swim/fly pitch clamp")
     print("[AFDEV-v48] ===== END NATIVE MOVEMENT + CORRECTION BRIDGE =====")
     print()
 
