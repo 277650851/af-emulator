@@ -71,7 +71,7 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v20', s)
+        self.assertIn('2026-09-27-oneclick-v21', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_elevated_launch_helper_saves_failure_diagnostics(self):
@@ -79,6 +79,12 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('af_tgame_launch_helper.log', s)
         self.assertIn('Tee-Object -FilePath', s)
         self.assertIn('See helper log: $helperLog', s)
+
+    def test_helper_keeps_native_python_warnings_non_fatal(self):
+        s = self.text(SCRIPT)
+        self.assertIn('$ErrorActionPreference = "Continue"', s)
+        self.assertIn('$helperExitCode = $LASTEXITCODE', s)
+        self.assertIn('$ErrorActionPreference = $savedErrorActionPreference', s)
 
     def test_launcher_does_not_elevate_entire_process(self):
         s = self.text(SCRIPT)
@@ -307,6 +313,9 @@ class OneClickLauncherTests(unittest.TestCase):
         )
         self.assertIn('patch_tcls_apclient_raw_pem.py', s)
         self.assertIn('Patch TCLS.dll permanently', s)
+        self.assertIn('Continue without patching it again?', s)
+        self.assertIn('already-patched TCLS.dll', s)
+        self.assertIn('runtime patch-site bytes before modifying memory', s)
 
     def test_script_prepares_local_afdev_from_owned_tgame(self):
         s = self.text(SCRIPT)
