@@ -334,6 +334,11 @@ PVE_SERVERMOVE_STUB_V48 = 0x013A88D0
 PVE_MOVEAUTONOMOUS_IMPL_V48 = 0x008F24B0
 PVE_SERVERMOVE_ERROR_IMPL_V48 = 0x008F2620
 
+# Mutation / TGBioPlayerController vtable for the validated PH TGame build.
+# Every movement entry is checked against the proven slot pattern before patching.
+BIO_PC_VTABLE_V49 = 0x01E42FE0
+BIO_MODE_ID_V49 = 0x00000204
+
 # Exact live/reflected PlayerController offsets for this PH build.
 PVE_PC_PAWN_OFFSET_V48 = 0x1D8
 PVE_PC_MAX_RESPONSE_TIME_OFFSET_V48 = 0x388
@@ -5237,6 +5242,10 @@ def _build_native_movement_bridge_v48(remote_base):
     Pawn.Location.  ClientLoc is consumed only by Tencent/UE3's surviving
     correction routine, which decides whether to ACK the move or prepare a
     normal client adjustment.
+
+    On Mutation's exact validated Bio controller vtable, also mirror the
+    packed client view yaw to the authoritative human Pawn. The Bio
+    human-to-Overload replacement otherwise inherits a stale spawn yaw.
     """
     code = bytearray()
     labels = {}
@@ -5333,6 +5342,17 @@ def _build_native_movement_bridge_v48(remote_base):
     emit(b"\x89\x8E" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x4))
     emit(b"\x89\x96" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x8))
 
+    # Bio-only Pawn facing sync. ECX still holds client ViewYaw and EBX is the
+    # authoritative Pawn. PVE controller families keep their normal rotation.
+    emit(b"\x81\x3E" + struct.pack("<I", BIO_PC_VTABLE_V49))
+    jcc(0x85, "bio_pawn_rotation_done")
+    emit(b"\xC7\x83" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48)
+         + b"\x00\x00\x00\x00")
+    emit(b"\x89\x8B" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x4))
+    emit(b"\xC7\x83" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x8)
+         + b"\x00\x00\x00\x00")
+    label("bio_pawn_rotation_done")
+
     # Push FRotator DeltaRot by value in reverse DWORD order:
     # Roll, Yaw, Pitch.
     emit(b"\x8B\x55\x28")                  # edx = ClientRoll
@@ -5397,12 +5417,12 @@ def _build_native_movement_bridge_v48(remote_base):
 
     return bytes(code), const_off
 
-def install_native_movement_bridge_v48(hproc):
-    """Install reversible-in-process movement bridge before AFDEV resumes."""
-    server_slot = PVE_PC_VTABLE_V24 + PVE_SERVERMOVE_SLOT_V48
-    pwsm_slot = PVE_PC_VTABLE_V24 + PVE_PWSM_SLOT_V48
-    move_slot = PVE_PC_VTABLE_V24 + PVE_MOVEAUTONOMOUS_SLOT_V48
-    err_slot = PVE_PC_VTABLE_V24 + PVE_SERVERMOVE_ERROR_SLOT_V48
+def _validate_movement_vtable_v49(hproc, vtable, label):
+    """Validate a controller vtable before sharing the v48 movement bridge."""
+    server_slot = int(vtable) + PVE_SERVERMOVE_SLOT_V48
+    pwsm_slot = int(vtable) + PVE_PWSM_SLOT_V48
+    move_slot = int(vtable) + PVE_MOVEAUTONOMOUS_SLOT_V48
+    err_slot = int(vtable) + PVE_SERVERMOVE_ERROR_SLOT_V48
 
     server_orig = read_u32(hproc, server_slot)
     pwsm_orig = read_u32(hproc, pwsm_slot)
@@ -5410,32 +5430,93 @@ def install_native_movement_bridge_v48(hproc):
     err_impl = read_u32(hproc, err_slot)
 
     print()
-    print("[AFDEV-v48] ===== NATIVE MOVEMENT + CORRECTION BRIDGE =====")
-    print(f"[AFDEV-v48] PVE vtable = 0x{PVE_PC_VTABLE_V24:08X}")
-    print(f"[AFDEV-v48] +0x4C8 ServerMove             -> 0x{server_orig:08X}")
-    print(f"[AFDEV-v48] +0x4CC correction engine      -> 0x{err_impl:08X}")
-    print(f"[AFDEV-v48] +0x4D0 MoveAutonomous         -> 0x{move_impl:08X}")
-    print(f"[AFDEV-v48] +0x528 PlayerWalkingServerMove-> 0x{pwsm_orig:08X}")
+    print(f"[AFDEV-v49] ===== {label} MOVEMENT VALIDATION =====")
+    print(f"[AFDEV-v49] vtable                     = 0x{int(vtable):08X}")
+    print(f"[AFDEV-v49] +0x4C8 ServerMove          -> 0x{server_orig:08X}")
+    print(f"[AFDEV-v49] +0x4CC correction engine   -> 0x{err_impl:08X}")
+    print(f"[AFDEV-v49] +0x4D0 MoveAutonomous      -> 0x{move_impl:08X}")
+    print(f"[AFDEV-v49] +0x528 WalkingServerMove   -> 0x{pwsm_orig:08X}")
 
-    if server_orig != PVE_SERVERMOVE_STUB_V48 or pwsm_orig != PVE_SERVERMOVE_STUB_V48:
+    if server_orig != PVE_SERVERMOVE_STUB_V48:
         raise RuntimeError(
-            "v48 movement bridge refused: stripped ServerMove slots no longer "
-            "match 0x013A88D0"
+            f"v49 movement bridge refused for {label}: +0x4C8 expected "
+            f"0x{PVE_SERVERMOVE_STUB_V48:08X}, got 0x{server_orig:08X}"
         )
-    if read_remote(hproc, PVE_SERVERMOVE_STUB_V48, 3) != b"\xC2\x28\x00":
-        raise RuntimeError("v48 movement bridge refused: 0x013A88D0 is not ret 28h")
+    if pwsm_orig != PVE_SERVERMOVE_STUB_V48:
+        raise RuntimeError(
+            f"v49 movement bridge refused for {label}: +0x528 expected "
+            f"0x{PVE_SERVERMOVE_STUB_V48:08X}, got 0x{pwsm_orig:08X}"
+        )
     if move_impl != PVE_MOVEAUTONOMOUS_IMPL_V48:
         raise RuntimeError(
-            f"v48 movement bridge refused: +0x4D0 expected "
+            f"v49 movement bridge refused for {label}: +0x4D0 expected "
             f"0x{PVE_MOVEAUTONOMOUS_IMPL_V48:08X}, got 0x{move_impl:08X}"
         )
-    if read_remote(hproc, move_impl, 4) != bytes.fromhex("53 55 56 8B"):
-        raise RuntimeError("v48 movement bridge refused: MoveAutonomous head mismatch")
     if err_impl != PVE_SERVERMOVE_ERROR_IMPL_V48:
         raise RuntimeError(
-            f"v48 movement bridge refused: +0x4CC expected "
+            f"v49 movement bridge refused for {label}: +0x4CC expected "
             f"0x{PVE_SERVERMOVE_ERROR_IMPL_V48:08X}, got 0x{err_impl:08X}"
         )
+
+    print(f"[AFDEV-v49] {label} exact movement-slot pattern: PASS")
+
+    return {
+        "label": label,
+        "vtable": int(vtable),
+        "server_slot": server_slot,
+        "pwsm_slot": pwsm_slot,
+        "server_orig": server_orig,
+        "pwsm_orig": pwsm_orig,
+        "move_impl": move_impl,
+        "err_impl": err_impl,
+    }
+
+
+def install_native_movement_bridge_v48(hproc, mode_id=0):
+    """
+    Install one shared native movement bridge.
+
+    PVE is always validated/patched exactly as before.
+    Mutation (ModeId 0x0204) additionally patches TGBioPlayerController, but
+    only if its four live vtable slots exactly match the proven compatible
+    pattern:
+
+      +0x4C8 -> 0x013A88D0  stripped ServerMove
+      +0x528 -> 0x013A88D0  stripped PlayerWalkingServerMove
+      +0x4D0 -> 0x008F24B0  surviving MoveAutonomous
+      +0x4CC -> 0x008F2620  surviving correction engine
+
+    The bridge itself reads +0x4D0/+0x4CC from ECX's current vtable, so the
+    same bridge is controller-family safe once this compatibility check passes.
+    """
+    mode_id = int(mode_id) & 0xFFFFFFFF
+
+    print()
+    print("[AFDEV-v49] ===== NATIVE MOVEMENT + CORRECTION BRIDGE =====")
+    print(f"[AFDEV-v49] room ModeId = 0x{mode_id:08X}")
+
+    targets = [
+        _validate_movement_vtable_v49(
+            hproc,
+            PVE_PC_VTABLE_V24,
+            "PVEPlayerController",
+        )
+    ]
+
+    if mode_id == BIO_MODE_ID_V49:
+        targets.append(
+            _validate_movement_vtable_v49(
+                hproc,
+                BIO_PC_VTABLE_V49,
+                "TGBioPlayerController",
+            )
+        )
+
+    # Validate the shared code targets too.
+    if read_remote(hproc, PVE_SERVERMOVE_STUB_V48, 3) != b"\xC2\x28\x00":
+        raise RuntimeError("v49 movement bridge refused: 0x013A88D0 is not ret 28h")
+    if read_remote(hproc, PVE_MOVEAUTONOMOUS_IMPL_V48, 4) != bytes.fromhex("53 55 56 8B"):
+        raise RuntimeError("v49 movement bridge refused: MoveAutonomous head mismatch")
 
     remote = kernel32.VirtualAllocEx(
         hproc,
@@ -5445,47 +5526,64 @@ def install_native_movement_bridge_v48(hproc):
         PAGE_EXECUTE_READWRITE,
     )
     if not remote:
-        winerr("VirtualAllocEx(v48 native movement/correction bridge)")
+        winerr("VirtualAllocEx(v49 native movement/correction bridge)")
     remote = int(remote)
 
     bridge, const_off = _build_native_movement_bridge_v48(remote)
     if len(bridge) >= 0x1000:
-        raise RuntimeError("v48 movement bridge unexpectedly exceeds allocation")
+        raise RuntimeError("v49 movement bridge unexpectedly exceeds allocation")
     write_remote(hproc, remote, bridge)
 
-    # Both stock ShortServerMove->ServerMove and AF's PlayerWalkingServerMove
-    # can arrive. They share the validated 0x28-byte native ABI, so route both
-    # stripped slots through the same server-physics bridge.
-    write_remote(hproc, server_slot, struct.pack("<I", remote))
-    write_remote(hproc, pwsm_slot, struct.pack("<I", remote))
+    # Patch every target only after *all* validation has succeeded. This keeps
+    # the operation fail-closed: no half-patched Bio/PVE state if a slot differs.
+    for t in targets:
+        write_remote(hproc, t["server_slot"], struct.pack("<I", remote))
+        write_remote(hproc, t["pwsm_slot"], struct.pack("<I", remote))
 
-    if read_u32(hproc, server_slot) != remote or read_u32(hproc, pwsm_slot) != remote:
-        raise RuntimeError("v48 movement vtable patch verification failed")
+    for t in targets:
+        if (
+            read_u32(hproc, t["server_slot"]) != remote
+            or read_u32(hproc, t["pwsm_slot"]) != remote
+        ):
+            raise RuntimeError(
+                f"v49 movement vtable verification failed for {t['label']}"
+            )
 
-    print(f"[AFDEV-v48] bridge code = 0x{remote:08X} ({len(bridge)} bytes)")
-    print(f"[AFDEV-v48] accel scale constant @ +0x{const_off:X} = 0.1")
-    print("[AFDEV-v48] Direct ClientLoc->Pawn.Location writes: NONE")
-    print("[AFDEV-v51] Controller ViewRot={ViewPitch,ViewYaw,0}; ClientRoll is pawn-facing only")
-    print("[AFDEV-v48] Projectile spawn positions are NOT patched")
-    print("[AFDEV-v51] DeltaRot ground/falling={ViewPitch,0,-ClientRoll*256}")
-    print("[AFDEV-v51] physics path: PVE +0x4D0 -> 0x008F24B0")
-    print("[AFDEV-v51] correction path: PVE +0x4CC -> 0x008F2620 (CALLED after physics)")
+        print(
+            f"[AFDEV-v49] patched {t['label']}: "
+            f"+0x4C8/+0x528 -> 0x{remote:08X}"
+        )
+
+    print(f"[AFDEV-v49] shared bridge code = 0x{remote:08X} ({len(bridge)} bytes)")
+    print(f"[AFDEV-v49] accel scale constant @ +0x{const_off:X} = 0.1")
+    print("[AFDEV-v50] Direct ClientLoc->Pawn.Location writes: NONE")
+    print("[AFDEV-v50] View reconstruction: packed View/ClientRoll -> PC Rotation + DeltaRot")
+    if mode_id == BIO_MODE_ID_V49:
+        print(
+            "[AFDEV-v50] Bio facing sync: authoritative Pawn.Yaw follows packed client View; "
+            "Pawn Pitch/Roll forced to 0"
+        )
+    print("[AFDEV-v50] Projectile spawn positions are NOT patched")
+    print("[AFDEV-v49] physics path: current controller +0x4D0 -> 0x008F24B0")
+    print("[AFDEV-v49] correction path: current controller +0x4CC -> 0x008F2620")
     print("[AFDEV-v52] Pawn.Rotation.Yaw <- ViewYaw for remote-facing replication")
     print("[AFDEV-v52] Remaining stock gap: full Pawn.FaceRotation semantics + swim/fly pitch clamp")
-    print("[AFDEV-v48] ===== END NATIVE MOVEMENT + CORRECTION BRIDGE =====")
+    print("[AFDEV-v49] ===== END NATIVE MOVEMENT + CORRECTION BRIDGE =====")
     print()
 
     return {
         "remote": remote,
-        "server_slot": server_slot,
-        "pwsm_slot": pwsm_slot,
-        "server_orig": server_orig,
-        "pwsm_orig": pwsm_orig,
-        "move_impl": move_impl,
-        "err_impl": err_impl,
+        "targets": targets,
+        # Backward-compatible keys used by existing diagnostics/logging.
+        "server_slot": targets[0]["server_slot"],
+        "pwsm_slot": targets[0]["pwsm_slot"],
+        "server_orig": targets[0]["server_orig"],
+        "pwsm_orig": targets[0]["pwsm_orig"],
+        "move_impl": targets[0]["move_impl"],
+        "err_impl": targets[0]["err_impl"],
         "size": len(bridge),
+        "bio_active": any(t["vtable"] == BIO_PC_VTABLE_V49 for t in targets),
     }
-
 
 
 # ---------------------------------------------------------------------------
@@ -6452,7 +6550,8 @@ def main():
                 )
             else:
                 v48_movement_state = install_native_movement_bridge_v48(
-                    pi.hProcess
+                    pi.hProcess,
+                    args.mode_id,
                 )
 
             stage_marker_ptr, stage_instrumentation_base = (
@@ -6754,65 +6853,84 @@ def main():
                     "expected GIsClient=0 GIsServer=1."
                 )
 
-                # r12: apply the room's real PvE settings before the client
-                # handshake is released.  This is early enough that PVE GameStart
-                # / difficulty Kismet consumes the captured SubModeId instead of
-                # AFDEV's Easy default.
-                # r16: UE3 finishes constructing GameInfo/GRI/reflection data on
-                # slightly different frames from run to run.  r12-r15 treated a
-                # transient reflection miss as fatal, which made lazy AFDEV startup
-                # intermittently exit rc=1.  Retry the idempotent stock-field apply
-                # for a bounded window; permanent room-setting errors still fail
-                # immediately.
-                pve_settings_deadline = time.time() + 12.0
-                pve_settings_attempt = 0
-                pve_settings_last_error = None
-                while True:
-                    pve_settings_attempt += 1
-                    try:
-                        pve_settings_state = apply_pve_game_settings(
-                            pi.hProcess,
-                            pi.hThread,
-                            authority,
-                            args.mode_id,
-                            args.map_id,
-                            args.sub_mode_id,
-                            args.room_flags,
-                        )
-                        if pve_settings_attempt > 1:
-                            print(
-                                f"[AFDEV-PVE-SETTINGS] READY after retry attempts={pve_settings_attempt}"
-                            )
-                        break
-                    except Exception as exc:
-                        pve_settings_last_error = exc
-                        msg = str(exc)
-                        permanent = (
-                            "unsupported AFDEV ModeId" in msg
-                            or "unsupported PvE SubModeId" in msg
-                        )
-                        if permanent or not process_alive(pi.hProcess):
-                            raise
-                        if time.time() >= pve_settings_deadline:
-                            raise RuntimeError(
-                                "PvE settings did not become writable within 12.0s; "
-                                f"attempts={pve_settings_attempt}; last={msg}"
-                            ) from exc
-                        print(
-                            f"[AFDEV-PVE-SETTINGS] WAIT attempt={pve_settings_attempt} "
-                            f"transient={type(exc).__name__}: {msg}"
-                        )
-                        time.sleep(0.25)
-                        # Refresh authority because GameInfo/GRI can be replaced
-                        # during the last phase of map travel.
+                if int(args.mode_id) in (0x00002001, 0x00002002):
+                    # r12: apply the room's real PvE settings before the client
+                    # handshake is released.  This is early enough that PVE GameStart
+                    # / difficulty Kismet consumes the captured SubModeId instead of
+                    # AFDEV's Easy default.
+                    # r16: UE3 finishes constructing GameInfo/GRI/reflection data on
+                    # slightly different frames from run to run.  r12-r15 treated a
+                    # transient reflection miss as fatal, which made lazy AFDEV startup
+                    # intermittently exit rc=1.  Retry the idempotent stock-field apply
+                    # for a bounded window; permanent room-setting errors still fail
+                    # immediately.
+                    pve_settings_deadline = time.time() + 12.0
+                    pve_settings_attempt = 0
+                    pve_settings_last_error = None
+                    while True:
+                        pve_settings_attempt += 1
                         try:
-                            authority = inspect_authority_world(
-                                pi.hProcess, pi.hThread, final_gworld
+                            pve_settings_state = apply_pve_game_settings(
+                                pi.hProcess,
+                                pi.hThread,
+                                authority,
+                                args.mode_id,
+                                args.map_id,
+                                args.sub_mode_id,
+                                args.room_flags,
                             )
-                        except Exception as refresh_exc:
+                            if pve_settings_attempt > 1:
+                                print(
+                                    f"[AFDEV-PVE-SETTINGS] READY after retry attempts={pve_settings_attempt}"
+                                )
+                            break
+                        except Exception as exc:
+                            pve_settings_last_error = exc
+                            msg = str(exc)
+                            permanent = (
+                                "unsupported AFDEV ModeId" in msg
+                                or "unsupported PvE SubModeId" in msg
+                            )
+                            if permanent or not process_alive(pi.hProcess):
+                                raise
+                            if time.time() >= pve_settings_deadline:
+                                raise RuntimeError(
+                                    "PvE settings did not become writable within 12.0s; "
+                                    f"attempts={pve_settings_attempt}; last={msg}"
+                                ) from exc
                             print(
-                                f"[AFDEV-PVE-SETTINGS] authority refresh pending: {refresh_exc}"
+                                f"[AFDEV-PVE-SETTINGS] WAIT attempt={pve_settings_attempt} "
+                                f"transient={type(exc).__name__}: {msg}"
                             )
+                            time.sleep(0.25)
+                            # Refresh authority because GameInfo/GRI can be replaced
+                            # during the last phase of map travel.
+                            try:
+                                authority = inspect_authority_world(
+                                    pi.hProcess, pi.hThread, final_gworld
+                                )
+                            except Exception as refresh_exc:
+                                print(
+                                    f"[AFDEV-PVE-SETTINGS] authority refresh pending: {refresh_exc}"
+                                )
+                elif int(args.mode_id) == BIO_MODE_ID_V49:
+                    # Mutation owns its game settings in TGBioGame. Do not
+                    # reinterpret its room flags/submode as PvE difficulty.
+                    pve_settings_state = {
+                        "difficulty": 0,
+                        "difficulty_name": "Native",
+                        "difficulty_applied": False,
+                        "mode_name": "Mutation",
+                        "advanced_hero": False,
+                    }
+                    print(
+                        "[AFDEV-MUTATION] Native TGBioGame.TGBioMatch startup; "
+                        "skipped PvE-specific GameSettings writes."
+                    )
+                else:
+                    raise RuntimeError(
+                        f"unsupported AFDEV ModeId 0x{int(args.mode_id) & 0xFFFFFFFF:08X}"
+                    )
 
                 # r8: A11A advertises a zero DSKey.  Do not publish
                 # SESSION_READY until this exact AFDEV instance's live encrypted
