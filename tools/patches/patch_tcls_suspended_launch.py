@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 Assault Fire PH - debugger-free TCLS -> TGame suspended launch helper.
 
 Purpose
