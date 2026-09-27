@@ -56,7 +56,7 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v13', s)
+        self.assertIn('2026-09-27-oneclick-v14', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_does_not_elevate_entire_process(self):
@@ -85,6 +85,32 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('Trying $packageId once', s)
         self.assertIn('$packageId = "Python.Python.3.12"', s)
         self.assertNotIn('foreach ($packageId in @(', s)
+
+    def test_winget_output_cannot_pollute_bootstrap_python_path(self):
+        s = self.text(SCRIPT)
+        self.assertIn(
+            '& $winget.Source install --exact --id $packageId --silent --accept-package-agreements --accept-source-agreements 2>&1 |',
+            s,
+        )
+        self.assertIn(
+            'ForEach-Object { Write-Host ([string]$_) }',
+            s,
+        )
+        self.assertIn(
+            'leaked winget text would otherwise be captured together with the path',
+            s,
+        )
+
+    def test_root_level_python_install_is_detected_before_winget(self):
+        s = self.text(SCRIPT)
+        self.assertIn(
+            'support simple root-level installs such as C:\\\\Python313\\\\python.exe',
+            s,
+        )
+        self.assertIn(
+            'Get-ChildItem -LiteralPath ($systemDrive + "\\\\") -Directory -Filter "Python*"',
+            s,
+        )
 
     def test_native_command_output_cannot_pollute_return_values(self):
         s = self.text(SCRIPT)
