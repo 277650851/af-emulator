@@ -50,7 +50,7 @@ function Save-LauncherConfig {
         $script:LauncherConfig |
             ConvertTo-Json -Depth 8 |
             Set-Content -LiteralPath $temporaryPath -Encoding UTF8
-        Move-Item -LiteralPath $temporaryPath -Destination $script:LAUNCHER_CONFIG_PATH -Force
+        Move-Item -LiteralPath $temporaryPath -Destination $script:LAUNCHER_CONFIG_PATH -Force | Out-Null
     } catch {
         Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
         Write-Host "[WARNING] Could not save launcher preferences: $($_.Exception.Message)" -ForegroundColor Yellow
