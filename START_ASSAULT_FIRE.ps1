@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v22"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v23"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -903,7 +903,38 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
         throw "Missing client config folder: $clientConfig"
     }
 
+    $useOwnPrivateKey = $false
+    $forceNewPair = $false
+    if (Test-Path -LiteralPath $privateKey -PathType Leaf) {
+        $ownKeyAnswer = Read-Host "Do you have your own PRIVATE.PEM here and want to keep using it? [Y/n]"
+        $useOwnPrivateKey = (-not $ownKeyAnswer -or $ownKeyAnswer -match "^(?i)y(es)?$")
+        $forceNewPair = -not $useOwnPrivateKey
+    } else {
+        $ownKeyAnswer = Read-Host "Do you have your own PRIVATE.PEM key to use? [y/N]"
+        if ($ownKeyAnswer -match "^(?i)y(es)?$") {
+            $ownPrivateSource = Read-Host "Enter the full path to your PRIVATE.PEM"
+            if (-not (Test-Path -LiteralPath $ownPrivateSource -PathType Leaf)) {
+                throw "Your PRIVATE.PEM was not found at: $ownPrivateSource"
+            }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $privateKey) -Force | Out-Null
+            Copy-Item -LiteralPath $ownPrivateSource -Destination $privateKey -Force
+            $useOwnPrivateKey = $true
+        }
+    }
+
+    if ($useOwnPrivateKey) {
+        Write-Host "[CHECK] Keeping your PRIVATE.PEM and verifying it against TCLS/config/APClient.dat..."
+        & $VenvPython $diagnose --client-root $GameRoot
+        $ownKeyCheckExitCode = $LASTEXITCODE
+        if ($ownKeyCheckExitCode -ne 0) {
+            throw "Your PRIVATE.PEM was preserved, but it does not match the installed TCLS/APClient.dat or verified TCLS build. Nothing was regenerated; install its matching APClient.dat and retry."
+        }
+        Write-Host "[OK] Your PRIVATE.PEM matches the client APClient.dat and verified TCLS build. It was kept unchanged." -ForegroundColor Green
+        return
+    }
+
     $needGenerate = (
+        $forceNewPair -or
         -not (Test-Path -LiteralPath $privateKey -PathType Leaf) -or
         -not (Test-Path -LiteralPath $publicKey -PathType Leaf)
     )
