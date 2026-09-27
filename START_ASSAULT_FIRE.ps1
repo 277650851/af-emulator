@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v23"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v24"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -927,7 +927,27 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
         & $VenvPython $diagnose --client-root $GameRoot
         $ownKeyCheckExitCode = $LASTEXITCODE
         if ($ownKeyCheckExitCode -ne 0) {
-            throw "Your PRIVATE.PEM was preserved, but it does not match the installed TCLS/APClient.dat or verified TCLS build. Nothing was regenerated; install its matching APClient.dat and retry."
+            Write-Host "[WARN] Your PRIVATE.PEM does not match the installed APClient.dat or verified TCLS build." -ForegroundColor Yellow
+            $overwriteOwnKey = Read-Host "Replace your PRIVATE.PEM and APClient.dat with a new matching pair? [y/N]"
+            if ($overwriteOwnKey -notmatch "^(?i)y(es)?$") {
+                throw "Your PRIVATE.PEM was preserved. Install its matching APClient.dat or rerun and choose Y to replace the local key pair."
+            }
+
+            Backup-IfExists $privateKey "oneclick_mismatch"
+            Backup-IfExists $publicKey "oneclick_mismatch"
+            Backup-IfExists $clientAP "oneclick_mismatch"
+            Invoke-Checked -Exe $VenvPython -Arguments @(
+                $generator,
+                "--client-config-dir", $clientConfig,
+                "--force"
+            ) -Description "replace mismatched key with a new local RSA/APClient pair"
+
+            & $VenvPython $diagnose --client-root $GameRoot
+            if ($LASTEXITCODE -ne 0) {
+                throw "The replacement RSA/APClient pair did not pass TCLS verification. Backups were kept."
+            }
+            Write-Host "[OK] Replacement RSA/APClient pair passed verification. Original files are backed up." -ForegroundColor Green
+            return
         }
         Write-Host "[OK] Your PRIVATE.PEM matches the client APClient.dat and verified TCLS build. It was kept unchanged." -ForegroundColor Green
         return
