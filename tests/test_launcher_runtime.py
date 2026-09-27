@@ -254,7 +254,6 @@ function New-KeyTestCase([string]$Name, [bool]$WithPrivate) {
     $clientConfig = Join-Path $game "TCLS\config"
     New-Item -ItemType Directory -Path (Split-Path -Parent $private) -Force | Out-Null
     New-Item -ItemType Directory -Path $clientConfig -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $repo "tools\patches\diagnose_tcls_apclient.py") -Value "raise SystemExit(0)" -Encoding Ascii -Force
     New-Item -ItemType Directory -Path (Join-Path $repo "tools\patches") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $repo "tools\patches\diagnose_tcls_apclient.py") -Value "raise SystemExit(0)" -Encoding Ascii -Force
     Set-Content -LiteralPath (Join-Path $clientConfig "APClient.dat") -Value "matching public key placeholder" -Encoding Ascii -Force
