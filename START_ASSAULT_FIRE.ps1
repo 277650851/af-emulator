@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v18"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v19"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -958,13 +958,23 @@ function Ensure-AFDev([string]$GameRoot) {
     $afdev = Join-Path $win32 "TGame_AFDEV.exe"
 
     $tgameHash = Get-Sha256 $tgame
+    $acceptedTGameHash = $EXPECTED_TGAME_SHA256
     if ($tgameHash -ne $EXPECTED_TGAME_SHA256) {
-        throw (
-            "Unsupported TGame.exe. This project currently supports Assault Fire PH v1.0.0.24 only. " +
-            "Expected SHA256 $EXPECTED_TGAME_SHA256 but found $tgameHash. Nothing was patched."
-        )
+        Write-Host "[WARN] TGame.exe hash does not match the stock PH v1.0.0.24 build." -ForegroundColor Yellow
+        Write-Host "       Expected: $EXPECTED_TGAME_SHA256"
+        Write-Host "       Found:    $tgameHash"
+        Write-Host "If this is your already-patched TGame.exe, confirm to continue."
+        $patchedAnswer = Read-Host "Is this TGame.exe already patched for this emulator? Type YES to continue"
+        if ($patchedAnswer -cne "YES") {
+            throw "Unsupported TGame.exe was not confirmed as patched. Nothing was changed."
+        }
+        # Use the user's confirmed source hash to validate the private AFDEV copy.
+        # Never replace or modify the original TGame.exe.
+        $acceptedTGameHash = $tgameHash
+        Write-Host "[OK] User confirmed patched TGame.exe; its hash will be required for the AFDEV copy." -ForegroundColor Green
+    } else {
+        Write-Host "[OK] TGame.exe is the validated PH v1.0.0.24 build." -ForegroundColor Green
     }
-    Write-Host "[OK] TGame.exe is the validated PH v1.0.0.24 build." -ForegroundColor Green
 
     $replace = $false
     if (-not (Test-Path -LiteralPath $afdev -PathType Leaf)) {
@@ -972,21 +982,21 @@ function Ensure-AFDev([string]$GameRoot) {
         Write-Host "[SETUP] TGame_AFDEV.exe is missing."
     } else {
         $afdevHash = Get-Sha256 $afdev
-        if ($afdevHash -ne $EXPECTED_TGAME_SHA256) {
-            Write-Host "[REPAIR] Existing TGame_AFDEV.exe is not the validated build."
+        if ($afdevHash -ne $acceptedTGameHash) {
+            Write-Host "[REPAIR] Existing TGame_AFDEV.exe does not match the accepted TGame.exe."
             Backup-IfExists $afdev "oneclick_wrong_build"
             $replace = $true
         }
     }
 
     if ($replace) {
-        Write-Host "[SETUP] Creating TGame_AFDEV.exe from YOUR OWN validated TGame.exe..."
+        Write-Host "[SETUP] Creating TGame_AFDEV.exe from YOUR OWN TGame.exe..."
         Copy-Item -LiteralPath $tgame -Destination $afdev -Force
     }
 
     $finalHash = Get-Sha256 $afdev
-    if ($finalHash -ne $EXPECTED_TGAME_SHA256) {
-        throw "TGame_AFDEV.exe verification failed after local copy."
+    if ($finalHash -ne $acceptedTGameHash) {
+        throw "TGame_AFDEV.exe verification failed against the accepted TGame.exe hash."
     }
 
     Write-Host "[OK] PvE AFDEV runtime is present and verified." -ForegroundColor Green
