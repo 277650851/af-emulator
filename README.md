@@ -2,7 +2,7 @@
 
 **Language:** **English** | [Tagalog](README-TL.md) | [Cebuano](README-CEB.md) | [简体中文](README-ZH-CN.md) | [More languages](README-LANGUAGES.md)
 
-[![Python](https://img.shields.io/badge/Python-3.12+-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![CI](https://github.com/armangido/af-emulator/actions/workflows/ci.yml/badge.svg)](https://github.com/armangido/af-emulator/actions/workflows/ci.yml)
 [![Engine](https://img.shields.io/badge/Engine-Unreal%20Engine%203-lightgrey)](#)
 [![Status](https://img.shields.io/badge/status-preservation%20research-orange)](docs/STATUS.md)
@@ -73,8 +73,8 @@ The script handles the annoying parts for you:
 - asks Windows for Administrator permission;
 - finds the game automatically;
 - checks that the client is the supported **Assault Fire PH v1.0.0.24** build;
-- installs Python 3.12 with Windows Package Manager when it is missing;
-- creates a persistent Python 3.12 runtime at `GAME_ROOT\.af-emulator-runtime\venv-py312` and reuses it across ZIP/repo updates;
+- reuses any working Python 3.10+ installation and only tries Windows Package Manager when no supported Python is available;
+- creates a persistent runtime at `GAME_ROOT\.af-emulator-runtime\venv`; older `venv-py312` runtimes are detected and reused automatically;
 - asks whether you want the verified **permanent TCLS.dll compatibility patch**;
 - creates/verifies the local RSA key pair and installs the matching `APClient.dat`;
 - repairs the three Windows hosts entries;
@@ -122,7 +122,7 @@ You normally do this part only once.
 You need:
 
 ```text
-Python 3.12
+Python 3.10 or newer
 Git
 your own Assault Fire PH v1.0.0.24
 ```
@@ -131,13 +131,13 @@ If you do not know where to download Python or Git, use the official websites be
 
 ---
 
-### 1A — Install Python 3.12
+### 1A — Install Python 3.10 or newer
 
 Open this website in your browser:
 
 **Python official website:**
 
-https://www.python.org/downloads/release/python-3123/
+https://www.python.org/downloads/windows/
 
 Scroll down to the **Files** section.
 
@@ -170,22 +170,22 @@ Install Now
 6. Close the installer.
 
 > [!IMPORTANT]
-> Install **Python 3.12**.
+> Install a current **64-bit Python 3.10 or newer** release.
 >
-> Do not assume Python 3.13 or 3.14 will behave exactly the same with this project.
+> The one-click launcher is no longer locked to one exact Python minor version.
 
 ### Check that Python installed correctly
 
 Open a **new** PowerShell window and run:
 
 ```powershell
-py -3.12 --version
+py --version
 ```
 
 GOOD:
 
 ```text
-Python 3.12.x
+Python 3.10.x or newer
 ```
 
 BAD:
