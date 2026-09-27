@@ -70,6 +70,7 @@ class RoomRegistry:
                 "password": str(room.get("password", "")),
                 "members": members,
                 "started": bool(room.get("started", False)),
+                "no_late_join": bool(room.get("no_late_join", False)),
                 "created_at": float(room.get("created_at", 0.0)),
             }
         )
@@ -138,6 +139,7 @@ class RoomRegistry:
             room["observer_capacity"] = max(0, int(room.get("observer_capacity", 0) or 0))
             room["password"] = str(room.get("password") or "")[:7]
             room["started"] = False
+            room["no_late_join"] = bool(room.get("no_late_join", False))
             room["created_at"] = float(room.get("created_at") or time.time())
             room["members"] = {}
             room["members"][owner_uin] = self._member(
@@ -164,8 +166,9 @@ class RoomRegistry:
             room = self._rooms.get(room_id)
             if room is None:
                 raise RoomRegistryError("room-not-found")
-            if room.get("started"):
-                raise RoomRegistryError("room-already-started")
+
+            if room.get("started") and room.get("no_late_join"):
+                raise RoomRegistryError("room-no-late-join")
             expected = str(room.get("password") or "")
             if expected and str(password or "") != expected:
                 raise RoomRegistryError("bad-room-password")
@@ -248,11 +251,25 @@ class RoomRegistry:
             member["state"] = PLAYER_STATE_READY if ready else PLAYER_STATE_UNREADY
             return self._snapshot(room)
 
+    def set_player_state(self, uin: int, state: int, *, ready=None) -> dict:
+        """Set one member's authoritative MatchRoomPlayerInfo.State."""
+        uin = int(uin)
+        with self._lock:
+            room_id = self._player_room.get(uin)
+            room = self._rooms.get(room_id) if room_id is not None else None
+            if room is None or uin not in room["members"]:
+                raise RoomRegistryError("not-in-room")
+            member = room["members"][uin]
+            member["state"] = int(state)
+            if ready is not None:
+                member["ready"] = bool(ready)
+            return self._snapshot(room)
+
     def reset_round_state(self, room_id: int) -> dict:
         """Return a surviving logical room to the stock pre-round state.
 
         A player can leave UE3 gameplay and return to the same room without
-        leaving/rejoining the room itself.  In that path the previous round's
+        leaving/rejoining the room itself. In that path the previous round's
         started/ready flags must not leak into the next Ready/Start cycle.
         """
         room_id = int(room_id)
@@ -313,6 +330,7 @@ class RoomRegistry:
         respawn_time: int = 0,
         recode_type: int = 0,
         live_delay_sec: int = 0,
+        no_late_join=None,
     ) -> dict:
         """Replace the room's authoritative MatchSettings after A11E."""
         with self._lock:
@@ -334,4 +352,6 @@ class RoomRegistry:
                     "live_delay_sec": int(live_delay_sec) & 0xFFFF,
                 }
             )
+            if no_late_join is not None:
+                room["no_late_join"] = bool(no_late_join)
             return self._snapshot(room)
