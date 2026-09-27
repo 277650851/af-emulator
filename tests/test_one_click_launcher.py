@@ -20,35 +20,43 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('Binaries\\Win32\\TGame.exe', s)
         self.assertIn('Find-GameRoot', s)
 
-    def test_script_bootstraps_python_and_requirements(self):
+    def test_script_bootstraps_supported_python_and_requirements(self):
         s = self.text(SCRIPT)
-        self.assertIn('Python.Python.3.12', s)
+        self.assertIn('Python.Python.3.14', s)
+        self.assertIn('Python.Python.3.10', s)
         self.assertIn('"requirements.txt"', s)
         self.assertIn('"-m", "venv"', s)
         self.assertIn('"pip", "install"', s)
+        self.assertIn('Python 3.10+', s)
 
-    def test_existing_python312_is_detected_before_winget(self):
+    def test_existing_supported_python_is_detected_before_winget(self):
         s = self.text(SCRIPT)
-        self.assertIn('"python312.exe"', s)
-        self.assertIn('"python312"', s)
-        self.assertIn('"python3.12.exe"', s)
-        self.assertIn('@("py.exe", "py")', s)
-        self.assertIn('"-V:3.12"', s)
-        self.assertIn('"--list-paths"', s)
-        self.assertIn('.venv\\Scripts\\python.exe', s)
-        self.assertIn('PythonCore\\3.12\\InstallPath', s)
+        for marker in (
+            '"python.exe"',
+            '"python3.exe"',
+            '"python312.exe"',
+            '"python3.12.exe"',
+            '@("py.exe", "py")',
+            '"--list-paths"',
+            'Resolve-SupportedPython',
+        ):
+            self.assertIn(marker, s)
         self.assertLess(
             s.index('foreach ($name in @('),
             s.index('Trying Windows Package Manager (winget)'),
         )
-        self.assertIn(
-            'Do not trust the winget exit code by itself',
-            s,
-        )
+
+    def test_launcher_accepts_python_310_or_newer_instead_of_exact_312(self):
+        s = self.text(SCRIPT)
+        self.assertIn('function Test-SupportedPythonPath', s)
+        self.assertIn('$major -ne 3 -or $minor -lt 10', s)
+        self.assertIn('Do not lock the launcher to one exact Python minor release.', s)
+        self.assertNotIn('function Test-Python312Path', s)
+        self.assertNotIn('function Ensure-Python312', s)
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-25-oneclick-v11', s)
+        self.assertIn('2026-09-27-oneclick-v12', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_does_not_elevate_entire_process(self):
@@ -66,11 +74,11 @@ class OneClickLauncherTests(unittest.TestCase):
             s,
         )
 
-    def test_plain_py_default_312_is_accepted(self):
+    def test_python_launcher_default_runtime_is_accepted_when_supported(self):
         s = self.text(SCRIPT)
-        self.assertIn('Python Launcher default is 3.12', s)
-        self.assertIn('return $pyLauncher.Source', s)
-        self.assertIn('py -m venv', s)
+        self.assertIn('Python Launcher default is supported', s)
+        self.assertIn('Test-SupportedPythonPath $pyLauncher.Source', s)
+        self.assertIn('foreach ($minor in @(14, 13, 12, 11, 10))', s)
 
     def test_native_command_output_cannot_pollute_return_values(self):
         s = self.text(SCRIPT)
@@ -84,22 +92,38 @@ class OneClickLauncherTests(unittest.TestCase):
         )
         self.assertIn('$exitCode = $LASTEXITCODE', s)
 
-    def test_existing_venv_is_persistent_across_zip_updates(self):
+    def test_nonstandard_venv_python_filename_is_discovered(self):
         s = self.text(SCRIPT)
+        self.assertIn('function Find-VenvPython', s)
         self.assertIn(
-            '.af-emulator-runtime\\venv-py312',
+            'Get-ChildItem -LiteralPath $scripts -Filter "python*.exe"',
             s,
         )
         self.assertIn(
-            'Reusing persistent Python 3.12 environment',
+            'Where-Object { $_.Name -notmatch "(?i)^pythonw" }',
+            s,
+        )
+        self.assertIn(
+            'for example python312.exe',
+            s,
+        )
+
+    def test_existing_venv_is_persistent_across_zip_updates(self):
+        s = self.text(SCRIPT)
+        self.assertIn(
+            '$venvDir = Join-Path $runtimeRoot "venv"',
+            s,
+        )
+        self.assertIn(
+            '$legacyPersistentDir = Join-Path $runtimeRoot "venv-py312"',
+            s,
+        )
+        self.assertIn(
+            'Reusing legacy persistent runtime',
             s,
         )
         self.assertIn(
             'Creating persistent Python environment (FIRST TIME ONLY)',
-            s,
-        )
-        self.assertIn(
-            'Migrating existing .venv to persistent one-click runtime',
             s,
         )
         self.assertIn(
@@ -114,7 +138,7 @@ class OneClickLauncherTests(unittest.TestCase):
     def test_main_uses_game_root_persistent_runtime(self):
         s = self.text(SCRIPT)
         self.assertIn(
-            'Ensure-Python312 $repoRoot $gameRoot',
+            'Ensure-SupportedPython $repoRoot $gameRoot',
             s,
         )
         self.assertIn(
