@@ -148,5 +148,45 @@ Write-Host "AF_RUNTIME_TEST_PASS"
 """)
 
 
+
+    def test_unknown_tgame_hash_requires_confirmation_and_preserves_source(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.run_launcher(shell, r"""
+$EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
+$script:AF_TEST_CONFIRMATION = "YES"
+function Read-Host([string]$Prompt) { return $script:AF_TEST_CONFIRMATION }
+function New-TestGame([string]$Name) {
+    $gameRoot = Join-Path $env:AF_TEST_ROOT $Name
+    $win32 = Join-Path $gameRoot "Binaries\Win32"
+    New-Item -ItemType Directory -Path $win32 -Force | Out-Null
+    $tgame = Join-Path $win32 "TGame.exe"
+    [System.IO.File]::WriteAllBytes($tgame, [byte[]](1, 2, 3, 4, 5))
+    return $gameRoot
+}
+$acceptedRoot = New-TestGame "confirmed patched build"
+$acceptedTGame = Join-Path $acceptedRoot "Binaries\Win32\TGame.exe"
+$sourceHash = Get-Sha256 $acceptedTGame
+if ($sourceHash -eq $EXPECTED_TGAME_SHA256) { throw "Test fixture unexpectedly matches stock hash" }
+Ensure-AFDev $acceptedRoot
+$afdev = Join-Path $acceptedRoot "Binaries\Win32\TGame_AFDEV.exe"
+if ((Get-Sha256 $afdev) -ne $sourceHash) { throw "Confirmed AFDEV copy does not match patched source" }
+if ((Get-Sha256 $acceptedTGame) -ne $sourceHash) { throw "Original TGame.exe was modified" }
+$script:AF_TEST_CONFIRMATION = "NO"
+$declinedRoot = New-TestGame "declined unknown build"
+$declinedAfdev = Join-Path $declinedRoot "Binaries\Win32\TGame_AFDEV.exe"
+$declined = $false
+try {
+    Ensure-AFDev $declinedRoot
+} catch {
+    if ($_.Exception.Message -notmatch "not confirmed as patched") { throw }
+    $declined = $true
+}
+if (-not $declined) { throw "Unknown hash was accepted without confirmation" }
+if (Test-Path -LiteralPath $declinedAfdev) { throw "Declined TGame caused an AFDEV copy" }
+Write-Host "AF_RUNTIME_TEST_PASS"
+""")
+
+
 if __name__ == "__main__":
     unittest.main()
