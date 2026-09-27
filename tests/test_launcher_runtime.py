@@ -242,5 +242,53 @@ Write-Host "AF_RUNTIME_TEST_PASS"
 """)
 
 
+
+    def test_ensure_keys_asks_and_preserves_existing_or_supplied_private_pem(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.run_launcher(shell, r"""
+function New-KeyTestCase([string]$Name, [bool]$WithPrivate) {
+    $repo = Join-Path $env:AF_TEST_ROOT ($Name + " repo")
+    $game = Join-Path $env:AF_TEST_ROOT ($Name + " game")
+    $private = Join-Path $repo "server\PRIVATE.PEM"
+    $clientConfig = Join-Path $game "TCLS\config"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $private) -Force | Out-Null
+    New-Item -ItemType Directory -Path $clientConfig -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $repo "tools\patches\diagnose_tcls_apclient.py") -Value "raise SystemExit(0)" -Encoding Ascii -Force
+    New-Item -ItemType Directory -Path (Join-Path $repo "tools\patches") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $repo "tools\patches\diagnose_tcls_apclient.py") -Value "raise SystemExit(0)" -Encoding Ascii -Force
+    Set-Content -LiteralPath (Join-Path $clientConfig "APClient.dat") -Value "matching public key placeholder" -Encoding Ascii -Force
+    if ($WithPrivate) {
+        Set-Content -LiteralPath $private -Value "user owned private key" -Encoding Ascii -Force
+    }
+    return [pscustomobject]@{ Repo = $repo; Game = $game; Private = $private }
+}
+$externalSource = Join-Path $env:AF_TEST_ROOT "my own PRIVATE.PEM"
+Set-Content -LiteralPath $externalSource -Value "external private key" -Encoding Ascii -Force
+$script:AF_TEST_EXTERNAL_PRIVATE = $externalSource
+function Read-Host([string]$Prompt) {
+    if ($Prompt -like "*full path to your PRIVATE.PEM*") {
+        return $script:AF_TEST_EXTERNAL_PRIVATE
+    }
+    return "YES"
+}
+$existing = New-KeyTestCase "existing key" $true
+$existingBefore = [System.IO.File]::ReadAllText($existing.Private)
+Ensure-Keys $existing.Repo $existing.Game $env:AF_TEST_PYTHON
+if ([System.IO.File]::ReadAllText($existing.Private) -ne $existingBefore) {
+    throw "Existing user-owned PRIVATE.PEM was changed"
+}
+$external = New-KeyTestCase "external key" $false
+Ensure-Keys $external.Repo $external.Game $env:AF_TEST_PYTHON
+if ([System.IO.File]::ReadAllText($external.Private) -ne "external private key") {
+    throw "Supplied PRIVATE.PEM was not copied into the server key location"
+}
+if ([System.IO.File]::ReadAllText($externalSource) -ne "external private key") {
+    throw "Supplied PRIVATE.PEM source was modified"
+}
+Write-Host "AF_RUNTIME_TEST_PASS"
+""")
+
+
 if __name__ == "__main__":
     unittest.main()
