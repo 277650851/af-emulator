@@ -92,6 +92,9 @@ class SpawnerConfig:
     buffer_max_packets: int = 256
     buffer_max_bytes: int = 512 * 1024
     buffer_max_age: float = 45.0
+    first_reply_retry: float = 1.25
+    first_reply_max_retries: int = 3
+    first_reply_timeout: float = 8.0
     runtime_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1] / "runtime" / "ds_runtime")
     loader_script: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1] / "tools" / "server_spawner" / "AFDevLoader_v48_spawner_multi_instance.py")
     bridge_script: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1] / "tools" / "bridge" / "af_ds_udp_bridge_v9_multi_peer_latch.py")
@@ -141,6 +144,9 @@ class SpawnerConfig:
             buffer_max_packets=max(8, int(os.environ.get("AF_DS_BUFFER_MAX_PACKETS", "256"))),
             buffer_max_bytes=max(16 * 1024, int(os.environ.get("AF_DS_BUFFER_MAX_BYTES", str(512 * 1024)))),
             buffer_max_age=max(5.0, float(os.environ.get("AF_DS_BUFFER_MAX_AGE", "45"))),
+            first_reply_retry=max(0.25, float(os.environ.get("AF_DS_FIRST_REPLY_RETRY", "1.25"))),
+            first_reply_max_retries=max(1, int(os.environ.get("AF_DS_FIRST_REPLY_MAX_RETRIES", "3"))),
+            first_reply_timeout=max(1.0, float(os.environ.get("AF_DS_FIRST_REPLY_TIMEOUT", "8.0"))),
             runtime_dir=Path(os.environ.get("AF_DS_RUNTIME_DIR", str(repo_root / "runtime" / "ds_runtime"))).resolve(),
             loader_script=Path(os.environ.get("AF_DS_LOADER", str(repo_root / "tools" / "server_spawner" / "AFDevLoader_v48_spawner_multi_instance.py"))).resolve(),
             bridge_script=Path(os.environ.get("AF_DS_BRIDGE", str(repo_root / "tools" / "bridge" / "af_ds_udp_bridge_v9_multi_peer_latch.py"))).resolve(),
@@ -620,6 +626,9 @@ class DedicatedServerSpawner:
                 "--buffer-max-packets", str(self.config.buffer_max_packets),
                 "--buffer-max-bytes", str(self.config.buffer_max_bytes),
                 "--buffer-max-age", str(self.config.buffer_max_age),
+                "--first-reply-retry", str(self.config.first_reply_retry),
+                "--first-reply-max-retries", str(self.config.first_reply_max_retries),
+                "--first-reply-timeout", str(self.config.first_reply_timeout),
             ]
             allocation.bridge_proc = subprocess.Popen(
                 cmd,
@@ -680,16 +689,26 @@ class DedicatedServerSpawner:
         while True:
             with self._lock:
                 current = self._allocations.get(allocation.room_id)
-                if current is not allocation or allocation.state == "RELEASED" or self._shutdown:
+                if (
+                    current is not allocation
+                    or allocation.state in ("ROUND_ENDED", "RELEASED")
+                    or self._shutdown
+                ):
                     return
                 proc = allocation.bridge_proc
             if proc is not None and proc.poll() is not None:
                 detail = self._tail_file(paths["bridge_log"])
                 with self._lock:
-                    if allocation.state != "RELEASED":
-                        allocation.state = "FAILED"
-                        allocation.last_error = f"bridge exited rc={proc.returncode}" + (f"; log_tail={detail}" if detail else "")
-                        self._write_snapshot_locked()
+                    current = self._allocations.get(allocation.room_id)
+                    if (
+                        current is not allocation
+                        or allocation.state in ("ROUND_ENDED", "RELEASED")
+                        or self._shutdown
+                    ):
+                        return
+                    allocation.state = "FAILED"
+                    allocation.last_error = f"bridge exited rc={proc.returncode}" + (f"; log_tail={detail}" if detail else "")
+                    self._write_snapshot_locked()
                 self._log(f"room={allocation.room_id} bridge FAILED: {allocation.last_error}")
                 return
 
@@ -697,6 +716,15 @@ class DedicatedServerSpawner:
             state = str(payload.get("state") or "")
             if state:
                 with self._lock:
+                    # Re-check after the unlocked state-file read. end_round() may
+                    # have completed while this monitor held a stale READY payload.
+                    current = self._allocations.get(allocation.room_id)
+                    if (
+                        current is not allocation
+                        or allocation.state in ("ROUND_ENDED", "RELEASED")
+                        or self._shutdown
+                    ):
+                        return
                     allocation.loader_pid = int(payload.get("loader_pid") or 0) or allocation.loader_pid
                     allocation.afdev_pid = int(payload.get("afdev_pid") or 0) or allocation.afdev_pid
                     allocation.trigger_client = payload.get("trigger_client") or allocation.trigger_client
@@ -788,8 +816,9 @@ class DedicatedServerSpawner:
     def begin_match(self, room_id: int, starter_uin: Optional[int] = None) -> dict:
         """Mark players belonging to this lobby as active in the current DS round.
 
-        First start of a round seeds the in-match set from all known room members.
-        A later start/rejoin while the DS is already active only adds the requester.
+        The first StartMatch adds only the starter. Other room members become
+        active only after their own confirmed SetInMatch/late-join transition.
+        This prevents an idle room member from keeping a finished DS alive.
         """
         room_id = int(room_id)
         starter = None if starter_uin is None else int(starter_uin)
@@ -801,7 +830,9 @@ class DedicatedServerSpawner:
                 a.room_players.add(starter)
             new_round = a.state in ("RESERVED", "ROUND_ENDED") or not a.match_players
             if new_round:
-                a.match_players = set(a.room_players)
+                a.match_players.clear()
+                if starter is not None:
+                    a.match_players.add(starter)
             elif starter is not None:
                 a.match_players.add(starter)
             self._write_snapshot_locked()
