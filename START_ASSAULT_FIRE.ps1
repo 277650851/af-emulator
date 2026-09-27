@@ -861,12 +861,11 @@ function Ensure-PermanentTCLS([string]$RepoRoot, [string]$GameRoot, [string]$Ven
         Write-Host "       Expected original: $TCLS_ORIGINAL_SHA256"
         Write-Host "       Expected patched:  $TCLS_PATCHED_SHA256"
         Write-Host "       Found:             $hash"
-        $unknownTclsAnswer = Read-Host "If this TCLS.dll is already patched for this emulator, type YES to continue"
-        if ($unknownTclsAnswer -cne "YES") {
-            throw "Unknown TCLS.dll hash was not confirmed as patched. Nothing was modified."
+        $unknownTclsAnswer = Read-Host "Do you believe this TCLS.dll is already custom-patched? [y/N]"
+        if ($unknownTclsAnswer -match "^(?i)y(es)?$") {
+            throw "You confirmed a custom-patched TCLS.dll, but the server only accepts the exact verified patched hash. Nothing was modified."
         }
-        Write-Host "[OK] User confirmed patched TCLS.dll. The launch helper will still verify its runtime patch-site bytes before modifying memory." -ForegroundColor Green
-        return
+        throw "Unsupported TCLS.dll hash. Use the verified original or exact verified patched PH v1.0.0.24 DLL. Nothing was modified."
     }
 
     Write-Host ""
