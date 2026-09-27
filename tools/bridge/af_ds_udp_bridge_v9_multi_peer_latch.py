@@ -379,8 +379,19 @@ def main():
     ap.add_argument("--buffer-max-packets", type=int, default=256)
     ap.add_argument("--buffer-max-bytes", type=int, default=512 * 1024)
     ap.add_argument("--buffer-max-age", type=float, default=45.0)
-    ap.add_argument("--first-reply-retry", type=float, default=1.25)
-    ap.add_argument("--first-reply-max-retries", type=int, default=3)
+    ap.add_argument(
+        "--first-reply-retry", type=float,
+        default=float(os.environ.get("AF_DS_FIRST_REPLY_RETRY", "1.25")),
+    )
+    ap.add_argument(
+        "--first-reply-max-retries", type=int,
+        default=int(os.environ.get("AF_DS_FIRST_REPLY_MAX_RETRIES", "3")),
+    )
+    ap.add_argument(
+        "--first-reply-timeout", type=float,
+        default=float(os.environ.get("AF_DS_FIRST_REPLY_TIMEOUT", "8.0")),
+        help="seconds after first latched send before a peer is declared dead",
+    )
     args = ap.parse_args()
 
     listen_ip = args.listen_ip
@@ -513,6 +524,7 @@ def main():
             "packet_id": packet_id,
             "live": False,
             "first_send_at": None,
+            "first_deadline": None,
             "replay_attempts": 0,
             "suppressed": 0,
         }
@@ -606,7 +618,10 @@ def main():
             return False
         pstate["sock"].sendto(wire, target)
         pstate["replay_attempts"] += 1
-        pstate["first_send_at"] = time.time()
+        now = time.time()
+        if pstate.get("first_send_at") is None:
+            pstate["first_deadline"] = now + max(1.0, float(args.first_reply_timeout))
+        pstate["first_send_at"] = now
         publish_peers()
         print(
             f"[BRIDGE-v9] peer {addr[0]}:{addr[1]} latched PacketId={pstate.get('packet_id')} "
@@ -631,7 +646,7 @@ def main():
             # r14 diagnostics: surface the loader's actual failure in the bridge
             # error instead of forcing the user to hunt a second file.
             try:
-                lp = pathlib.Path(args.loader_log) if args.loader_log else None
+                lp = Path(args.loader_log) if args.loader_log else None
                 if lp and lp.is_file():
                     lines = lp.read_text(encoding="utf-8", errors="replace").splitlines()
                     tail = " | ".join(x.strip() for x in lines[-14:] if x.strip())
@@ -694,14 +709,51 @@ def main():
         retry_after = max(0.25, float(args.first_reply_retry))
         max_retries = max(1, int(args.first_reply_max_retries))
         now = time.time()
+        timed_out = []
         for addr, pstate in list(peers.items()):
             if pstate.get("live") or pstate.get("latched_wire") is None:
                 continue
             sent_at = pstate.get("first_send_at")
             if sent_at is None:
                 send_peer_latched(addr, pstate, "AFDEV_READY")
-            elif now - sent_at >= retry_after and pstate.get("replay_attempts", 0) < max_retries:
+                continue
+            deadline = pstate.get("first_deadline")
+            if deadline is not None and now >= float(deadline):
+                timed_out.append((addr, pstate))
+                continue
+            if now - sent_at >= retry_after and pstate.get("replay_attempts", 0) < max_retries:
                 send_peer_latched(addr, pstate, "no AFDEV reply yet")
+
+        for addr, pstate in timed_out:
+            attempts = int(pstate.get("replay_attempts", 0))
+            print(
+                f"[BRIDGE-v9.3] PEER FIRST-REPLY TIMEOUT client={addr[0]}:{addr[1]} "
+                f"attempts={attempts}; removing dead peer",
+                flush=True,
+            )
+            peers.pop(addr, None)
+            sock = pstate.get("sock")
+            if sock is not None:
+                sock_to_peer.pop(sock, None)
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+        if timed_out:
+            live_count = sum(1 for p in peers.values() if p.get("live"))
+            waiting_count = sum(1 for p in peers.values() if not p.get("live"))
+            if live_count:
+                publish_peers(state="READY")
+            elif waiting_count:
+                publish_peers(state="AFDEV_READY")
+            else:
+                detail = (
+                    "no AFDEV first reply from any peer before timeout; "
+                    f"timed_out={len(timed_out)}"
+                )
+                publish(state="FAILED", error=detail)
+                raise RuntimeError(detail)
 
     try:
         while True:
