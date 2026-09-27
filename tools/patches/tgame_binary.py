@@ -2,9 +2,9 @@
 """Recognize the TGame image needed by the launcher's datetime patch.
 
 The whole-file SHA-256 is the primary build check. If it differs, this module
-checks the PE32 image and the exact code at the datetime patch site. It accepts
-the clean prologue the runtime patcher expects, or the same patch plus its
-complete known trampoline already stored in an executable section.
+checks the PE32 image and the exact code at the datetime patch site. When the
+usual RVA has no file bytes, it accepts only one matching clean signature or a
+complete known trampoline in an executable section.
 """
 
 from __future__ import annotations
@@ -32,6 +32,10 @@ IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE = 0x0040
 
 class TGameBinaryError(ValueError):
     """The file is not a supported, verifiable TGame image."""
+
+
+class UnbackedRVAError(TGameBinaryError):
+    """An RVA exists in a section's virtual image but has no bytes on disk."""
 
 
 @dataclass(frozen=True)
@@ -151,11 +155,79 @@ class PE32Image:
 
         section = matches[0]
         delta = rva - section.virtual_address
-        if delta + size > section.raw_size:
-            raise TGameBinaryError(f"RVA 0x{rva:X} has no backing file bytes")
         if executable and not (section.characteristics & IMAGE_SCN_MEM_EXECUTE):
             raise TGameBinaryError(f"RVA 0x{rva:X} is not in an executable section")
+        if delta + size > section.raw_size:
+            raise UnbackedRVAError(f"RVA 0x{rva:X} has no backing file bytes")
         return self.read_at(section.raw_pointer + delta, size)
+
+
+def find_original_patch_sites(image: PE32Image) -> list[int]:
+    """Find clean patch prologues in file-backed executable sections.
+
+    The exact original bytes are also copied into the verified trampoline.
+    Exclude that embedded copy so it cannot be mistaken for a function entry.
+    """
+    embedded_copy_prefix = bytes.fromhex("C7 44 24 1C FF FF FF FF")
+    sites: set[int] = set()
+    for section in image.sections:
+        if not (section.characteristics & IMAGE_SCN_MEM_EXECUTE):
+            continue
+        if section.raw_size < len(EXPECTED_ORIGINAL):
+            continue
+        data = image.read_at(section.raw_pointer, section.raw_size)
+        offset = 0
+        while True:
+            offset = data.find(EXPECTED_ORIGINAL, offset)
+            if offset < 0:
+                break
+            end = offset + len(EXPECTED_ORIGINAL)
+            embedded_copy = (
+                offset >= len(embedded_copy_prefix)
+                and data[offset - len(embedded_copy_prefix):offset]
+                == embedded_copy_prefix
+                and len(data) >= end + 6
+                and data[end] == 0x68
+                and data[end + 5] == 0xC3
+            )
+            if not embedded_copy:
+                sites.add(section.virtual_address + offset)
+            offset += 1
+    return sorted(sites)
+
+
+def find_static_patch_sites(image: PE32Image) -> list[int]:
+    """Find entries whose jump reaches the exact supported file trampoline."""
+    if image.dll_characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE:
+        return []
+
+    sites: set[int] = set()
+    for section in image.sections:
+        if not (section.characteristics & IMAGE_SCN_MEM_EXECUTE):
+            continue
+        if section.raw_size < PATCHED_ENTRY_SIZE:
+            continue
+        data = image.read_at(section.raw_pointer, section.raw_size)
+        offset = data.find(b"\xE9")
+        while offset >= 0 and offset + PATCHED_ENTRY_SIZE <= len(data):
+            entry = data[offset : offset + PATCHED_ENTRY_SIZE]
+            if is_patched_entry(entry):
+                site_rva = section.virtual_address + offset
+                displacement = struct.unpack("<i", entry[1:5])[0]
+                trampoline_rva = site_rva + 5 + displacement
+                expected_stub = build_trampoline(
+                    image.image_base + site_rva + len(EXPECTED_ORIGINAL)
+                )
+                try:
+                    actual_stub = image.read_rva(
+                        trampoline_rva, len(expected_stub), executable=True
+                    )
+                except TGameBinaryError:
+                    actual_stub = b""
+                if actual_stub == expected_stub:
+                    sites.add(site_rva)
+            offset = data.find(b"\xE9", offset + 1)
+    return sorted(sites)
 
 
 def build_trampoline(return_va: int) -> bytes:
@@ -219,6 +291,7 @@ def classify_tgame_binary(path: str | Path) -> dict[str, str]:
             if entry == EXPECTED_ORIGINAL:
                 return {
                     "status": "unpatched-compatible",
+                    "target_rva": f"0x{TARGET_RVA:08X}",
                     "message": (
                         f"PE32/i386 patch site RVA 0x{TARGET_RVA:08X} matches the "
                         "exact original instructions required by the runtime patcher."
@@ -246,6 +319,7 @@ def classify_tgame_binary(path: str | Path) -> dict[str, str]:
                     )
                 return {
                     "status": "already-patched",
+                    "target_rva": f"0x{TARGET_RVA:08X}",
                     "message": (
                         f"PE32/i386 patch site RVA 0x{TARGET_RVA:08X} and its complete "
                         "datetime trampoline match the verified patch."
@@ -255,6 +329,50 @@ def classify_tgame_binary(path: str | Path) -> dict[str, str]:
             raise TGameBinaryError(
                 f"unexpected bytes at RVA 0x{TARGET_RVA:08X}: {entry.hex(' ').upper()}"
             )
+    except UnbackedRVAError as exc:
+        try:
+            with PE32Image(target) as image:
+                original_sites = find_original_patch_sites(image)
+                patched_sites = find_static_patch_sites(image)
+        except (OSError, TGameBinaryError, struct.error) as scan_exc:
+            return {"status": "unsupported", "message": str(scan_exc)}
+
+        if len(original_sites) == 1 and not patched_sites:
+            site = original_sites[0]
+            return {
+                "status": "unpatched-compatible",
+                "target_rva": f"0x{site:08X}",
+                "message": (
+                    f"{exc}; found the exact clean patch prologue at the unique "
+                    f"executable-section signature RVA 0x{site:08X}. The runtime "
+                    "patcher will recheck these bytes in the loaded TGame process."
+                ),
+            }
+        if len(patched_sites) == 1 and not original_sites:
+            site = patched_sites[0]
+            return {
+                "status": "already-patched",
+                "target_rva": f"0x{site:08X}",
+                "message": (
+                    f"{exc}; found the exact datetime entry jump and trampoline at "
+                    f"the unique executable-section signature RVA 0x{site:08X}."
+                ),
+            }
+        if not original_sites and not patched_sites:
+            return {
+                "status": "unsupported",
+                "message": (
+                    f"{exc}; no matching executable-section signature was found"
+                ),
+            }
+        return {
+            "status": "unsupported",
+            "message": (
+                f"{exc}; found {len(original_sites)} clean and "
+                f"{len(patched_sites)} patched executable-section signatures, "
+                "so the patch target is ambiguous"
+            ),
+        }
     except (OSError, TGameBinaryError, struct.error) as exc:
         return {"status": "unsupported", "message": str(exc)}
 

@@ -28,7 +28,14 @@ def write_tgame_fixture(path: Path, state: str = "unpatched", *, dynamic_base: b
         tgame_binary.TARGET_RVA + tgame_binary.PATCHED_ENTRY_SIZE,
         trampoline_rva + len(patched_stub),
     )
-    raw_size = ((last_rva - SECTION_RVA + 0xFFF) // 0x1000) * 0x1000
+    virtual_size = ((last_rva - SECTION_RVA + 0xFFF) // 0x1000) * 0x1000
+    raw_size = (
+        0x1000
+        if state == "virtual-only"
+        else 0x3000
+        if state in {"relocated", "relocated-patched", "relocated-ambiguous"}
+        else virtual_size
+    )
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as stream:
@@ -48,7 +55,9 @@ def write_tgame_fixture(path: Path, state: str = "unpatched", *, dynamic_base: b
     coff = struct.pack("<HHIIIHH", 0x014C, 1, 0, 0, 0, len(optional), 0x010F)
     section = bytearray(40)
     section[:8] = b".text\0\0\0"
-    struct.pack_into("<IIII", section, 8, raw_size, SECTION_RVA, raw_size, RAW_POINTER)
+    struct.pack_into(
+        "<IIII", section, 8, virtual_size, SECTION_RVA, raw_size, RAW_POINTER
+    )
     struct.pack_into("<I", section, 36, 0x60000020)  # code + execute + read
 
     with path.open("r+b") as stream:
@@ -74,9 +83,38 @@ def write_tgame_fixture(path: Path, state: str = "unpatched", *, dynamic_base: b
             stream.write(b"\xCC" * len(patched_stub))
         elif state == "unknown":
             entry = b"\xCC" * tgame_binary.PATCHED_ENTRY_SIZE
+        elif state in {
+            "virtual-only", "relocated", "relocated-patched", "relocated-ambiguous"
+        }:
+            entry = None
         else:
             raise ValueError(f"unknown fixture state: {state}")
 
-        stream.seek(target_offset)
-        stream.write(entry)
+        if entry is not None:
+            stream.seek(target_offset)
+            stream.write(entry)
+        if state == "relocated":
+            alternate_rva = 0x2000
+            stream.seek(RAW_POINTER + alternate_rva - SECTION_RVA)
+            stream.write(tgame_binary.EXPECTED_ORIGINAL)
+        elif state == "relocated-ambiguous":
+            for alternate_rva in (0x2000, 0x2800):
+                stream.seek(RAW_POINTER + alternate_rva - SECTION_RVA)
+                stream.write(tgame_binary.EXPECTED_ORIGINAL)
+        elif state == "relocated-patched":
+            alternate_rva = 0x2000
+            alternate_trampoline_rva = 0x1E00
+            displacement = alternate_trampoline_rva - (alternate_rva + 5)
+            entry = (
+                b"\xE9"
+                + struct.pack("<i", displacement)
+                + tgame_binary.PATCHED_ENTRY_SUFFIX
+            )
+            trampoline = tgame_binary.build_trampoline(
+                IMAGE_BASE + alternate_rva + len(tgame_binary.EXPECTED_ORIGINAL)
+            )
+            stream.seek(RAW_POINTER + alternate_rva - SECTION_RVA)
+            stream.write(entry)
+            stream.seek(RAW_POINTER + alternate_trampoline_rva - SECTION_RVA)
+            stream.write(trampoline)
     return path

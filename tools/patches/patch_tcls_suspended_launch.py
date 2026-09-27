@@ -721,7 +721,9 @@ def main():
 
     try:
         gate_status = launch_gate.require_launch_ready()
-        datetime_patch.patch_process(game_pid, game_base)
+        target_rva = datetime_patch.target_rva_for_image(game_path)
+        print(f"[PATCH-SITE] verified file signature at RVA 0x{target_rva:08X}")
+        datetime_patch.patch_process(game_pid, game_base, target_rva)
     except Exception:
         print()
         print(

@@ -162,6 +162,9 @@ Write-Host "AF_RUNTIME_TEST_PASS"
         with tempfile.TemporaryDirectory(prefix="AF TGame fixtures ") as fixtures:
             unpatched = write_tgame_fixture(Path(fixtures) / "unpatched.exe", "unpatched")
             patched = write_tgame_fixture(Path(fixtures) / "patched.exe", "patched")
+            relocated = write_tgame_fixture(
+                Path(fixtures) / "relocated.exe", "relocated"
+            )
             for shell in self.shells():
                 with self.subTest(shell=shell):
                     self.run_launcher(shell, r"""
@@ -176,7 +179,8 @@ function New-TestGame([string]$Name, [string]$Source) {
 }
 foreach ($candidate in @(
     @{ Name = "compatible clean build"; Source = $env:AF_TEST_TGAME_UNPATCHED; Status = "clean" },
-    @{ Name = "verified patched build"; Source = $env:AF_TEST_TGAME_PATCHED; Status = "patched" }
+    @{ Name = "verified patched build"; Source = $env:AF_TEST_TGAME_PATCHED; Status = "patched" },
+    @{ Name = "relocated patch site"; Source = $env:AF_TEST_TGAME_RELOCATED; Status = "relocated" }
 )) {
     $gameRoot = New-TestGame $candidate.Name $candidate.Source
     $tgame = Join-Path $gameRoot "Binaries\Win32\TGame.exe"
@@ -204,9 +208,10 @@ try {
 if (-not $rejected) { throw "Unknown TGame binary was accepted" }
 if (Test-Path -LiteralPath $invalidAfdev) { throw "Unknown TGame caused an AFDEV copy" }
 Write-Host "AF_RUNTIME_TEST_PASS"
-""", {
+                    """, {
                         "AF_TEST_TGAME_UNPATCHED": str(unpatched),
                         "AF_TEST_TGAME_PATCHED": str(patched),
+                        "AF_TEST_TGAME_RELOCATED": str(relocated),
                     })
 
 

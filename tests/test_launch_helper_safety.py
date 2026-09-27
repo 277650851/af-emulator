@@ -12,6 +12,8 @@ class LaunchHelperStaticSafetyTests(unittest.TestCase):
         self.assertNotIn("(children or candidates)[0]", source)
         self.assertIn('row["ppid"] == parent_pid', source)
         self.assertIn("require_game_image_matches", source)
+        self.assertIn("target_rva_for_image(game_path)", source)
+        self.assertIn("patch_process(game_pid, game_base, target_rva)", source)
         self.assertGreaterEqual(source.count("require_launch_ready()"), 4)
 
     def test_datetime_helper_ignores_existing_tgame_and_checks_image_path(self):
@@ -22,6 +24,8 @@ class LaunchHelperStaticSafetyTests(unittest.TestCase):
         self.assertIn("pid not in existing_pids", source)
         self.assertIn("require_game_image_matches", source)
         self.assertIn("matches_runtime_patch", source)
+        self.assertIn("target_rva_for_image(image_path)", source)
+        self.assertIn("patch_process(pid, base, target_rva)", source)
         self.assertIn("PATCHED (already active)", source)
         self.assertGreaterEqual(source.count("require_launch_ready()"), 2)
 

@@ -46,6 +46,40 @@ class TGameBinaryTests(unittest.TestCase):
         self.assertEqual(result["status"], "already-patched")
         self.assertIn("complete datetime trampoline", result["message"])
 
+    def test_unbacked_fixed_rva_uses_unique_clean_signature_from_executable_section(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "relocated")
+            result = tgame_binary.classify_tgame_binary(path)
+
+        self.assertEqual(result["status"], "unpatched-compatible")
+        self.assertEqual(result["target_rva"], "0x00002000")
+        self.assertIn("unique executable-section signature", result["message"])
+
+    def test_unbacked_fixed_rva_without_signature_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "virtual-only")
+            result = tgame_binary.classify_tgame_binary(path)
+
+        self.assertEqual(result["status"], "unsupported")
+        self.assertIn("no matching executable-section signature", result["message"])
+
+    def test_relocated_known_trampoline_is_recognized_when_hash_differs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "relocated-patched")
+            result = tgame_binary.classify_tgame_binary(path)
+
+        self.assertEqual(result["status"], "already-patched")
+        self.assertEqual(result["target_rva"], "0x00002000")
+        self.assertIn("exact datetime entry jump and trampoline", result["message"])
+
+    def test_ambiguous_relocated_signature_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "relocated-ambiguous")
+            result = tgame_binary.classify_tgame_binary(path)
+
+        self.assertEqual(result["status"], "unsupported")
+        self.assertIn("patch target is ambiguous", result["message"])
+
     def test_jump_without_exact_trampoline_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path = write_tgame_fixture(Path(temp) / "TGame.exe", "bad-trampoline")

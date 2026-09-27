@@ -5,7 +5,9 @@ Assault Fire / TGame datetime runtime patcher.
 Purpose
 -------
 Automates the x32dbg patch we proved manually at TGame.exe+0x10B9510
-(VA 0x014B9510 when the image base is 0x00400000).
+(VA 0x014B9510 when the image base is 0x00400000). If a mismatched image has
+one exact supported prologue at another RVA, the binary checker supplies that
+RVA and this patcher revalidates the live bytes before writing.
 
 When that function is entered with year < 1900, the injected trampoline
 replaces the seven date/time arguments with:
@@ -63,6 +65,17 @@ PROCESS_NAME = "TGame.exe"
 
 TARGET_RVA = tgame_binary.TARGET_RVA
 EXPECTED_ORIGINAL = tgame_binary.EXPECTED_ORIGINAL
+
+
+def target_rva_for_image(image_path):
+    """Resolve and validate the file-backed site before touching live memory."""
+    result = tgame_binary.classify_tgame_binary(image_path)
+    if result["status"] == "unsupported":
+        raise RuntimeError(f"TGame patch site is not verified: {result['message']}")
+    try:
+        return int(result.get("target_rva", f"0x{TARGET_RVA:08X}"), 0)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("TGame binary checker returned an invalid patch RVA") from exc
 
 # Process access rights.
 PROCESS_VM_OPERATION = 0x0008
@@ -290,7 +303,7 @@ def write_memory(process, address, data):
         )
 
 
-def patch_process(pid, base):
+def patch_process(pid, base, target_rva=TARGET_RVA):
     access = (
         PROCESS_QUERY_INFORMATION
         | PROCESS_VM_OPERATION
@@ -303,7 +316,7 @@ def patch_process(pid, base):
         raise winerr("OpenProcess")
 
     try:
-        target = base + TARGET_RVA
+        target = base + target_rva
         continuation = target + len(EXPECTED_ORIGINAL)
 
         original = read_memory(process, target, len(EXPECTED_ORIGINAL))
@@ -446,7 +459,9 @@ def main():
         gate_status = launch_gate.require_launch_ready()
         launch_gate.require_game_image_matches(gate_status, image_path)
         print("[LAUNCH-GATE] PASS - matching TGame and live backend confirmed.")
-        patch_process(pid, base)
+        target_rva = target_rva_for_image(image_path)
+        print(f"[PATCH-SITE] verified file signature at RVA 0x{target_rva:08X}")
+        patch_process(pid, base, target_rva)
         return
 
 

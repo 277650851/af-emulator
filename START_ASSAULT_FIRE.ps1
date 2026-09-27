@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v26"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v27"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -1183,7 +1183,7 @@ function Ensure-AFDev([string]$GameRoot, [string]$VenvPython, [string]$RepoRoot)
         if ($binaryCheck.status -eq "already-patched") {
             Write-Host "[OK] TGame.exe contains the fully verified datetime patch; its hash will be required for the AFDEV copy." -ForegroundColor Green
         } else {
-            Write-Host "[OK] TGame.exe has the exact clean patch-site signature; its hash will be required for the AFDEV copy." -ForegroundColor Green
+            Write-Host "[OK] TGame.exe has a verified clean datetime patch signature at RVA $($binaryCheck.target_rva); the runtime helper will verify it again before patching." -ForegroundColor Green
         }
     } else {
         Write-Host "[OK] TGame.exe is the validated PH v1.0.0.24 build." -ForegroundColor Green
