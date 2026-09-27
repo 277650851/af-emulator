@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-25-oneclick-v11"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v12"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -122,14 +122,12 @@ function Find-GameRoot([string]$RepoRoot) {
     return $null
 }
 
-function Test-Python312Path([string]$Candidate) {
+function Test-SupportedPythonPath([string]$Candidate) {
     if (-not $Candidate) {
         return $null
     }
 
     try {
-        # Prefer literal executable paths first. Get-Command can behave
-        # differently for per-user Python installs and App Execution Aliases.
         if (Test-Path -LiteralPath $Candidate -PathType Leaf) {
             $exe = (Resolve-Path -LiteralPath $Candidate).Path
         } else {
@@ -149,7 +147,27 @@ function Test-Python312Path([string]$Candidate) {
         }
 
         $parts = $probe.Trim() -split "\|", 2
-        if ($parts.Count -ne 2 -or $parts[0] -ne "3.12") {
+        if ($parts.Count -ne 2) {
+            return $null
+        }
+
+        $version = $parts[0] -split "\.", 2
+        if ($version.Count -ne 2) {
+            return $null
+        }
+
+        $major = 0
+        $minor = 0
+        if (
+            -not [int]::TryParse($version[0], [ref]$major) -or
+            -not [int]::TryParse($version[1], [ref]$minor)
+        ) {
+            return $null
+        }
+
+        # The emulator uses Python 3.10+ language features (for example X | None).
+        # Do not lock the launcher to one exact Python minor release.
+        if ($major -ne 3 -or $minor -lt 10) {
             return $null
         }
 
@@ -164,49 +182,100 @@ function Test-Python312Path([string]$Candidate) {
     }
 }
 
-function Resolve-Python312([string]$RepoRoot = "", [string]$GameRoot = "") {
-    # The one-click runtime lives OUTSIDE the downloaded repository folder.
-    # ZIP users can replace af-emulator-main without losing/rebuilding Python.
+function Find-VenvPython([string]$VenvDir) {
+    if (-not $VenvDir -or -not (Test-Path -LiteralPath $VenvDir -PathType Container)) {
+        return $null
+    }
+
+    $scripts = Join-Path $VenvDir "Scripts"
+    if (-not (Test-Path -LiteralPath $scripts -PathType Container)) {
+        return $null
+    }
+
+    # Normal CPython venvs use python.exe, but some valid Windows installs keep
+    # the base executable name (for example python312.exe). Probe executables
+    # instead of assuming one filename.
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @("python.exe", "python3.exe")) {
+        $path = Join-Path $scripts $name
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $candidates.Add($path)
+        }
+    }
+
+    Get-ChildItem -LiteralPath $scripts -Filter "python*.exe" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch "(?i)^pythonw" } |
+        Sort-Object Name |
+        ForEach-Object { $candidates.Add($_.FullName) }
+
+    foreach ($candidate in ($candidates | Select-Object -Unique)) {
+        $found = Test-SupportedPythonPath $candidate
+        if ($found) {
+            return $found
+        }
+    }
+
+    return $null
+}
+
+function Resolve-SupportedPython([string]$RepoRoot = "", [string]$GameRoot = "") {
+    # Reuse the persistent runtime first. "venv" is the new generic location;
+    # "venv-py312" is kept for backward compatibility with one-click v11.
     if ($GameRoot) {
-        $persistentPython = Join-Path $GameRoot ".af-emulator-runtime\venv-py312\Scripts\python.exe"
-        $found = Test-Python312Path $persistentPython
-        if ($found) {
-            return $found
-        }
-    }
-
-    # Backward-compatible check for v1-v10 repo-local environments. A valid
-    # legacy .venv can be migrated by Ensure-Venv instead of downloading again.
-    if ($RepoRoot) {
-        $venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
-        $found = Test-Python312Path $venvPython
-        if ($found) {
-            return $found
-        }
-    }
-
-    # Many AF developers install Python using a command named python312.
-    # Check command aliases/shims explicitly before falling back to winget.
-    foreach ($name in @(
-        "python312.exe",
-        "python312",
-        "python3.12.exe",
-        "python3.12",
-        "python.exe",
-        "python"
-    )) {
-        $command = Get-Command $name -ErrorAction SilentlyContinue
-        if ($command) {
-            $found = Test-Python312Path $command.Source
+        $runtimeRoot = Join-Path $GameRoot ".af-emulator-runtime"
+        foreach ($name in @("venv", "venv-py312")) {
+            $found = Find-VenvPython (Join-Path $runtimeRoot $name)
             if ($found) {
                 return $found
             }
         }
     }
 
-    # Python Launcher can locate 3.12 even when python.exe itself is not on PATH.
-    # Check both py.exe and py because some installations expose only one command
-    # name to PowerShell/App Execution Aliases.
+    if ($RepoRoot) {
+        $found = Find-VenvPython (Join-Path $RepoRoot ".venv")
+        if ($found) {
+            return $found
+        }
+    }
+
+    # Prefer whatever supported Python the user already has.
+    foreach ($name in @(
+        "python.exe",
+        "python",
+        "python3.exe",
+        "python3",
+        "python314.exe",
+        "python314",
+        "python3.14.exe",
+        "python3.14",
+        "python313.exe",
+        "python313",
+        "python3.13.exe",
+        "python3.13",
+        "python312.exe",
+        "python312",
+        "python3.12.exe",
+        "python3.12",
+        "python311.exe",
+        "python311",
+        "python3.11.exe",
+        "python3.11",
+        "python310.exe",
+        "python310",
+        "python3.10.exe",
+        "python3.10"
+    )) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command) {
+            $found = Test-SupportedPythonPath $command.Source
+            if ($found) {
+                return $found
+            }
+        }
+    }
+
+    # Python Launcher can resolve an installed interpreter even when its
+    # python*.exe name is not on PATH.
     $pyLauncher = $null
     foreach ($pyName in @("py.exe", "py")) {
         $candidateCommand = Get-Command $pyName -ErrorAction SilentlyContinue
@@ -217,81 +286,41 @@ function Resolve-Python312([string]$RepoRoot = "", [string]$GameRoot = "") {
     }
 
     if ($pyLauncher) {
-        # If plain "py" already launches Python 3.12, use the launcher itself
-        # as the bootstrap executable. This is intentionally accepted because
-        # "py -m venv" will use that same default 3.12 runtime.
-        try {
-            $pyVersion = (& $pyLauncher.Source --version 2>&1 | Select-Object -First 1)
-            if ($LASTEXITCODE -eq 0 -and ([string]$pyVersion) -match "^Python\s+3\.12(?:\.|$)") {
-                Write-Host "[PY-DETECT] Python Launcher default is 3.12: $($pyLauncher.Source)"
-                return $pyLauncher.Source
-            }
-        } catch {}
-
-        # Support both the classic launcher syntax (-3.12) and the newer
-        # Python install manager selector syntax (-V:3.12).
-        foreach ($selector in @("-3.12", "-V:3.12")) {
-            try {
-                $resolved = (& $pyLauncher.Source $selector -c "import sys; print(sys.executable)" 2>$null |
-                    Select-Object -First 1)
-                if ($LASTEXITCODE -eq 0 -and $resolved) {
-                    $found = Test-Python312Path $resolved.Trim()
-                    if ($found) {
-                        return $found
-                    }
-                }
-            } catch {}
+        $found = Test-SupportedPythonPath $pyLauncher.Source
+        if ($found) {
+            Write-Host "[PY-DETECT] Python Launcher default is supported: $found"
+            return $found
         }
 
-        # Fallback: if plain "py" already launches Python 3.12, accept that too.
-        try {
-            $probe = (& $pyLauncher.Source -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}|{sys.executable}')" 2>$null |
-                Select-Object -First 1)
-            if ($LASTEXITCODE -eq 0 -and $probe) {
-                $parts = $probe.Trim() -split "\|", 2
-                if ($parts.Count -eq 2 -and $parts[0] -eq "3.12") {
-                    $found = Test-Python312Path $parts[1].Trim()
-                    if ($found) {
-                        return $found
+        foreach ($minor in @(14, 13, 12, 11, 10)) {
+            foreach ($selector in @("-3.$minor", "-V:3.$minor")) {
+                try {
+                    $resolved = (& $pyLauncher.Source $selector -c "import sys; print(sys.executable)" 2>$null |
+                        Select-Object -First 1)
+                    if ($LASTEXITCODE -eq 0 -and $resolved) {
+                        $found = Test-SupportedPythonPath $resolved.Trim()
+                        if ($found) {
+                            return $found
+                        }
                     }
-                }
+                } catch {}
             }
-        } catch {}
+        }
 
-        # Last launcher fallback: parse the launcher's installed-runtime list.
-        foreach ($listArgs in @(
-            @("-0p"),
-            @("--list-paths")
-        )) {
+        foreach ($listArgs in @(@("-0p"), @("--list-paths"))) {
             try {
                 $rows = @(& $pyLauncher.Source @listArgs 2>$null)
                 foreach ($row in $rows) {
                     $text = [string]$row
-                    if ($text -notmatch "3\.12") {
-                        continue
-                    }
-
                     $match = [regex]::Match(
                         $text,
-                        '([A-Za-z]:\\[^\r\n]*?python(?:3\.12)?\.exe)',
+                        '([A-Za-z]:\\[^\r\n]*?python(?:3(?:\.\d+)?)?\.exe)',
                         [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
                     )
                     if ($match.Success) {
-                        $runtimePath = $match.Groups[1].Value.Trim()
-                        $found = Test-Python312Path $runtimePath
+                        $found = Test-SupportedPythonPath $match.Groups[1].Value.Trim()
                         if ($found) {
                             return $found
-                        }
-
-                        # Diagnostic fallback: a path listed by py for 3.12 is
-                        # still useful even if command discovery is unusual.
-                        if (Test-Path -LiteralPath $runtimePath -PathType Leaf) {
-                            try {
-                                $runtimeVersion = (& $runtimePath --version 2>&1 | Select-Object -First 1)
-                                if ($LASTEXITCODE -eq 0 -and ([string]$runtimeVersion) -match "^Python\s+3\.12(?:\.|$)") {
-                                    return (Resolve-Path -LiteralPath $runtimePath).Path
-                                }
-                            } catch {}
                         }
                     }
                 }
@@ -299,116 +328,99 @@ function Resolve-Python312([string]$RepoRoot = "", [string]$GameRoot = "") {
         }
     }
 
-    # Search common installer locations. UAC/elevation can inherit a stale
-    # PATH, so direct-path discovery is intentional.
-    $pf86 = [Environment]::GetEnvironmentVariable("ProgramFiles(x86)")
-    $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
-    $programFiles = [Environment]::GetFolderPath("ProgramFiles")
-
-    $candidates = @()
-    if ($localAppData) {
-        $candidates += (Join-Path $localAppData "Programs\Python\Python312\python.exe")
-        $candidates += (Join-Path $localAppData "Programs\Python\Python312-32\python.exe")
+    # Scan common per-user and machine-wide CPython install folders. This also
+    # catches installs whose only console executable is python312.exe, etc.
+    $roots = New-Object System.Collections.Generic.List[string]
+    if ($env:LOCALAPPDATA) {
+        $roots.Add((Join-Path $env:LOCALAPPDATA "Programs\Python"))
     }
-    if ($programFiles) {
-        $candidates += (Join-Path $programFiles "Python312\python.exe")
+    if ($env:ProgramFiles) {
+        $roots.Add($env:ProgramFiles)
     }
-    if ($pf86) {
-        $candidates += (Join-Path $pf86 "Python312\python.exe")
+    $programFilesX86 = [Environment]::GetFolderPath("ProgramFilesX86")
+    if ($programFilesX86) {
+        $roots.Add($programFilesX86)
     }
 
-    # Also honor standard Python installer registry entries.
-    foreach ($key in @(
-        "HKCU:\Software\Python\PythonCore\3.12\InstallPath",
-        "HKLM:\Software\Python\PythonCore\3.12\InstallPath",
-        "HKLM:\Software\WOW6432Node\Python\PythonCore\3.12\InstallPath"
-    )) {
-        try {
-            if (Test-Path -LiteralPath $key) {
-                $item = Get-Item -LiteralPath $key
-                $exeValue = [string]$item.GetValue("ExecutablePath", "")
-                if ($exeValue) {
-                    $candidates += $exeValue
+    foreach ($root in ($roots | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+            continue
+        }
+
+        $dirs = @()
+        if ((Split-Path -Leaf $root) -eq "Python") {
+            $dirs = @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)
+        } else {
+            $dirs = @(Get-ChildItem -LiteralPath $root -Directory -Filter "Python*" -ErrorAction SilentlyContinue)
+        }
+
+        foreach ($dir in $dirs) {
+            Get-ChildItem -LiteralPath $dir.FullName -Filter "python*.exe" -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notmatch "(?i)^pythonw" } |
+                ForEach-Object {
+                    $found = Test-SupportedPythonPath $_.FullName
+                    if ($found) {
+                        return $found
+                    }
                 }
-                $installDir = [string]$item.GetValue("", "")
-                if ($installDir) {
-                    $candidates += (Join-Path $installDir "python.exe")
-                }
-            }
-        } catch {}
-    }
-
-    foreach ($candidate in ($candidates | Select-Object -Unique)) {
-        $found = Test-Python312Path $candidate
-        if ($found) {
-            return $found
         }
     }
 
     return $null
 }
 
-function Ensure-Python312([string]$RepoRoot, [string]$GameRoot) {
-    $python = Resolve-Python312 $RepoRoot $GameRoot
+function Ensure-SupportedPython([string]$RepoRoot, [string]$GameRoot) {
+    $python = Resolve-SupportedPython $RepoRoot $GameRoot
     if ($python) {
-        Write-Host "[OK] Python 3.12: $python" -ForegroundColor Green
+        $versionText = Get-PythonVersionText $python
+        Write-Host "[OK] Supported Python: $versionText  $python" -ForegroundColor Green
         return $python
     }
 
     if ($SkipPythonInstall) {
-        throw (
-            "Python 3.12 could not be located. Checked the project .venv, python312, " +
-            "python3.12, python, py -3.12, common install folders, and Python registry entries."
-        )
+        throw "No supported Python was found. Install Python 3.10 or newer, then run this script again."
     }
 
-    Write-Host "[SETUP] Python 3.12 was not found after checking all known local locations."
-    $visiblePy = Get-Command py, py.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($visiblePy) {
-        try {
-            $pyVersion = (& $visiblePy.Source --version 2>&1 | Select-Object -First 1)
-            Write-Host "[DIAG] py command : $($visiblePy.Source)"
-            Write-Host "[DIAG] py version : $pyVersion"
-            $pyList = @(& $visiblePy.Source -0p 2>&1)
-            if ($pyList.Count -gt 0) {
-                Write-Host "[DIAG] py -0p:"
-                $pyList | ForEach-Object { Write-Host ("       " + [string]$_) }
-            }
-        } catch {}
-    }
-    Write-Host "[SETUP] Automatic installation will be attempted only now."
+    Write-Host "[SETUP] No supported Python 3.10+ runtime was found."
+    Write-Host "[SETUP] Trying Windows Package Manager (winget) only because no usable local Python was detected."
 
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
-        Write-Host "[SETUP] Trying Windows Package Manager (winget)..."
-        $wingetExit = 1
-        try {
-            & $winget.Source install --exact --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
-            $wingetExit = $LASTEXITCODE
-        } catch {
-            Write-Host "[WARNING] winget raised an error: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
+        # Try current/recent CPython releases. The launcher accepts any working
+        # Python 3.10+ runtime; these package IDs are only installation fallbacks.
+        foreach ($packageId in @(
+            "Python.Python.3.14",
+            "Python.Python.3.13",
+            "Python.Python.3.12",
+            "Python.Python.3.11",
+            "Python.Python.3.10"
+        )) {
+            Write-Host "[SETUP] Trying $packageId ..."
+            $wingetExit = 1
+            try {
+                & $winget.Source install --exact --id $packageId --silent --accept-package-agreements --accept-source-agreements
+                $wingetExit = $LASTEXITCODE
+            } catch {
+                Write-Host "[WARNING] winget raised an error for $($packageId): $($_.Exception.Message)" -ForegroundColor Yellow
+            }
 
-        # Do not trust the winget exit code by itself. It can report failure
-        # when Python is already installed or when its source state is broken.
-        # Rescan the machine first.
-        Start-Sleep -Seconds 2
-        $python = Resolve-Python312 $RepoRoot $GameRoot
-        if ($python) {
-            Write-Host "[OK] Python 3.12 located after winget attempt: $python" -ForegroundColor Green
-            return $python
-        }
+            # winget can return a non-zero code when a usable runtime is already
+            # present, so always rescan instead of trusting the exit code.
+            Start-Sleep -Seconds 2
+            $python = Resolve-SupportedPython $RepoRoot $GameRoot
+            if ($python) {
+                $versionText = Get-PythonVersionText $python
+                Write-Host "[OK] Supported Python located after winget attempt: $versionText  $python" -ForegroundColor Green
+                return $python
+            }
 
-        Write-Host "[WARNING] winget did not provide a usable Python 3.12 (exit $wingetExit)." -ForegroundColor Yellow
+            Write-Host "[WARNING] $packageId did not provide a usable runtime (exit $wingetExit)." -ForegroundColor Yellow
+        }
     } else {
         Write-Host "[WARNING] winget is not available on this Windows installation." -ForegroundColor Yellow
     }
 
-    throw (
-        "Python 3.12 is still unavailable. If Python 3.12 is already installed, open PowerShell and run " +
-        "'python312 --version', 'python3.12 --version', or 'py -3.12 --version' to see which command works. " +
-        "The launcher now recognizes all three forms, so rerunning after updating to this commit should normally fix it."
-    )
+    throw "Python 3.10 or newer is still unavailable. Install any current 64-bit Python 3 release and rerun this launcher."
 }
 
 function Get-PythonVersionText([string]$Exe) {
@@ -419,44 +431,6 @@ function Get-PythonVersionText([string]$Exe) {
         }
     } catch {}
     return ""
-}
-
-function Test-VenvPython312([string]$VenvPython, [string]$VenvDir) {
-    if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
-        return $false
-    }
-
-    $validated = Test-Python312Path $VenvPython
-    if ($validated) {
-        return $true
-    }
-
-    $versionText = Get-PythonVersionText $VenvPython
-    if ($versionText -match "^Python\s+3\.12(?:\.|$)") {
-        return $true
-    }
-
-    $cfg = Join-Path $VenvDir "pyvenv.cfg"
-    if (Test-Path -LiteralPath $cfg -PathType Leaf) {
-        try {
-            $cfgText = Get-Content -LiteralPath $cfg -Raw
-            if (
-                $cfgText -match "(?im)^\s*version\s*=\s*3\.12(?:\.|$)" -and
-                -not $versionText
-            ) {
-                throw (
-                    "Existing Python runtime says 3.12 in pyvenv.cfg, but its " +
-                    "python.exe could not be probed. Nothing was deleted."
-                )
-            }
-        } catch {
-            if ($_.Exception.Message -like "Existing Python runtime says 3.12*") {
-                throw
-            }
-        }
-    }
-
-    return $false
 }
 
 function Test-VenvDependencies([string]$VenvPython) {
@@ -495,71 +469,55 @@ function Ensure-Venv([string]$RepoRoot, [string]$GameRoot, [string]$BootstrapPyt
         throw "requirements.txt is missing from the emulator folder."
     }
 
-    # IMPORTANT: keep the one-click Python runtime beside the GAME, not inside
-    # af-emulator-main. Users who update by replacing the GitHub ZIP therefore
-    # keep the same environment and do not wait for venv/pip every update.
     $runtimeRoot = Join-Path $GameRoot ".af-emulator-runtime"
-    $venvDir = Join-Path $runtimeRoot "venv-py312"
-    $venvPython = Join-Path $venvDir "Scripts\python.exe"
-    $marker = Join-Path $venvDir ".af_requirements_sha256"
+    $venvDir = Join-Path $runtimeRoot "venv"
+    $legacyPersistentDir = Join-Path $runtimeRoot "venv-py312"
 
     New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 
-    if (Test-Path -LiteralPath $venvPython -PathType Leaf) {
-        if (-not (Test-VenvPython312 $venvPython $venvDir)) {
-            $versionText = Get-PythonVersionText $venvPython
-            if ($versionText -and $versionText -notmatch "^Python\s+3\.12(?:\.|$)") {
-                Write-Host "[REPAIR] Persistent runtime is $versionText, not Python 3.12." -ForegroundColor Yellow
-                Preserve-BadRuntime $venvDir "incompatible"
-            } else {
-                throw (
-                    "Persistent Python runtime could not be validated safely. " +
-                    "It was NOT deleted. Close programs using it and retry."
-                )
-            }
+    $activeDir = $null
+    $venvPython = $null
+
+    if (Test-Path -LiteralPath $venvDir -PathType Container) {
+        $venvPython = Find-VenvPython $venvDir
+        if ($venvPython) {
+            $activeDir = $venvDir
+            Write-Host "[OK] Reusing persistent Python environment: $activeDir" -ForegroundColor Green
+        } else {
+            Preserve-BadRuntime $venvDir "incomplete-or-unsupported"
         }
-    } elseif (Test-Path -LiteralPath $venvDir -PathType Container) {
-        Preserve-BadRuntime $venvDir "incomplete"
     }
 
-    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-        # Migration fast-path for users who already paid the setup cost under
-        # older one-click revisions. Copying a validated repo-local environment
-        # is much faster than creating + downloading packages again. We invoke
-        # pip only through "python -m pip", so stale activation/pip launcher
-        # paths inside the copied venv are irrelevant.
-        $legacyDir = Join-Path $RepoRoot ".venv"
-        $legacyPython = Join-Path $legacyDir "Scripts\python.exe"
-        $migrated = $false
-
-        if (
-            (Test-Path -LiteralPath $legacyPython -PathType Leaf) -and
-            (Test-VenvPython312 $legacyPython $legacyDir)
-        ) {
-            Write-Host "[SETUP] Migrating existing .venv to persistent one-click runtime (one time)..." -ForegroundColor Yellow
-            Copy-Item -LiteralPath $legacyDir -Destination $venvDir -Recurse
-
-            if (Test-VenvPython312 $venvPython $venvDir) {
-                $migrated = $true
-                Write-Host "[OK] Existing Python environment migrated; no rebuild needed." -ForegroundColor Green
-            } else {
-                Preserve-BadRuntime $venvDir "migration-failed"
-            }
+    # Backward compatibility: v11 stored the runtime in venv-py312. Reuse it
+    # in place when valid instead of making users redownload dependencies.
+    if (-not $venvPython -and (Test-Path -LiteralPath $legacyPersistentDir -PathType Container)) {
+        $legacyPython = Find-VenvPython $legacyPersistentDir
+        if ($legacyPython) {
+            $activeDir = $legacyPersistentDir
+            $venvPython = $legacyPython
+            Write-Host "[OK] Reusing legacy persistent runtime: $activeDir" -ForegroundColor Green
+        } else {
+            Preserve-BadRuntime $legacyPersistentDir "incomplete-or-unsupported"
         }
-
-        if (-not $migrated -and -not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
-            Write-Host "[SETUP] Creating persistent Python environment (FIRST TIME ONLY)..."
-            Invoke-Checked -Exe $BootstrapPython -Arguments @("-m", "venv", $venvDir) -Description "create persistent venv"
-
-            if (-not (Test-VenvPython312 $venvPython $venvDir)) {
-                throw "New persistent Python runtime was created but did not validate as Python 3.12."
-            }
-            Write-Host "[OK] Persistent Python 3.12 environment created." -ForegroundColor Green
-        }
-    } else {
-        Write-Host "[OK] Reusing persistent Python 3.12 environment: $venvDir" -ForegroundColor Green
     }
 
+    if (-not $venvPython) {
+        Write-Host "[SETUP] Creating persistent Python environment (FIRST TIME ONLY)..."
+        Invoke-Checked -Exe $BootstrapPython -Arguments @("-m", "venv", $venvDir) -Description "create persistent venv"
+
+        $venvPython = Find-VenvPython $venvDir
+        if (-not $venvPython) {
+            throw (
+                "New persistent Python runtime was created, but no working Python 3.10+ " +
+                "executable could be found under its Scripts folder."
+            )
+        }
+
+        $activeDir = $venvDir
+        Write-Host "[OK] Persistent Python environment created: $venvPython" -ForegroundColor Green
+    }
+
+    $marker = Join-Path $activeDir ".af_requirements_sha256"
     $wantedHash = Get-Sha256 $requirements
     $currentHash = ""
     if (Test-Path -LiteralPath $marker -PathType Leaf) {
@@ -584,6 +542,10 @@ function Ensure-Venv([string]$RepoRoot, [string]$GameRoot, [string]$BootstrapPyt
         "-r", $requirements
     ) -Description "install requirements"
     Set-Content -LiteralPath $marker -Value $wantedHash -Encoding ASCII
+
+    if (-not (Test-VenvDependencies $venvPython)) {
+        throw "Python dependencies were installed, but the required cryptography package still failed validation."
+    }
 
     return $venvPython
 }
@@ -967,8 +929,8 @@ try {
     Stop-RunningGameProcesses
     Stop-ExistingEmulatorServer $repoRoot
 
-    Write-Step "Checking Python 3.12 and emulator dependencies"
-    $bootstrapPython = Ensure-Python312 $repoRoot $gameRoot
+    Write-Step "Checking Python and emulator dependencies"
+    $bootstrapPython = Ensure-SupportedPython $repoRoot $gameRoot
     $venvPython = Ensure-Venv $repoRoot $gameRoot $bootstrapPython
 
     Write-Step "Checking the exact supported game build"
