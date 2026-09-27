@@ -2820,6 +2820,7 @@ TGAME_ZN_NTF_SETMATCHROOMREADY = 0xA112
 TGAME_ZN_REQ_STARTMATCH = 0xA113
 TGAME_ZN_RES_STARTMATCH = 0xA114
 TGAME_ZN_REQ_QUITMATCH = 0xA117
+TGAME_ZN_RES_QUITMATCH = 0xA118
 TGAME_ZN_NTF_STARTMATCH = 0xA11A
 TGAME_ZN_REQ_SETINMATCH = 0xA11C
 # Strongly inferred from the adjacent command family and TGame's
@@ -5078,6 +5079,15 @@ def _v138_build_ntf_leave_match_room(seat_index=0, leave_reason=0):
         TGAME_ZN_MAGIC,
         TGAME_ZN_NTF_LEAVEMATCHROOM,
         body,
+    )
+
+
+def _v143b_build_res_quit_match():
+    """Build the observed successful A118 QuitMatch response (Result:u16)."""
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_RES_QUITMATCH,
+        _v48_u16(ZONE_ERR_SUCC),
     )
 
 
@@ -8721,21 +8731,20 @@ def handle_placeholder(conn, addr, label):
                                                 )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_QUITMATCH:
-                                            # r10 multiplayer-safe match exit. A117 belongs to THIS
-                                            # player, not the room as a whole.  The first observed byte
-                                            # differs between death/end (00 in one capture) and explicit
-                                            # exits (01 in later captures), but its semantic meaning is
-                                            # not yet proven, so record it without assigning a name.
+                                            # A117 belongs to THIS player, not the room as a whole.
+                                            # The live trace confirms A118 result=0x8100. Hold A119:
+                                            # its wire schema is unverified, and the prior broadcast
+                                            # was followed by the other client sending its own A117.
                                             room = role_state.get("v79_created_match_room")
+                                            requester_uin = _v150_role_uin(role_state)
                                             reason_byte = app["body"][0] if app["body"] else None
                                             log(
                                                 label,
-                                                "C2ZN_REQ_QUITMATCH r10 "
+                                                "C2ZN_REQ_QUITMATCH r11 "
                                                 f"body_len={len(app['body'])} "
                                                 f"body={app['body'].hex()} "
                                                 + (f"reason_byte=0x{reason_byte:02x} " if reason_byte is not None else "reason_byte=<missing> ")
-                                                + "=> remove this player from active match; "
-                                                "no guessed A117 response"
+                                                + f"requester={requester_uin}"
                                             )
                                             quit_result = _v143b_quit_match_player(
                                                 role_state,
@@ -8763,10 +8772,21 @@ def handle_placeholder(conn, addr, label):
                                             # can create a fresh DS on the next A113. If others remain,
                                             # this player can rejoin the still-running shared AFDEV.
                                             _v143b_clear_player_handoff_state(role_state)
+                                            quit_rsp = _v143b_build_res_quit_match()
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                quit_rsp,
+                                                label,
+                                                "ZN2C_RES_QUITMATCH r11 "
+                                                "cmd=0xA118 result=0x8100",
+                                            )
+
                                             log(
                                                 "DS-CLEANUP",
-                                                "r10 A117 player-scoped cleanup "
-                                                f"uin={int(role_state.get('uin') or 10001)} "
+                                                "r11 A117 player-scoped cleanup "
+                                                f"uin={requester_uin} "
+                                                "peer A119 suppressed pending wire-schema verification "
                                                 f"result={quit_result}",
                                             )
 

@@ -234,6 +234,25 @@ class ServerStaticSafetyTests(unittest.TestCase):
             block,
         )
 
+    def test_a117_acknowledges_leaver_without_unverified_peer_notification(self):
+        server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        start = server.index('elif app["cmd"] == TGAME_ZN_REQ_QUITMATCH:')
+        end = server.index('elif app["cmd"] == TGAME_ZN_REQ_ZONECHANNEL_LIST:', start)
+        block = server[start:end]
+
+        self.assertIn("TGAME_ZN_RES_QUITMATCH = 0xA118", server)
+        self.assertIn("_v143b_build_res_quit_match()", block)
+        self.assertIn("cmd=0xA118 result=0x8100", block)
+        response_send = block[block.index("quit_rsp ="):]
+        self.assertIn("_v48_send_app(", response_send)
+        self.assertIn("conn,", response_send)
+        self.assertIn("active_tgame_key", response_send)
+        self.assertIn("peer A119 suppressed pending wire-schema verification", block)
+        self.assertNotIn("TGAME_ZN_NTF_QUITMATCH", server)
+        self.assertNotIn("_v150_broadcast_room", block)
+
     def test_owner_checks_guard_settings_and_start_paths(self):
         server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
             encoding="utf-8", errors="replace"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import ntpath
 import os
 import subprocess
 from pathlib import Path
@@ -256,7 +257,9 @@ def _device_path_to_dos_path(value: str) -> str:
 
 def _normalized_windows_path(value: str | os.PathLike[str]) -> str:
     raw = _device_path_to_dos_path(os.fspath(value))
-    return os.path.normcase(os.path.abspath(raw))
+    # The compared paths always identify Windows client files. Use Windows
+    # path semantics even when unit tests run on a non-Windows host.
+    return ntpath.normcase(ntpath.abspath(raw))
 
 
 def require_loaded_tcls_matches(status: Mapping, loaded_tcls_path: str) -> None:
