@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v15"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v16"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -505,24 +505,49 @@ function Ensure-SupportedPython([string]$RepoRoot, [string]$GameRoot) {
     if ($manager) {
         Write-Host "[SETUP] Installing the current stable Python 3 runtime..."
         $managerExit = 1
-        try {
-            & $manager install default 2>&1 |
-                ForEach-Object { Write-Host ([string]$_) }
-            $managerExit = $LASTEXITCODE
-        } catch {
-            Write-Host "[WARNING] Python Install Manager raised an error: $($_.Exception.Message)" -ForegroundColor Yellow
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            $managerUpdatedDuringInstall = $false
+            try {
+                & $manager install default 2>&1 |
+                    ForEach-Object {
+                        $line = [string]$_
+                        Write-Host $line
+                        if ($line -match "(?i)Python install manager was successfully updated") {
+                            $managerUpdatedDuringInstall = $true
+                        }
+                    }
+                $managerExit = $LASTEXITCODE
+            } catch {
+                $message = $_.Exception.Message
+                Write-Host "[WARNING] Python Install Manager raised an error: $message" -ForegroundColor Yellow
+                if ($message -match "(?i)Python install manager was successfully updated") {
+                    $managerUpdatedDuringInstall = $true
+                }
+            }
+
+            Add-PythonManagerAliasesToPath
+            $python = Resolve-SupportedPython $RepoRoot $GameRoot
+            if ($python) {
+                $versionText = Get-PythonVersionText $python
+                Write-Host "[OK] Supported Python installed: $versionText  $python" -ForegroundColor Green
+                return $python
+            }
+
+            if ($attempt -eq 1 -and $managerUpdatedDuringInstall) {
+                Write-Host "[SETUP] Python Install Manager updated itself; retrying runtime installation..."
+                Start-Sleep -Seconds 1
+                Add-PythonManagerAliasesToPath
+                $manager = Find-PythonInstallManager
+                if ($manager) {
+                    continue
+                }
+
+                Write-Host "[WARNING] Python Install Manager could not be found after its self-update." -ForegroundColor Yellow
+            }
+            break
         }
 
-        Add-PythonManagerAliasesToPath
-        $python = Resolve-SupportedPython $RepoRoot $GameRoot
-        if ($python) {
-            $versionText = Get-PythonVersionText $python
-            Write-Host "[OK] Supported Python installed: $versionText  $python" -ForegroundColor Green
-            return $python
-        }
-
-        Write-Host "[WARNING] Python Install Manager did not provide a usable Python 3.10+ runtime (exit $managerExit)." -ForegroundColor Yellow
-    }
+        Write-Host "[WARNING] Python Install Manager did not provide a usable Python 3.10+ runtime (exit $managerExit)." -ForegroundColor Yellow    }
 
     throw "No usable Python 3.10+ interpreter was found. Install any 64-bit Python 3.10+ version or the Python Install Manager, then rerun this launcher."
 }
