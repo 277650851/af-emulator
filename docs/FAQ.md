@@ -252,7 +252,7 @@ For a basic local test:
 3. Assault Fire PH client
 ```
 
-For PvE, set `AF_GAME_DIR` and enable the DS spawner, then run the same v143b server. The stock room's selected map is used by default. Do not manually pre-start AFDEV for every lobby; the current path starts it lazily after the client sends the first valid DS UDP packet.
+For PvE, `AF_GAME_DIR` is optional when the repository sits directly under the Assault Fire game root. For example, `D:\\AssaultFirePH\\af-emulator-main` automatically resolves to `D:\\AssaultFirePH\\Binaries\\Win32`. Set `AF_GAME_DIR` only to override that layout. If neither the override nor the automatic `<repo-parent>\\Binaries\\Win32` path exists, DS startup stops with the resolved path in the error. The stock room's selected map is used by default. Do not manually pre-start AFDEV for every lobby; the current path starts it lazily after the client sends the first valid DS UDP packet.
 
 See the [Easy Getting Started Guide](GETTING_STARTED.md) for copy/paste commands.
 
