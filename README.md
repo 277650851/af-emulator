@@ -39,6 +39,7 @@ An unofficial **Assault Fire PH** preservation/server-emulation project.
 Put the **whole `af-emulator` folder inside your Assault Fire PH game folder**.
 
 Example:
+<img width="1113" height="682" alt="image" src="https://github.com/user-attachments/assets/e12bf7a5-6a12-462a-b695-082e51bdabf4" />
 
 ```text
 AssaultFirePH
