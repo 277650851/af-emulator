@@ -1,0 +1,11 @@
+{
+  "Version": 1,
+  "Preferences": {
+    "CloseGameProcesses": "Y",
+    "CloseDebugger": "Y",
+    "StopExistingServer": "Y",
+    "ContinueWithPatchedTcls": "Y",
+    "ApplyTclsPatch": "Y",
+    "UseExistingPrivateKey": "Y"
+  }
+}
