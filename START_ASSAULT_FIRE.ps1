@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v12"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v13"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -139,35 +139,18 @@ function Test-SupportedPythonPath([string]$Candidate) {
             return $null
         }
 
-        $probe = (& $exe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}|{sys.executable}')" 2>$null |
+        # Let Python itself decide whether the interpreter is new enough.
+        # This avoids PowerShell version-parsing edge cases and works with
+        # nonstandard executable names such as python312.exe.
+        $probe = (& $exe -c "import sys; print(('OK|' if sys.version_info >= (3,10) and sys.version_info < (4,0) else 'NO|') + sys.executable)" 2>$null |
             Select-Object -First 1)
 
         if ($LASTEXITCODE -ne 0 -or -not $probe) {
             return $null
         }
 
-        $parts = $probe.Trim() -split "\|", 2
-        if ($parts.Count -ne 2) {
-            return $null
-        }
-
-        $version = $parts[0] -split "\.", 2
-        if ($version.Count -ne 2) {
-            return $null
-        }
-
-        $major = 0
-        $minor = 0
-        if (
-            -not [int]::TryParse($version[0], [ref]$major) -or
-            -not [int]::TryParse($version[1], [ref]$minor)
-        ) {
-            return $null
-        }
-
-        # The emulator uses Python 3.10+ language features (for example X | None).
-        # Do not lock the launcher to one exact Python minor release.
-        if ($major -ne 3 -or $minor -lt 10) {
+        $parts = ([string]$probe).Trim() -split "\|", 2
+        if ($parts.Count -ne 2 -or $parts[0] -ne "OK") {
             return $null
         }
 
@@ -388,36 +371,28 @@ function Ensure-SupportedPython([string]$RepoRoot, [string]$GameRoot) {
 
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($winget) {
-        # Try current/recent CPython releases. The launcher accepts any working
-        # Python 3.10+ runtime; these package IDs are only installation fallbacks.
-        foreach ($packageId in @(
-            "Python.Python.3.14",
-            "Python.Python.3.13",
-            "Python.Python.3.12",
-            "Python.Python.3.11",
-            "Python.Python.3.10"
-        )) {
-            Write-Host "[SETUP] Trying $packageId ..."
-            $wingetExit = 1
-            try {
-                & $winget.Source install --exact --id $packageId --silent --accept-package-agreements --accept-source-agreements
-                $wingetExit = $LASTEXITCODE
-            } catch {
-                Write-Host "[WARNING] winget raised an error for $($packageId): $($_.Exception.Message)" -ForegroundColor Yellow
-            }
-
-            # winget can return a non-zero code when a usable runtime is already
-            # present, so always rescan instead of trusting the exit code.
-            Start-Sleep -Seconds 2
-            $python = Resolve-SupportedPython $RepoRoot $GameRoot
-            if ($python) {
-                $versionText = Get-PythonVersionText $python
-                Write-Host "[OK] Supported Python located after winget attempt: $versionText  $python" -ForegroundColor Green
-                return $python
-            }
-
-            Write-Host "[WARNING] $packageId did not provide a usable runtime (exit $wingetExit)." -ForegroundColor Yellow
+        # Do not try several Python packages one after another. That made a
+        # failed detection path take minutes. Python 3.12 is only the automatic
+        # fallback installer; already-installed Python 3.10+ versions are all accepted.
+        $packageId = "Python.Python.3.12"
+        Write-Host "[SETUP] Trying $packageId once..."
+        $wingetExit = 1
+        try {
+            & $winget.Source install --exact --id $packageId --silent --accept-package-agreements --accept-source-agreements
+            $wingetExit = $LASTEXITCODE
+        } catch {
+            Write-Host "[WARNING] winget raised an error for $($packageId): $($_.Exception.Message)" -ForegroundColor Yellow
         }
+
+        Start-Sleep -Seconds 2
+        $python = Resolve-SupportedPython $RepoRoot $GameRoot
+        if ($python) {
+            $versionText = Get-PythonVersionText $python
+            Write-Host "[OK] Supported Python located after winget attempt: $versionText  $python" -ForegroundColor Green
+            return $python
+        }
+
+        Write-Host "[WARNING] $packageId did not provide a usable runtime (exit $wingetExit)." -ForegroundColor Yellow
     } else {
         Write-Host "[WARNING] winget is not available on this Windows installation." -ForegroundColor Yellow
     }
