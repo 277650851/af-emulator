@@ -2825,6 +2825,7 @@ TGAME_ZN_REQ_STARTMATCH = 0xA113
 TGAME_ZN_RES_STARTMATCH = 0xA114
 TGAME_ZN_REQ_QUITMATCH = 0xA117
 TGAME_ZN_RES_QUITMATCH = 0xA118
+TGAME_ZN_NTF_QUITMATCH = 0xA119
 TGAME_ZN_NTF_STARTMATCH = 0xA11A
 TGAME_ZN_REQ_SETINMATCH = 0xA11C
 # Strongly inferred from the adjacent command family and TGame's
@@ -5092,6 +5093,15 @@ def _v143b_build_res_quit_match():
         TGAME_ZN_MAGIC,
         TGAME_ZN_RES_QUITMATCH,
         _v48_u16(ZONE_ERR_SUCC),
+    )
+
+
+def _v143b_build_ntf_quit_match(seat_index=0):
+    """Build ZN2C_NtfQuitMatch (A119): u16 PlayerSeatIndex."""
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_NTF_QUITMATCH,
+        _v48_u16(int(seat_index) & 0xFFFF),
     )
 
 
@@ -8757,6 +8767,15 @@ def handle_placeholder(conn, addr, label):
                                             # was followed by the other client sending its own A117.
                                             room = role_state.get("v79_created_match_room")
                                             requester_uin = _v150_role_uin(role_state)
+                                            room_id_now = (
+                                                int(room.get("room_id"))
+                                                if isinstance(room, dict)
+                                                and room.get("room_id") is not None
+                                                else _v143b_room_id(role_state, room)
+                                            )
+                                            quit_seat = int(
+                                                role_state.get("v88_match_seat", 0)
+                                            )
                                             reason_byte = app["body"][0] if app["body"] else None
                                             log(
                                                 label,
@@ -8802,11 +8821,34 @@ def handle_placeholder(conn, addr, label):
                                                 "cmd=0xA118 result=0x8100",
                                             )
 
+                                            # Tell every room client which seat has left the
+                                            # active match so stock room UI can clear its P state.
+                                            quit_ntf = _v143b_build_ntf_quit_match(quit_seat)
+                                            sent_quit = (
+                                                _v150_broadcast_room(
+                                                    room_id_now,
+                                                    quit_ntf,
+                                                    "ZN2C_NTF_QUITMATCH A119-live "
+                                                    f"cmd=0xA119 seat={quit_seat}",
+                                                )
+                                                if room_id_now is not None
+                                                else []
+                                            )
+                                            if not sent_quit:
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    quit_ntf,
+                                                    label,
+                                                    "ZN2C_NTF_QUITMATCH A119-live-fallback "
+                                                    f"cmd=0xA119 seat={quit_seat}",
+                                                )
+
                                             log(
                                                 "DS-CLEANUP",
                                                 "r11 A117 player-scoped cleanup "
                                                 f"uin={requester_uin} "
-                                                "peer A119 suppressed pending wire-schema verification "
+                                                f"A119_recipients={sent_quit} "
                                                 f"result={quit_result}",
                                             )
 

@@ -347,6 +347,30 @@ class VerifiedLobbyPromotionTests(unittest.TestCase):
         self.assertIn("ZN2C_NTF_SETREADY r25-main-shared", block)
         self.assertIn("tpdu_cmd=2", block)
 
+    def test_a119_quitmatch_notification_clears_room_player_match_state(self):
+        server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        self.assertIn("TGAME_ZN_NTF_QUITMATCH = 0xA119", server)
+        self.assertIn(
+            "def _v143b_build_ntf_quit_match(seat_index=0):",
+            server,
+        )
+        self.assertIn("_v48_u16(int(seat_index) & 0xFFFF)", server)
+
+        start = server.index('elif app["cmd"] == TGAME_ZN_REQ_QUITMATCH:')
+        end = server.index('elif app["cmd"] == TGAME_ZN_REQ_ZONECHANNEL_LIST:', start)
+        block = server[start:end]
+        self.assertIn("quit_seat", block)
+        self.assertIn("_v143b_build_ntf_quit_match(quit_seat)", block)
+        self.assertIn("_v150_broadcast_room(", block)
+        self.assertIn("cmd=0xA119 seat=", block)
+        self.assertIn("A119_recipients=", block)
+        self.assertNotIn(
+            "peer A119 suppressed pending wire-schema verification",
+            block,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
