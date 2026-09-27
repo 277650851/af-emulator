@@ -552,7 +552,8 @@ function Ensure-SupportedPython([string]$RepoRoot, [string]$GameRoot) {
             break
         }
 
-        Write-Host "[WARNING] Python Install Manager did not provide a usable Python 3.10+ runtime (exit $managerExit)." -ForegroundColor Yellow    }
+        Write-Host "[WARNING] Python Install Manager did not provide a usable Python 3.10+ runtime (exit $managerExit)." -ForegroundColor Yellow
+    }
 
     throw "No usable Python 3.10+ interpreter was found. Install any 64-bit Python 3.10+ version or the Python Install Manager, then rerun this launcher."
 }
