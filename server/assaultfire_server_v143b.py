@@ -7,6 +7,7 @@
 # UNRESOLVED      = present in UTGame.u catalog, numeric ID deliberately not guessed.
 #
 import re
+import copy
 from pathlib import Path
 import socket
 import threading
@@ -69,7 +70,7 @@ def _short_hex(b, n=48):
 # Every OnlineRequest_* export is represented. Numeric IDs are attached only
 # where we have current/prior evidence; unresolved entries are never guessed.
 V139_UTGAME_REQUEST_CATALOG = ({'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_CreateRoom', 'export_index': 31634, 'params': (('StructProperty', 'Param'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_EnterRoomByRoomId', 'export_index': 31637, 'params': (('StructProperty', 'RoomID'), ('StrProperty', 'Password'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_TraceFriendByRoomId', 'export_index': 31642, 'params': (('StructProperty', 'RoomID'), ('ByteProperty', 'TraceType'), ('StrProperty', 'Uin'), ('StrProperty', 'Password'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_QuickEnterRoom', 'export_index': 31644, 'params': (('StructProperty', 'Filter'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_LeaveRoom', 'export_index': 31646, 'params': (('IntProperty', 'LeaveReason'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_ChangeCamp', 'export_index': 31648, 'params': (('ByteProperty', 'CampIndex'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetReady', 'export_index': 31649, 'params': ()}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetReadyWatch', 'export_index': 31650, 'params': ()}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_StartMatch', 'export_index': 31651, 'params': ()}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_QuitMatch', 'export_index': 31652, 'params': ()}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetInMatch', 'export_index': 31655, 'params': (('BoolProperty', 'bSuccessful'), ('IntProperty', 'TimespanDuringLoadingGame'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_JoinMatch', 'export_index': 31657, 'params': (('ByteProperty', 'PlayerMode'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetGameSettings', 'export_index': 31707, 'params': (('StructProperty', 'Param'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_KickPlayer', 'export_index': 31709, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_ChangePlayerMode', 'export_index': 31711, 'params': (('ByteProperty', 'PlayerMode'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_NotifyUIPanel', 'export_index': 31713, 'params': (('ByteProperty', 'UISystemType'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_GetPVETopRankList', 'export_index': 31716, 'params': (('IntProperty', 'ReqModeId'), ('IntProperty', 'ReqMapId'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_ChangeRoomOwner', 'export_index': 31718, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_PlusGameSettings', 'export_index': 31719, 'params': ()}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_GetTTMData', 'export_index': 31722, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_GetCTMData', 'export_index': 31725, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_GetBIOData', 'export_index': 31728, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_GetMDMData', 'export_index': 31731, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_GetBIO2Data', 'export_index': 31734, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_ChangeRoomName', 'export_index': 31736, 'params': (('StrProperty', 'ChangedRoomName'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_GetPVEGameStatus', 'export_index': 31769, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_JoinLiveGame', 'export_index': 31775, 'params': (('StrProperty', 'PlayerUin'), ('StructProperty', 'RoomID'))}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_NotifyQuitLiveGame', 'export_index': 31778, 'params': (('StrProperty', 'PlayerUin'), ('StructProperty', 'RoomID'))}, {'owner': 'TGOnlineAchievement', 'name': 'OnlineRequest_GetRecentlyAchievedInfo', 'export_index': 40100, 'params': (('StrProperty', 'Uin'),)}, {'owner': 'TGOnlineAchievement', 'name': 'OnlineRequest_GetAchievementListByType', 'export_index': 40103, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'AchiType'))}, {'owner': 'TGOnlineAchievement', 'name': 'OnlineRequest_GetFrontAchieved', 'export_index': 40106, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'AchiID'))}, {'owner': 'TGOnlineAchievement', 'name': 'OnlineRequest_GetCardList', 'export_index': 40110, 'params': ()}, {'owner': 'TGOnlineAchievement', 'name': 'OnlineRequest_ModifyCard', 'export_index': 40114, 'params': (('IntProperty', 'AchiCardID'), ('IntProperty', 'AchiID'), ('IntProperty', 'AchiLevel'))}, {'owner': 'TGOnlineAchievement', 'name': 'OnlineRequest_GetCardInfo', 'export_index': 40116, 'params': (('StrProperty', 'Uin'),)}, {'owner': 'TGOnlineAchievement', 'name': 'OnlineRequest_ReportQTAchi', 'export_index': 40120, 'params': (('IntProperty', 'Type'),)}, {'owner': 'TGOnlineAchiScoreAwards', 'name': 'OnlineRequest_GetAward', 'export_index': 40191, 'params': (('IntProperty', 'Level'), ('IntProperty', 'ItemId'), ('IntProperty', 'MoneyType'))}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_ReqCalendar', 'export_index': 40944, 'params': (('IntProperty', 'chPadding'),)}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_ReqPlayerActivityList', 'export_index': 40946, 'params': (('IntProperty', 'chPadding'),)}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_ReqCheckActivity', 'export_index': 40949, 'params': (('IntProperty', 'ActId'), ('IntProperty', 'StageId'))}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_OnActivityButtonClick', 'export_index': 40953, 'params': (('IntProperty', 'ActivityId'), ('IntProperty', 'StageId'), ('IntProperty', 'ButtonType'))}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_OnFillDailyNotice', 'export_index': 40955, 'params': (('IntProperty', 'PlaceHolder'),)}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_ReqCurrOnlineTime', 'export_index': 40956, 'params': ()}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_DailyCheckActivityInfo', 'export_index': 40965, 'params': (('IntProperty', 'ActId'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NotifyPrecisionPushEffect', 'export_index': 42173, 'params': (('IntProperty', 'SourceTypeId'), ('IntProperty', 'StayTime'), ('IntProperty', 'PressButtonTimes'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ZoneList', 'export_index': 42280, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CreateAccount', 'export_index': 42282, 'params': (('StrProperty', 'NickName'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CheckNickName', 'export_index': 42287, 'params': (('StrProperty', 'NickName'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChangeLoginRole', 'export_index': 42290, 'params': (('IntProperty', 'RebelRoleIndex'), ('IntProperty', 'GSDURoleIndex'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_SwitchZone', 'export_index': 42296, 'params': (('StrProperty', 'Host'), ('IntProperty', 'Port'), ('IntProperty', 'ChannelId'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CancelSwitchZone', 'export_index': 42297, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_SetCurrentRole', 'export_index': 42299, 'params': (('StructProperty', 'RolePropId'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_EquipWithProp', 'export_index': 42303, 'params': (('StructProperty', 'OwnerPropId'), ('StructProperty', 'PropId'), ('ByteProperty', 'Location'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_TakeoffProp', 'export_index': 42305, 'params': (('StructProperty', 'PropId'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_DropProp', 'export_index': 42307, 'params': (('StructProperty', 'PropId'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_PropAddAvaildPeriod', 'export_index': 42314, 'params': (('StructProperty', 'PropId'), ('ByteProperty', 'PriceIndex'), ('ByteProperty', 'PayType'), ('IntProperty', 'ConvertMP'), ('IntProperty', 'DiscountItemID'), ('IntProperty', 'nCommodityID'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_PropRenew', 'export_index': 42318, 'params': (('ArrayProperty', 'PropIdList'), ('IntProperty', 'PropNum'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ExchangeProp', 'export_index': 42320, 'params': (('StructProperty', 'PropId'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetFriendStatus', 'export_index': 42330, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ReqAddFriend', 'export_index': 42335, 'params': (('StrProperty', 'Uin'), ('StrProperty', 'NickName'), ('StrProperty', 'Message'), ('ByteProperty', 'AddType'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ResAddFriend', 'export_index': 42340, 'params': (('StrProperty', 'Uin'), ('StrProperty', 'NickName'), ('IntProperty', 'nResult'), ('IntProperty', 'RequestId'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_DeleteFriend', 'export_index': 42342, 'params': (('StrProperty', 'Uin'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_QueryFriend', 'export_index': 42345, 'params': (('IntProperty', 'QueryType'), ('StrProperty', 'QueryContent'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_AddEnemy', 'export_index': 42348, 'params': (('StrProperty', 'Uin'), ('StrProperty', 'NickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_DeleteEnemy', 'export_index': 42350, 'params': (('StrProperty', 'Uin'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetPlayerExps', 'export_index': 42355, 'params': (('ArrayProperty', 'PlayerUins'), ('ByteProperty', 'SystermType'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetPlayerTeamNames', 'export_index': 42359, 'params': (('ArrayProperty', 'PlayerUins'), ('ByteProperty', 'SystermType'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetPlayersTeamBadge', 'export_index': 42364, 'params': (('ByteProperty', 'ReqCount'), ('StrProperty', 'ReqUin'), ('ArrayProperty', 'UinList'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_AddGroup', 'export_index': 42366, 'params': (('StrProperty', 'NewGroupName'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_DeleteGroup', 'export_index': 42368, 'params': (('IntProperty', 'GroupID'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_RenameGroup', 'export_index': 42371, 'params': (('IntProperty', 'GroupID'), ('StrProperty', 'GroupName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ModifyFriendGroup', 'export_index': 42374, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'GroupID'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ReqInviteFriend', 'export_index': 42376, 'params': (('StrProperty', 'Uin'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ResInviteFriend', 'export_index': 42381, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'nResult'), ('IntProperty', 'RequestId'), ('IntProperty', 'Reason'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_FollowFriend', 'export_index': 42383, 'params': (('StrProperty', 'Uin'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ReqFriendDemand', 'export_index': 42388, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'CommodityID'), ('IntProperty', 'AvalidPeriod'), ('StrProperty', 'Message'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ResFriendDemand', 'export_index': 42395, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'CommodityID'), ('IntProperty', 'AvalidPeriod'), ('StrProperty', 'Message'), ('IntProperty', 'nResult'), ('IntProperty', 'RequestId'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetQQFriendList', 'export_index': 42396, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_InviteFriendGameTip', 'export_index': 42399, 'params': (('StrProperty', 'ObjectUin'), ('BoolProperty', 'bQQFriend'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetFriendCardList', 'export_index': 42402, 'params': (('ArrayProperty', 'UinList'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_StealFriendCard', 'export_index': 42405, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'nStealType'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChatBroadcast', 'export_index': 42411, 'params': (('IntProperty', 'Type'), ('StrProperty', 'Content'), ('ArrayProperty', 'AchiDatas'), ('IntProperty', 'TacticalCommandID'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChatP2P', 'export_index': 42418, 'params': (('IntProperty', 'Type'), ('StrProperty', 'UinTo'), ('StrProperty', 'NickNameTo'), ('StrProperty', 'Content'), ('ArrayProperty', 'AchiDatas'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChatSpeaker', 'export_index': 43221, 'params': (('IntProperty', 'Type'), ('StrProperty', 'Content'), ('ArrayProperty', 'AchiDatas'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_RemoveMessage', 'export_index': 43223, 'params': (('StructProperty', 'MessageId'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_SetPlayerPreferences', 'export_index': 43224, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_QuickGame', 'export_index': 43231, 'params': (('IntProperty', 'ModeId'), ('IntProperty', 'MapId'), ('IntProperty', 'SubModeId'), ('BoolProperty', 'bIsInChannel'), ('ArrayProperty', 'MapIdArray'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_AllChannelQuickGame', 'export_index': 43236, 'params': (('IntProperty', 'ModeId'), ('IntProperty', 'MapId'), ('IntProperty', 'SubModeId'), ('BoolProperty', 'bInoreMap'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_FileVerify', 'export_index': 43242, 'params': (('IntProperty', 'nFileCount'), ('ArrayProperty', 'nFileIdArray'), ('ArrayProperty', 'nFileCrcCodeArray'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_UpdateCommodifyFile', 'export_index': 43244, 'params': (('IntProperty', 'nCommodityFileId'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_BuyCommodity', 'export_index': 43258, 'params': (('StrProperty', 'UinCon'), ('IntProperty', 'nPayType'), ('IntProperty', 'ConvertMP'), ('IntProperty', 'DiscountItemID'), ('ByteProperty', 'BuyType'), ('ArrayProperty', 'nCommodityList'), ('StrProperty', 'NickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_SendMessage', 'export_index': 43263, 'params': (('IntProperty', 'MessageType'), ('StrProperty', 'Uin'), ('StrProperty', 'Remark'), ('StructProperty', 'BuyedCommodity'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ConfirmGift', 'export_index': 43266, 'params': (('StructProperty', 'GiftId'), ('StrProperty', 'NickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ExchangeChest', 'export_index': 43267, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NotifyFinishNewGuidTask', 'export_index': 43269, 'params': (('ByteProperty', 'nTaskMode'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_UpdateTPValue', 'export_index': 43270, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NtfDeleteGifts', 'export_index': 43271, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_SetSystemSettings', 'export_index': 43272, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NtfClientSetting', 'export_index': 43279, 'params': (('IntProperty', 'RecommendLevel'), ('IntProperty', 'CrossHairMode'), ('IntProperty', 'CrossHairColor'), ('IntProperty', 'bUseLeftHand'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetPVPData', 'export_index': 43282, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetPVEData', 'export_index': 43285, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetPVMData', 'export_index': 43288, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetPPZData', 'export_index': 43291, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetPZ2Data', 'export_index': 43294, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetSV3Data', 'export_index': 43297, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetTeamMatchData', 'export_index': 43300, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetDailyRecord', 'export_index': 43302, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetOnlinePlayer', 'export_index': 43303, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_LocalIdlePlayerList', 'export_index': 43304, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_InvitedLocalPlayers', 'export_index': 43307, 'params': (('ArrayProperty', 'PlayerUinArray'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_SubmitSuggestionList', 'export_index': 43312, 'params': (('ArrayProperty', 'TypeArray'), ('ArrayProperty', 'ContentArray'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_SubmitSuggestionSingle', 'export_index': 43315, 'params': (('IntProperty', 'SuggestType'), ('StrProperty', 'SuggestContent'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_SubmitVoteResult', 'export_index': 43319, 'params': (('IntProperty', 'VoteType'), ('ArrayProperty', 'VoteResult'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NtfSeverFromClientState', 'export_index': 43320, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NtfServerFromVedioRecord', 'export_index': 43322, 'params': (('StructProperty', 'VedioReport'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NtfSeverOnlineMatchDataIsVisible', 'export_index': 43325, 'params': (('ByteProperty', 'MatchType'), ('BoolProperty', 'bPrivate'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChangeNickName', 'export_index': 43327, 'params': (('StrProperty', 'NewNickName'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ClearMatchRecordData', 'export_index': 43328, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ClearMatchWinLoseData', 'export_index': 43329, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_UseFunctionCard', 'export_index': 43332, 'params': (('IntProperty', 'FunctionType'), ('IntProperty', 'SubFunctionType'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NtfExpireCommodityInfo', 'export_index': 43333, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_StartLuckyDraw', 'export_index': 43335, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_OpenLuckyChest', 'export_index': 43339, 'params': (('StructProperty', 'ValidId'), ('BoolProperty', 'bSpecialBox'), ('IntProperty', 'BoxIndex'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NtfStopLuckyDraw', 'export_index': 43341, 'params': (('StructProperty', 'ValidId'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_FriendLeaveMessage', 'export_index': 43344, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'MessageContent'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_NtfReadOfflineMessage', 'export_index': 43347, 'params': (('ArrayProperty', 'MsgIdArray'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GMBannedPlayer', 'export_index': 43350, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'nHours'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GMFreezePlayer', 'export_index': 43353, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'nDays'))}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GMCloseRoom', 'export_index': 43355, 'params': (('StructProperty', 'RoomID'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GMEnforceOffline', 'export_index': 43357, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_StartQQTalk', 'export_index': 43358, 'params': ()}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_TeamBindQTalk', 'export_index': 43394, 'params': (('StructProperty', 'stRoomMsg'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetMyTeamQTID', 'export_index': 43396, 'params': (('IntProperty', 'nType'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChangeTeam', 'export_index': 43398, 'params': (('IntProperty', 'TeamIndex'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_LotteryBuyBullet', 'export_index': 43401, 'params': (('IntProperty', 'Count'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_LotteryFire', 'export_index': 43403, 'params': (('IntProperty', 'Area'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_LotteryExchange', 'export_index': 43405, 'params': (('IntProperty', 'Index'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_LotteryMarquee', 'export_index': 43407, 'params': (('IntProperty', 'Idx'),)}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CheckFPSCommodityLibraryVersion', 'export_index': 43433, 'params': ()}, {'owner': 'TGOnlineComplaint', 'name': 'OnlineRequest_ReqCommitComplaint', 'export_index': 44777, 'params': (('StrProperty', 'TargetQQ'), ('IntProperty', 'ComplaintClassify'), ('StrProperty', 'Content'), ('StructProperty', 'RoomID'), ('IntProperty', 'Time'))}, {'owner': 'TGOnlineFriendImpression', 'name': 'OnlineRequest_GetFriendImpressions', 'export_index': 44794, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineFriendImpression', 'name': 'OnlineRequest_SetFriendImpression', 'export_index': 44797, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'ImpId'))}, {'owner': 'TGOnlineHappyMatch', 'name': 'OnlineRequest_ReqEnterHappyMatch', 'export_index': 45523, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'EnterReason'), ('IntProperty', 'Mode'))}, {'owner': 'TGOnlineHappyMatch', 'name': 'OnlineRequest_ReqLeaveHappyMatch', 'export_index': 45525, 'params': (('IntProperty', 'LeaveReason'),)}, {'owner': 'TGOnlineHappyMatch', 'name': 'OnlineRequest_ReqHappyMatchDsList', 'export_index': 45527, 'params': (('IntProperty', 'ReqReason'),)}, {'owner': 'TGOnlineHappyMatch', 'name': 'OnlineRequest_NtfEnterHappyMatchMode', 'export_index': 45529, 'params': (('IntProperty', 'ReqReason'),)}, {'owner': 'TGOnlineHappyMatch', 'name': 'OnlineRequest_ReqCurrentMatchingPlayerCount', 'export_index': 45532, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'ReqReason'))}, {'owner': 'TGOnlineHappyMatch', 'name': 'OnlineRequest_ReqHappyMatchTimeCheck', 'export_index': 45534, 'params': (('IntProperty', 'ReqReason'),)}, {'owner': 'TGOnlineHappyMatch', 'name': 'OnlineRequest_ReqHappyPointExchange', 'export_index': 45536, 'params': (('IntProperty', 'HappyPointAmount'),)}, {'owner': 'TGOnlineHappyMatch', 'name': 'OnlineRequest_ReqHappyMatchDsList_Test', 'export_index': 45539, 'params': (('IntProperty', 'ReqReason'),)}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_InviteJoinMatchModeTeam', 'export_index': 49337, 'params': (('IntProperty', 'TeamID'), ('StructProperty', 'stModeGameInfo'), ('ArrayProperty', 'FriendUins'), ('ArrayProperty', 'TeamUins'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_AcceptOrRefuseJoinTeam', 'export_index': 49341, 'params': (('IntProperty', 'TeamID'), ('BoolProperty', 'IsAccept'), ('IntProperty', 'nReason'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_ExitTheTeam', 'export_index': 49344, 'params': (('IntProperty', 'TeamID'), ('StrProperty', 'Uin'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_RemoveSomeone', 'export_index': 49347, 'params': (('IntProperty', 'TeamID'), ('StrProperty', 'Uin'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_ReadyGame', 'export_index': 49353, 'params': (('IntProperty', 'TeamID'), ('StrProperty', 'Uin'), ('IntProperty', 'ModeId'), ('IntProperty', 'SubModeId'), ('IntProperty', 'MapId'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_CancelReadyGame', 'export_index': 49356, 'params': (('IntProperty', 'TeamID'), ('StrProperty', 'Uin'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_TeamMatchGame', 'export_index': 49359, 'params': (('StructProperty', 'MatchData'), ('BoolProperty', 'bContainedType'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_TeamStopMatchGame', 'export_index': 49363, 'params': (('IntProperty', 'TeamID'), ('StrProperty', 'Uin'), ('BoolProperty', 'bTimeout'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_TeamNtfPlayerStatus', 'export_index': 49367, 'params': (('ByteProperty', 'CurPlayerStatus'), ('IntProperty', 'TeamID'), ('StrProperty', 'Uin'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_DismissTeam', 'export_index': 49370, 'params': (('IntProperty', 'TeamID'), ('StrProperty', 'Uin'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_ChangeModeGame', 'export_index': 49374, 'params': (('IntProperty', 'TeamID'), ('ArrayProperty', 'ModeIndex'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_SingleMatch', 'export_index': 49381, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'ModeId'), ('IntProperty', 'SubModeId'), ('ArrayProperty', 'MapId'), ('BoolProperty', 'bContainedType'))}, {'owner': 'TGOnlineModeGuide', 'name': 'OnlineRequest_StopSingleMatch', 'export_index': 49384, 'params': (('StrProperty', 'PlayerUin'), ('BoolProperty', 'bTimeout'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_ReadyPersonalMatch', 'export_index': 50247, 'params': (('IntProperty', 'CurModeId'), ('BoolProperty', 'bEnableVideoRecord'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_GetPersonalMatchTopList', 'export_index': 50248, 'params': ()}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_UnReadyPersonalMatch', 'export_index': 50250, 'params': (('BoolProperty', 'bIsTimeOut'),)}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_GetSingleMatchData', 'export_index': 50253, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_NotifyServerEnterSingleMatch', 'export_index': 50254, 'params': ()}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_InviteJoinPMTeam', 'export_index': 50261, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'), ('ArrayProperty', 'FriendUins'), ('ArrayProperty', 'TeamUins'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_JoinPMTeam', 'export_index': 50265, 'params': (('IntProperty', 'PMTeamId'), ('BoolProperty', 'bIsAgree'), ('IntProperty', 'RefuseReason'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_QuitPMTeam', 'export_index': 50268, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_RemovePMTeam', 'export_index': 50271, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_ReadyPMTeam', 'export_index': 50275, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'), ('BoolProperty', 'bEnableVideoRecord'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_CancelReadyPMTeam', 'export_index': 50278, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_EnterMatchPMTeam', 'export_index': 50283, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'), ('IntProperty', 'CurModeId'), ('BoolProperty', 'bEnableVideoRecord'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_StopMatchPMTeam', 'export_index': 50287, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'), ('BoolProperty', 'bIsTimeOut'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_DismissPMTeam', 'export_index': 50290, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_NtfInGamePMTeam', 'export_index': 50293, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_NtfQuitGamePMTeam', 'export_index': 50296, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_NtfEndGamePMTeam', 'export_index': 50299, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_NtfLeaderPMEnterMatchState', 'export_index': 50302, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_NtfLeaderPMCancelMatchState', 'export_index': 50305, 'params': (('IntProperty', 'PMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_GetProhibitPMMatchInfo', 'export_index': 50306, 'params': ()}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_GetPMMatchSeasonTime', 'export_index': 50307, 'params': ()}, {'owner': 'TGOnlinePersonalGame', 'name': 'OnlineRequest_PMMatchDSList', 'export_index': 50310, 'params': (('StrProperty', 'PlayerUin'), ('ByteProperty', 'CurMatchType'))}, {'owner': 'TGOnlineRankList', 'name': 'OnlineRequest_ReqRankTotal', 'export_index': 51259, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'RankListType'))}, {'owner': 'TGOnlineRankList', 'name': 'OnlineRequest_ReqRankDaily', 'export_index': 51263, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'RankListType'), ('IntProperty', 'Date'))}, {'owner': 'TGOnlineRankList', 'name': 'OnlineRequest_ReqRankListAward', 'export_index': 51268, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'RankListType'), ('IntProperty', 'Date'), ('IntProperty', 'pos'))}, {'owner': 'TGOnlineRankList', 'name': 'OnlineRequest_ReqCheckRankListAward', 'export_index': 51273, 'params': (('StrProperty', 'Uin'), ('IntProperty', 'RankListType'), ('IntProperty', 'Date'), ('IntProperty', 'pos'))}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_AcceptTask', 'export_index': 52612, 'params': (('IntProperty', 'TaskID'),)}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_AcceptRandomTask', 'export_index': 52614, 'params': (('IntProperty', 'TaskGroupID'),)}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_AbandonTask', 'export_index': 52616, 'params': (('IntProperty', 'TaskID'),)}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_SubmitTask', 'export_index': 52619, 'params': (('IntProperty', 'TaskID'), ('IntProperty', 'AwardIndex'))}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_UpdateTaskProgress', 'export_index': 52623, 'params': (('IntProperty', 'TaskID'), ('IntProperty', 'NodeIndex'), ('IntProperty', 'NodeValue'))}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_GetPlayerTaskProgress', 'export_index': 52625, 'params': (('IntProperty', 'TaskID'),)}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_TriggerTimeout', 'export_index': 52631, 'params': (('IntProperty', 'TaskID'), ('IntProperty', 'TaskNodeIndex'))}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_TriggerOnlineDuration', 'export_index': 52634, 'params': (('IntProperty', 'TaskID'), ('IntProperty', 'TaskNodeIndex'))}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_SubmitSurvey', 'export_index': 52673, 'params': (('IntProperty', 'TaskID'), ('IntProperty', 'SurveyId'), ('ArrayProperty', 'Results'))}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_StartQTOnlineTime', 'export_index': 52675, 'params': (('StrProperty', 'RoomID'),)}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_EndQTOnlineTime', 'export_index': 52677, 'params': (('StrProperty', 'RoomID'),)}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_ReqQTOnlineRemainTime', 'export_index': 52681, 'params': (('StrProperty', 'RoomID'), ('IntProperty', 'TaskID'), ('IntProperty', 'NodeIndex'))}, {'owner': 'TGOnlineTask', 'name': 'OnlineRequest_RequestClientFinishMission', 'export_index': 52684, 'params': (('IntProperty', 'MissionID'), ('IntProperty', 'TargetIndex'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_InviteJoinTeamMatch', 'export_index': 53718, 'params': (('ArrayProperty', 'PlayerUins'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_ResInviteJoinTeamMatch', 'export_index': 53722, 'params': (('BoolProperty', 'bAgree'), ('IntProperty', 'CurTeamId'), ('IntProperty', 'ReasonValue'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_SetReady', 'export_index': 53724, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_UnSetReady', 'export_index': 53726, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_EnterTeamMatch', 'export_index': 53729, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'SelectedMatchMode'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_QuitEnterTeamMatch', 'export_index': 53732, 'params': (('StrProperty', 'PlayerUin'), ('BoolProperty', 'bIsTimeOut'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_QuitTeamMatchUI', 'export_index': 53734, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_DissolveTeamMatch', 'export_index': 53737, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'CurTeamId'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_KickTeamMatchMember', 'export_index': 53740, 'params': (('StrProperty', 'KickedPlayerUin'), ('StrProperty', 'ReqPlayerUin'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_StartTeamGame', 'export_index': 53742, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_BreakTeamGame', 'export_index': 53744, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_EndTeamGame', 'export_index': 53746, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_VeriyTeamGroupName', 'export_index': 53752, 'params': (('StrProperty', 'GroupName'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_CreateTeamGroup', 'export_index': 53753, 'params': ()}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_GetTeamGroupInfo', 'export_index': 53756, 'params': (('StructProperty', 'ReqTeamId'), ('IntProperty', 'ReqTeamGroupId'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_InviteJoinTeamGroup', 'export_index': 53759, 'params': (('StrProperty', 'InvitedUin'), ('BoolProperty', 'bIsTempGroup'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_NtfInvitedJoinGroupResult', 'export_index': 53763, 'params': (('BoolProperty', 'bIsAgree'), ('StrProperty', 'InviteUin'), ('BoolProperty', 'bIsTempGroup'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_DeleteTeamGroupMember', 'export_index': 53768, 'params': (('StrProperty', 'ReqUin'), ('ArrayProperty', 'DeletedUins'), ('BoolProperty', 'bIsTempGroup'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_SetTeamGroupPost', 'export_index': 53771, 'params': (('StrProperty', 'ChangedUin'), ('ByteProperty', 'GroupPost'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_QuitTeamGroup', 'export_index': 53773, 'params': (('BoolProperty', 'bIsTempGroup'),)}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_GetTeamGroupList', 'export_index': 53774, 'params': ()}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_GetTeamGroupRankList', 'export_index': 53775, 'params': ()}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_DissolveTeamGroup', 'export_index': 53778, 'params': (('IntProperty', 'GroupID'), ('BoolProperty', 'bIsTempGroup'))}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_GetTMMatchSeasonTime', 'export_index': 53779, 'params': ()}, {'owner': 'TGOnlineTeamGame', 'name': 'OnlineRequest_GetTeamMatchRecord', 'export_index': 53782, 'params': (('StructProperty', 'ReqTeamId'), ('IntProperty', 'ReqTeamGroupId'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ApplyToJoinTeam', 'export_index': 55001, 'params': (('StructProperty', 'TeamID'), ('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ApproveList', 'export_index': 55005, 'params': (('StructProperty', 'TeamID'), ('StrProperty', 'PlayerUin'), ('StrProperty', 'PlayerNickName'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ApproveJoinResult', 'export_index': 55010, 'params': (('ArrayProperty', 'ApproveList'), ('StrProperty', 'DealPlayerUin'), ('BoolProperty', 'bAgree'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ConfirmJoin', 'export_index': 55015, 'params': (('StructProperty', 'TeamID'), ('StructProperty', 'InvitedID'), ('StrProperty', 'PlayerUin'), ('BoolProperty', 'bAgree'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_FireMember', 'export_index': 55019, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'FiredPlayerUin'), ('StrProperty', 'SafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_PromotionMember', 'export_index': 55023, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'PromotionPlayerUin'), ('ByteProperty', 'PromotionPost'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_DemotionMember', 'export_index': 55027, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'DemotionPlayerUin'), ('ByteProperty', 'DemotionPost'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_QuitTeam', 'export_index': 55029, 'params': (('StrProperty', 'OwnerUin'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ExtendTeam', 'export_index': 55032, 'params': (('StrProperty', 'OwnerUin'), ('IntProperty', 'TotalPalyerCount'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_HandOverTeam', 'export_index': 55036, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'ReceiverUin'), ('StrProperty', 'SafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ResDealHandOver', 'export_index': 55041, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'CaptainUin'), ('BoolProperty', 'bIsAgree'), ('StrProperty', 'SafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_InvitePlayerJoin', 'export_index': 55044, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'InvitedPlayerUin'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_DissolveTeam', 'export_index': 55047, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'SafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CancelDissolveTeam', 'export_index': 55050, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'SafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_MergeTeam', 'export_index': 55053, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'TeamName'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_NotifyMergedResult', 'export_index': 55058, 'params': (('StrProperty', 'OwnerUin'), ('StructProperty', 'TeamID'), ('BoolProperty', 'bIsAgree'), ('StrProperty', 'SafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ConfirmMergeResult', 'export_index': 55061, 'params': (('StructProperty', 'TeamID'), ('BoolProperty', 'bIsAgree'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_TeamPray', 'export_index': 55063, 'params': (('StrProperty', 'OwnerUin'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CreateTeam', 'export_index': 55068, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'TeamName'), ('StrProperty', 'SafeCode'), ('StrProperty', 'EmailContent'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_PublishRecruit', 'export_index': 55074, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'RecruitType'), ('IntProperty', 'RecruitLevelNumber'), ('StrProperty', 'RecruitInfo'), ('BoolProperty', 'bPublish'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetDetailTeamInfo', 'export_index': 55076, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetMemberList', 'export_index': 55079, 'params': (('StrProperty', 'PlayerUin'), ('BoolProperty', 'bIsAll'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetOtherTeamInfo', 'export_index': 55082, 'params': (('StrProperty', 'PlayerUin'), ('StructProperty', 'TeamID'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SearchTeamByName', 'export_index': 55086, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'TeamName'), ('ByteProperty', 'nTeamScaleType'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CheckTeamName', 'export_index': 55089, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'TeamName'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ChangeTeamName', 'export_index': 55092, 'params': (('StrProperty', 'NewTeamName'), ('StrProperty', 'SafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ChangeSafeCode', 'export_index': 55095, 'params': (('StrProperty', 'OldSafeCode'), ('StrProperty', 'NewSafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ResetSafeCode', 'export_index': 55098, 'params': (('StrProperty', 'EmailContent'), ('StrProperty', 'NewSafeCode'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ChangeCertifiedEmail', 'export_index': 55101, 'params': (('StrProperty', 'NewEmailContent'), ('StrProperty', 'OldEmailContent'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetBulletin', 'export_index': 55103, 'params': (('StrProperty', 'OwnerUin'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SetBulletin', 'export_index': 55107, 'params': (('StrProperty', 'OwnerUin'), ('ByteProperty', 'BulletinIndex'), ('StrProperty', 'BulletinContent'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetTeamNews', 'export_index': 55109, 'params': (('StrProperty', 'OwnerUin'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_TeamIntroduction', 'export_index': 55111, 'params': (('StrProperty', 'IntroductionContent'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetTeamRankList', 'export_index': 55116, 'params': (('StrProperty', 'OwnerUin'), ('IntProperty', 'PageIndex'), ('BoolProperty', 'bLookSelf'), ('ByteProperty', 'nTeamScaleType'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_BanSpeech', 'export_index': 55119, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'ObjPlayerUin'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CancelBanSpeech', 'export_index': 55122, 'params': (('StrProperty', 'OwnerUin'), ('StrProperty', 'ObjPlayerUin'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SetBadge', 'export_index': 55127, 'params': (('StrProperty', 'OwnerUin'), ('IntProperty', 'IconItemID'), ('IntProperty', 'FrameItemID'), ('IntProperty', 'BackgroundItemID'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_BuyBadge', 'export_index': 55131, 'params': (('StrProperty', 'OwnerUin'), ('ArrayProperty', 'BuyList'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_RenewBadge', 'export_index': 55133, 'params': (('StructProperty', 'RenewPropInfo'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetBadgeList', 'export_index': 55135, 'params': (('StrProperty', 'OwnerUin'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_TeamLeaderNotice', 'export_index': 55138, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'NoticeContent'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_RecruitMemberList', 'export_index': 55140, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CreateNewTeamMemberGroup', 'export_index': 55143, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'MemberGroupName'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ChangeTeamMemberGroupInfo', 'export_index': 55147, 'params': (('StrProperty', 'PlayerUin'), ('StrProperty', 'MemberGroupName'), ('IntProperty', 'MemberGroupId'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_DismissTeamMemberGroup', 'export_index': 55150, 'params': (('StrProperty', 'PlayerUin'), ('IntProperty', 'MemberGroupId'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetTeamMemberGroupList', 'export_index': 55153, 'params': (('StrProperty', 'PlayerUin'), ('BoolProperty', 'bNeedCalculateScore'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ChangeTeamMemberInOtherGroup', 'export_index': 55157, 'params': (('StrProperty', 'ManagerUin'), ('StrProperty', 'PlayerUin'), ('ByteProperty', 'MemberGroupId'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetSelfReputationList', 'export_index': 55158, 'params': ()}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetWarehouseProps', 'export_index': 55160, 'params': (('IntProperty', 'nWareHouseId'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_DrawProp', 'export_index': 55162, 'params': (('StructProperty', 'nPropId'),)}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_DonateProp', 'export_index': 55165, 'params': (('StructProperty', 'nPropId'), ('IntProperty', 'nWareHouseId'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_MoveProp', 'export_index': 55169, 'params': (('StructProperty', 'nPropId'), ('IntProperty', 'nOldWarehouseId'), ('IntProperty', 'nNewWarehouseId'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SetUseRightByWarehouse', 'export_index': 55172, 'params': (('IntProperty', 'nWareHouseId'), ('ByteProperty', 'nUseRight'))}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetWarehouseList', 'export_index': 55173, 'params': ()}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_TMMatchDSList', 'export_index': 55663, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_InviteJoinTMTeam', 'export_index': 55682, 'params': (('IntProperty', 'TMTeamId'), ('StructProperty', 'LeaderInfo'), ('ByteProperty', 'PayType'), ('ArrayProperty', 'FriendUins'), ('ArrayProperty', 'TeamUins'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_JoinTMTeam', 'export_index': 55686, 'params': (('IntProperty', 'TMTeamId'), ('BoolProperty', 'bIsAgree'), ('IntProperty', 'RefuseReason'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_QuitTMTeam', 'export_index': 55689, 'params': (('IntProperty', 'TMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_DismissTeam', 'export_index': 55692, 'params': (('IntProperty', 'TMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_RemoveTMTeam', 'export_index': 55695, 'params': (('IntProperty', 'TMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_ReadyMatch', 'export_index': 55703, 'params': (('IntProperty', 'TMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_CancelReady', 'export_index': 55706, 'params': (('IntProperty', 'TMTeamId'), ('StrProperty', 'PlayerUin'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_TeamStopMatch', 'export_index': 55710, 'params': (('IntProperty', 'TMTeamId'), ('StrProperty', 'PlayerUin'), ('BoolProperty', 'TimeOut'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_ChangePayType', 'export_index': 55713, 'params': (('IntProperty', 'TMTeamId'), ('ByteProperty', 'PayType'))}, {'owner': 'TGOnlineTechnicalGame', 'name': 'OnlineRequest_ChangeMode', 'export_index': 55717, 'params': (('IntProperty', 'TMTeamId'), ('ByteProperty', 'ModeIndex'), ('IntProperty', 'Money'))}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_ChannelList', 'export_index': 77886, 'params': (('IntProperty', 'MainChannelID'),)}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_MainChannelList', 'export_index': 77887, 'params': ()}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_GetChannelPingValue', 'export_index': 77888, 'params': ()}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_QueryRoomList', 'export_index': 77892, 'params': (('StructProperty', 'Filter'), ('IntProperty', 'Start'), ('IntProperty', 'Count'))}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_QueryRoomInfoById', 'export_index': 77894, 'params': (('StructProperty', 'RoomID'),)}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_QueryExpertList', 'export_index': 77897, 'params': (('IntProperty', 'SortBy'), ('IntProperty', 'Count'))}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_SwitchLocalChannel', 'export_index': 77899, 'params': (('IntProperty', 'SubChannelID'),)}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_AllSubChannelList', 'export_index': 77916, 'params': ()}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_AllFindRoomList', 'export_index': 77918, 'params': (('StrProperty', 'PlayerUin'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_CreateQTalkRoom', 'export_index': 78563, 'params': (('ByteProperty', 'CurQQTalkStatus'), ('StrProperty', 'RoomID'), ('StrProperty', 'subRoomID'), ('StrProperty', 'lastRoomID'))}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_EnterQTalkRoom', 'export_index': 78568, 'params': (('ByteProperty', 'CurQQTalkStatus'), ('StrProperty', 'RoomID'), ('StrProperty', 'subRoomID'), ('StrProperty', 'lastRoomID'))}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_OpenQTalkTeamRoom', 'export_index': 78574, 'params': (('StructProperty', 'qwRoomID'), ('IntProperty', 'dwIDC'), ('IntProperty', 'dwISP'), ('BoolProperty', 'bRegular'), ('BoolProperty', 'bUseMyName'))}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_QuitQTalkRoom', 'export_index': 78576, 'params': (('ByteProperty', 'CurQQTalkStatus'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_ShowSettingPanel', 'export_index': 78578, 'params': (('BoolProperty', 'bShow'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_ShowQTRoomPanel', 'export_index': 78580, 'params': (('BoolProperty', 'bShow'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_ShowTeamBindPanel', 'export_index': 78582, 'params': (('BoolProperty', 'bShow'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_OpenOrClosePhone', 'export_index': 78584, 'params': (('BoolProperty', 'bShow'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_OpenOrCloseMic', 'export_index': 78586, 'params': (('BoolProperty', 'bShow'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_SetSpeakMode', 'export_index': 78588, 'params': (('ByteProperty', 'CurSpeakMode'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_OpenQTalkClient', 'export_index': 78590, 'params': (('BoolProperty', 'ReturnValue'),)}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_FindTeamRoomName', 'export_index': 78594, 'params': (('StrProperty', 'RoomID'), ('StrProperty', 'subRoomID'), ('StrProperty', 'lastRoomID'))}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_MaskUser', 'export_index': 78598, 'params': (('StrProperty', 'strUin'), ('StrProperty', 'RoomID'), ('BoolProperty', 'bMask'))}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_GetUserMaskStatus', 'export_index': 78601, 'params': (('StrProperty', 'strUin'), ('StrProperty', 'strNickName'))}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_SyncSetting', 'export_index': 78607, 'params': (('FloatProperty', 'fSoundsValue'), ('FloatProperty', 'fMicValue'), ('BoolProperty', 'bFreeTalk'), ('StrProperty', 'strKey'), ('BoolProperty', 'bGetSetting'))}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_UnLoadCross', 'export_index': 78608, 'params': ()}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_FocusKeyUp', 'export_index': 78609, 'params': ()}, {'owner': 'TGWithCross', 'name': 'OnlineRequest_GetCurrentQTRoom', 'export_index': 78610, 'params': ()})
-V139_WIRE_BINDINGS = ({'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CreateAccount', 'cmd': 40962, 'status': 'CURRENT_BRANCH', 'source': 'current v138 request handler', 'implemented': True}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetFriendStatus', 'cmd': 41731, 'status': 'CURRENT_BRANCH', 'source': 'current v138 request handler', 'implemented': True}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_QueryRoomList', 'cmd': 41216, 'status': 'CURRENT_BRANCH', 'source': 'live room-list path', 'implemented': True}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_ChannelList', 'cmd': 41266, 'status': 'CURRENT_BRANCH', 'source': 'live channel-list path', 'implemented': True}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_MainChannelList', 'cmd': 41813, 'status': 'CURRENT_BRANCH', 'source': 'live main-channel path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_EnterRoomByRoomId', 'cmd': 41220, 'status': 'CURRENT_BRANCH', 'source': 'r11 shared-room A104/A105/A106 path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_CreateRoom', 'cmd': 41226, 'status': 'CURRENT_BRANCH', 'source': 'current creator-room path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_LeaveRoom', 'cmd': 41223, 'status': 'CURRENT_PARTIAL', 'source': 'live A107; v138 callback-schema work', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_ChangeCamp', 'cmd': 41229, 'status': 'CURRENT_BRANCH', 'source': 'live A10D path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetReady', 'cmd': 41232, 'status': 'CURRENT_PARTIAL', 'source': 'current adjacent-family implementation', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_StartMatch', 'cmd': 41235, 'status': 'CURRENT_BRANCH', 'source': 'live start-match path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_QuitMatch', 'cmd': 41239, 'status': 'CURRENT_PARTIAL', 'source': 'live request; handler still incomplete', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetInMatch', 'cmd': 41244, 'status': 'CURRENT_BRANCH', 'source': 'live post-DS path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetGameSettings', 'cmd': 41246, 'status': 'CURRENT_BRANCH', 'source': 'live A11E PvE settings path', 'implemented': True}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CheckNickName', 'cmd': 41284, 'status': 'PRIOR_RECOVERED', 'source': 'v106 nickname branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChangeLoginRole', 'cmd': 41286, 'status': 'PRIOR_RECOVERED', 'source': 'v106 role-change branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_DropProp', 'cmd': 41827, 'status': 'PRIOR_RECOVERED', 'source': 'v106 inventory/shop branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_UpdateCommodifyFile', 'cmd': 42243, 'status': 'PRIOR_RECOVERED', 'source': 'v106 shop branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_BuyCommodity', 'cmd': 42245, 'status': 'PRIOR_RECOVERED', 'source': 'v106 hardened shop branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_UpdateTPValue', 'cmd': 42254, 'status': 'PRIOR_RECOVERED', 'source': 'v106 AP/TP branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ReqAddFriend', 'cmd': 41733, 'status': 'PRIOR_RECOVERED', 'source': 'v106 friends branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_DeleteFriend', 'cmd': 41737, 'status': 'PRIOR_RECOVERED', 'source': 'v106 friends branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChatP2P', 'cmd': 41989, 'status': 'PRIOR_RECOVERED', 'source': 'v106 private-chat branch', 'implemented': False}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_ReqCalendar', 'cmd': 49429, 'status': 'PRIOR_RECOVERED', 'source': 'v106 calendar/daily-login branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CreateTeam', 'cmd': 42497, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_PublishRecruit', 'cmd': 42499, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SearchTeamByName', 'cmd': 43521, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_RecruitMemberList', 'cmd': 43523, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetDetailTeamInfo', 'cmd': 43525, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetMemberList', 'cmd': 43527, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CheckTeamName', 'cmd': 43778, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False})
+V139_WIRE_BINDINGS = ({'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CreateAccount', 'cmd': 40962, 'status': 'CURRENT_BRANCH', 'source': 'current v138 request handler', 'implemented': True}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_GetFriendStatus', 'cmd': 41731, 'status': 'CURRENT_BRANCH', 'source': 'current v138 request handler', 'implemented': True}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_QueryRoomList', 'cmd': 41216, 'status': 'CURRENT_BRANCH', 'source': 'live room-list path', 'implemented': True}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_ChannelList', 'cmd': 41266, 'status': 'CURRENT_BRANCH', 'source': 'live channel-list path', 'implemented': True}, {'owner': 'TGOnlineMultiGameLobby', 'name': 'OnlineRequest_MainChannelList', 'cmd': 41813, 'status': 'CURRENT_BRANCH', 'source': 'live main-channel path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_EnterRoomByRoomId', 'cmd': 41220, 'status': 'CURRENT_BRANCH', 'source': 'r11 shared-room A104/A105/A106 path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_CreateRoom', 'cmd': 41226, 'status': 'CURRENT_BRANCH', 'source': 'current creator-room path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_LeaveRoom', 'cmd': 41223, 'status': 'CURRENT_PARTIAL', 'source': 'live A107; v138 callback-schema work', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_ChangeCamp', 'cmd': 41229, 'status': 'CURRENT_BRANCH', 'source': 'live A10D path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetReady', 'cmd': 41232, 'status': 'CURRENT_PARTIAL', 'source': 'current adjacent-family implementation', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_StartMatch', 'cmd': 41235, 'status': 'CURRENT_BRANCH', 'source': 'live start-match path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_JoinMatch', 'cmd': 41237, 'status': 'CURRENT_PARTIAL', 'source': 'latejoin-v2 recovered live A115; A116 suppressed', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_QuitMatch', 'cmd': 41239, 'status': 'CURRENT_PARTIAL', 'source': 'live request; handler still incomplete', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetInMatch', 'cmd': 41244, 'status': 'CURRENT_BRANCH', 'source': 'live post-DS path', 'implemented': True}, {'owner': 'TGOnlineMultiGameRoom', 'name': 'OnlineRequest_SetGameSettings', 'cmd': 41246, 'status': 'CURRENT_BRANCH', 'source': 'live A11E PvE settings path', 'implemented': True}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CheckNickName', 'cmd': 41284, 'status': 'PRIOR_RECOVERED', 'source': 'v106 nickname branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChangeLoginRole', 'cmd': 41286, 'status': 'PRIOR_RECOVERED', 'source': 'v106 role-change branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_DropProp', 'cmd': 41827, 'status': 'PRIOR_RECOVERED', 'source': 'v106 inventory/shop branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_UpdateCommodifyFile', 'cmd': 42243, 'status': 'PRIOR_RECOVERED', 'source': 'v106 shop branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_BuyCommodity', 'cmd': 42245, 'status': 'PRIOR_RECOVERED', 'source': 'v106 hardened shop branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_UpdateTPValue', 'cmd': 42254, 'status': 'PRIOR_RECOVERED', 'source': 'v106 AP/TP branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ReqAddFriend', 'cmd': 41733, 'status': 'PRIOR_RECOVERED', 'source': 'v106 friends branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_DeleteFriend', 'cmd': 41737, 'status': 'PRIOR_RECOVERED', 'source': 'v106 friends branch', 'implemented': False}, {'owner': 'TGOnlineClient', 'name': 'OnlineRequest_ChatP2P', 'cmd': 41989, 'status': 'PRIOR_RECOVERED', 'source': 'v106 private-chat branch', 'implemented': False}, {'owner': 'TGOnlineActivity', 'name': 'OnlineRequest_ReqCalendar', 'cmd': 49429, 'status': 'PRIOR_RECOVERED', 'source': 'v106 calendar/daily-login branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CreateTeam', 'cmd': 42497, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_PublishRecruit', 'cmd': 42499, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SearchTeamByName', 'cmd': 43521, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_RecruitMemberList', 'cmd': 43523, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetDetailTeamInfo', 'cmd': 43525, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetMemberList', 'cmd': 43527, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False}, {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CheckTeamName', 'cmd': 43778, 'status': 'PRIOR_RECOVERED', 'source': 'v106 clan/team branch', 'implemented': False})
 V139_PROTOCOL_ONLY = {40960: ('Protocol.Login', 'CURRENT_BRANCH'), 40964: ('Protocol.Heartbeat', 'CURRENT_BRANCH'), 40968: ('Protocol.PropOperation', 'CURRENT_BRANCH'), 41888: ('Protocol.StartRoomAlloc', 'CURRENT_BRANCH'), 41891: ('Protocol.QuitRoomAlloc', 'MAPPED_ONLY'), 65285: ('Protocol.UnknownFF05', 'CURRENT_BRANCH')}
 V139_CURRENT_HANDLER_IDS = frozenset((40960, 40962, 40964, 40968, 41216, 41223, 41226, 41229, 41232, 41235, 41239, 41244, 41246, 41266, 41731, 41813, 41888, 65285))
 
@@ -334,11 +335,84 @@ V143B_DS_CONFIG = SpawnerConfig.from_env()
 V143B_DS_SPAWNER = None
 
 
+def _v143b_install_round_end_generation_guard(spawner):
+    """Prevent a dead round's monitor thread from resurrecting its allocation.
+
+    The bridge monitor polls BRIDGE_STATE.json asynchronously.  After end_round()
+    marks an allocation ROUND_ENDED and tears its processes down, the old monitor
+    can still have a final/stale READY payload in flight.  If it writes that
+    payload back into the same DSAllocation object, the logical room becomes
+    READY again even though its UDP ports/processes are already gone.
+
+    Make the completed round a new allocation *generation object*.  Existing
+    monitor threads keep the old object identity, so their existing
+    `current is not allocation` guard causes them to exit without being able to
+    mutate the current ROUND_ENDED allocation.  arm_lobby() will later create its
+    normal fresh round object from this snapshot.
+    """
+    if getattr(spawner, "_v143b_round_end_generation_guard", False):
+        return spawner
+
+    original_end_round = spawner.end_round
+
+    def guarded_end_round(room_id, reason="last match player left"):
+        room_id = int(room_id)
+        ended = original_end_round(room_id, reason=reason)
+        if not ended:
+            return ended
+
+        replaced = False
+        old_state = None
+        new_slot = None
+
+        # This uses the spawner's own lock and allocation table intentionally.
+        # It changes no protocol state; it only makes the asynchronous monitor's
+        # already-present object-identity guard effective after teardown.
+        with spawner._lock:
+            current = spawner._allocations.get(room_id)
+            if current is not None and current.state != "RELEASED":
+                old_state = str(current.state)
+                replacement = copy.copy(current)
+                replacement.state = "ROUND_ENDED"
+                replacement.match_players = set()
+                replacement.bridge_proc = None
+                replacement.bridge_log_handle = None
+                replacement.bridge_pid = None
+                replacement.loader_pid = None
+                replacement.afdev_pid = None
+                replacement.ready_at = None
+                replacement.trigger_client = None
+                replacement.buffered_packets = 0
+                replacement.buffered_bytes = 0
+                replacement.suppressed_startup_packets = 0
+                replacement.replay_attempts = 0
+                replacement.peer_count = 0
+                replacement.live_peer_count = 0
+                spawner._allocations[room_id] = replacement
+                spawner._write_snapshot_locked()
+                new_slot = int(replacement.slot)
+                replaced = True
+
+        if replaced:
+            log(
+                "DS-LIFECYCLE",
+                "v5.3 round-generation guard: "
+                f"room={room_id} old_state={old_state} -> ROUND_ENDED "
+                f"slot={new_slot}; detached stale bridge monitor object",
+            )
+        return ended
+
+    spawner.end_round = guarded_end_round
+    spawner._v143b_round_end_generation_guard = True
+    return spawner
+
+
 def _v143b_init_spawner():
     """Create mutable DS runtime state only after strict preflight succeeds."""
     global V143B_DS_SPAWNER
     if V143B_DS_SPAWNER is None:
         V143B_DS_SPAWNER = DedicatedServerSpawner(V143B_DS_CONFIG, log_fn=log)
+        _v143b_install_round_end_generation_guard(V143B_DS_SPAWNER)
     return V143B_DS_SPAWNER
 
 
@@ -2816,13 +2890,19 @@ TGAME_ZN_REQ_SETMATCHROOMREADY = 0xA110
 TGAME_ZN_RES_SETMATCHROOMREADY = 0xA111
 TGAME_ZN_NTF_SETMATCHROOMREADY = 0xA112
 
-# r25-main READY-WIRE PATCH:
-# Live PH 1.0.0.24 A110 body=00 is the empty request/TDR terminator, not
-# boolean False. The working A112 notification carries the room seat plus
-# EPlayerState_ReadyToMatch (9).
+# LATEJOIN-v3 TEST / recovered PH room-state values.
+# A110 body=00 is an empty-TDR request. The same A110 is emitted again by the
+# stock UI when the Ready button has become Cancel, so this test treats A110 as
+# a state toggle and confirms both transitions through A112.
+TGAME_PLAYERSTATE_UNREADY = 8
 TGAME_PLAYERSTATE_READYTOMATCH = 9
+TGAME_PLAYERSTATE_LOADINGMATCH = 11
+TGAME_PLAYERSTATE_INMATCH = 12
 TGAME_ZN_REQ_STARTMATCH = 0xA113
 TGAME_ZN_RES_STARTMATCH = 0xA114
+# Live-proven request emitted by OnlineRequest_JoinMatch. 0xA116 remains
+# unresolved/disproven as a response and is deliberately never sent.
+TGAME_ZN_REQ_JOINMATCH = 0xA115
 TGAME_ZN_REQ_QUITMATCH = 0xA117
 TGAME_ZN_RES_QUITMATCH = 0xA118
 TGAME_ZN_NTF_QUITMATCH = 0xA119
@@ -5852,9 +5932,12 @@ def _v134_build_ntf_set_match_room_ready(
         00 01 00 00 00 09
     """
     ready_state = int(ready_state)
-    if ready_state != TGAME_PLAYERSTATE_READYTOMATCH:
+    if ready_state not in (
+        TGAME_PLAYERSTATE_UNREADY,
+        TGAME_PLAYERSTATE_READYTOMATCH,
+    ):
         raise ValueError(
-            f"r25-main only verifies ReadyToMatch=9, got {ready_state}"
+            f"latejoin-v2 A112 supports Unready=8/ReadyToMatch=9, got {ready_state}"
         )
 
     body = (
@@ -6011,6 +6094,132 @@ def _v132_send_pve_afdev_handoff(
         f"{handoff_host}:{handoff_port} mode=0x{mode_now:08x} reason={reason} recipients={sent_uins}",
     )
     return True
+
+
+def _latejoin_v2_send_running_match_a11a(
+    conn,
+    active_tgame_key,
+    label,
+    role_state,
+    room_id,
+    *,
+    reason,
+    commit_handoff=False,
+):
+    """Tell one late joiner about the already-running DS without rearming it.
+
+    The recovered stock flow uses A11A as the notification that changes a
+    non-owner room UI from Ready to Join game. A115 is then the explicit join
+    action. 0xA116 is deliberately not fabricated.
+    """
+    try:
+        allocation = V143B_DS_SPAWNER.allocation_for_room(int(room_id))
+    except Exception as exc:
+        log(
+            "LATEJOIN",
+            f"v2 allocation lookup failed room={room_id}: {type(exc).__name__}: {exc}",
+        )
+        return False
+
+    if allocation is None or str(getattr(allocation, "state", "")) == "RELEASED":
+        log("LATEJOIN", f"v2 no live allocation for room={room_id} reason={reason}")
+        return False
+
+    handoff_host = str(allocation.public_host)
+    handoff_port = int(allocation.public_port)
+    try:
+        ip_value = _v143b_tdr_ipv4(handoff_host)
+        domain = ""
+        use_domain = 0
+    except OSError:
+        ip_value = 0
+        domain = handoff_host
+        use_domain = 1
+
+    ntf = _v87_build_ntf_start_match(
+        port=handoff_port,
+        ds_key=TGAME_DS_KEY,
+        ip=ip_value,
+        domain=domain,
+        is_use_domain=use_domain,
+    )
+    _v48_send_app(
+        conn,
+        active_tgame_key,
+        ntf,
+        label,
+        "ZN2C_NTF_STARTMATCH LATEJOIN-v2 requester-only "
+        "cmd=0xA11A result=0x8100 "
+        f"room={int(room_id)} ds={handoff_host}:{handoff_port} reason={reason}",
+    )
+    role_state["v143b_ds_endpoint"] = f"{handoff_host}:{handoff_port}"
+    role_state["v150_latejoin_state_sync_sent"] = True
+    if commit_handoff:
+        role_state["v132_pve_afdev_handoff_sent"] = True
+        role_state["v132_pve_afdev_handoff_reason"] = str(reason)
+        role_state["v132_pve_afdev_handoff_at"] = time.time()
+
+    log(
+        "LATEJOIN",
+        f"v2 requester-only A11A uin={_v150_role_uin(role_state)} "
+        f"room={int(room_id)} endpoint={handoff_host}:{handoff_port} "
+        f"commit_handoff={bool(commit_handoff)} reason={reason}",
+    )
+    return True
+
+
+def _latejoin_v3_build_loading_state_ntf(seat_index):
+    """Temporary v3 probe: publish EPlayerState_LoadingMatch(11) through A112.
+
+    The stock PH enum recovered from UTGame is:
+      8 Unready, 9 ReadyToMatch, 10 ReadyToObserve, 11 LoadingMatch, 12 InMatch.
+
+    A112's verified wire layout is u16 SeatIndex + u32 PlayerState.  Normal
+    ready currently uses state 9 on the same wire.  This v3 test checks whether
+    a late joiner must first transition to LoadingMatch before A11A DSInfo can
+    make it open the DS connection.
+    """
+    body = (
+        _v48_u16(int(seat_index) & 0xFFFF)
+        + _v48_u32(TGAME_PLAYERSTATE_LOADINGMATCH)
+    )
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_NTF_SETMATCHROOMREADY,
+        body,
+    )
+
+
+def _latejoin_v3_probe_ds_peer(room_id, uin):
+    """Diagnostic only: verify whether late-join TGame ever reaches the bridge."""
+    for delay in (0.50, 1.50, 3.00):
+        time.sleep(delay)
+        try:
+            allocation = V143B_DS_SPAWNER.allocation_for_room(int(room_id))
+            if allocation is None:
+                log(
+                    "LATEJOIN",
+                    f"v3 DS probe +{delay:.2f}s uin={int(uin)} room={int(room_id)} "
+                    "allocation=<missing>",
+                )
+                continue
+            log(
+                "LATEJOIN",
+                f"v3 DS probe +{delay:.2f}s uin={int(uin)} room={int(room_id)} "
+                f"state={getattr(allocation, 'state', None)} "
+                f"peers={getattr(allocation, 'peer_count', None)} "
+                f"live_peers={getattr(allocation, 'live_peer_count', None)} "
+                f"room_players={sorted(int(x) for x in getattr(allocation, 'room_players', set()))} "
+                f"match_players={sorted(int(x) for x in getattr(allocation, 'match_players', set()))} "
+                f"trigger={getattr(allocation, 'trigger_client', None)}",
+            )
+        except Exception as exc:
+            log(
+                "LATEJOIN",
+                f"v3 DS probe failed uin={int(uin)} room={int(room_id)}: "
+                f"{type(exc).__name__}: {exc}",
+            )
+
 
 def _v72_parse_start_room_alloc(body):
     """Decode the fixed part of C2ZN_ReqStartRoomAlloc seen on the wire.
@@ -8128,6 +8337,22 @@ def handle_placeholder(conn, addr, label):
                                                     f"notified={notified}",
                                                 )
 
+                                                # LATEJOIN-v2: A105 put the player in the logical room.
+                                                # If the round is already active, publish the existing
+                                                # A11A DSInfo only to this new client. This is a state
+                                                # sync, not the actual JoinMatch commit, so do not set
+                                                # the per-player handoff guard yet.
+                                                if joined_room.get("started"):
+                                                    _latejoin_v2_send_running_match_a11a(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        label,
+                                                        role_state,
+                                                        int(joined_room["room_id"]),
+                                                        reason="A103 entered already-started room",
+                                                        commit_handoff=False,
+                                                    )
+
                                         elif app["cmd"] == TGAME_ZN_REQ_LEAVEMATCHROOM:
                                             # Live capture:
                                             #   A107 body=0000 for the solo creator in seat 0.
@@ -8404,18 +8629,35 @@ def handle_placeholder(conn, addr, label):
                                                 )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_SETMATCHROOMREADY:
-                                            # r25-main: live A110 body=00 is an empty-TDR terminator.
-                                            # It means ReadyToMatch, not ready=False.
-                                            ready = True
-                                            ready_state = TGAME_PLAYERSTATE_READYTOMATCH
+                                            # LATEJOIN-v2: the stock PH UI emits the same A110
+                                            # empty request both for Ready and for the subsequent
+                                            # Cancel click. Derive the transition from authoritative
+                                            # per-player state instead of hardcoding ready=True.
                                             requester_uin = _v150_role_uin(role_state)
+                                            room_before_ready = V150_ROOM_REGISTRY.room_for_player(
+                                                requester_uin
+                                            ) or {}
+                                            member_before_ready = next(
+                                                (
+                                                    m for m in room_before_ready.get("members", [])
+                                                    if int(m.get("uin", -1)) == int(requester_uin)
+                                                ),
+                                                None,
+                                            )
+                                            was_ready = bool(
+                                                member_before_ready.get("ready", False)
+                                                if isinstance(member_before_ready, dict)
+                                                else role_state.get("v132_match_ready", False)
+                                            )
+                                            ready = not was_ready
+                                            ready_state = (
+                                                TGAME_PLAYERSTATE_READYTOMATCH
+                                                if ready
+                                                else TGAME_PLAYERSTATE_UNREADY
+                                            )
 
-                                            # A player can return from UE3 gameplay directly to
-                                            # this same room without a usable A117 cleanup packet.
-                                            # If the previous A11A guard is still present, reconcile
-                                            # that stale round NOW, before accepting a new Ready.
-                                            # Otherwise the later A113 sees the old guard, suppresses
-                                            # the new A11A, and the stock client shows a timeout.
+                                            # Preserve the existing previous-round reconciliation,
+                                            # but only when transitioning INTO Ready.
                                             if ready and role_state.get("v132_pve_afdev_handoff_sent"):
                                                 room_for_ready = (
                                                     V150_ROOM_REGISTRY.room_for_player(requester_uin)
@@ -8477,55 +8719,48 @@ def handle_placeholder(conn, addr, label):
                                             if ready_room_snapshot is not None:
                                                 _v150_sync_role_states(ready_room_snapshot)
 
-                                            # r25-main: do NOT send A111 here.
-                                            # The working stock PH path completes Ready through
-                                            # the shared A112 room-state notification below.
-                                            # The creator is initially seat 0; if the user
-                                            # switched camps, v94 already tracks the current
-                                            # seat in v88_match_seat.
-                                            if ready:
-                                                ready_seat = int(
-                                                    role_state.get("v88_match_seat", 0)
+                                            # A112 is the shared state notification for BOTH
+                                            # transitions: 9=ReadyToMatch, 8=Unready/Cancel.
+                                            ready_seat = int(
+                                                role_state.get("v88_match_seat", 0)
+                                            )
+                                            ntf = _v134_build_ntf_set_match_room_ready(
+                                                ready_seat,
+                                                ready_state,
+                                            )
+                                            room_now = role_state.get("v79_created_match_room") or {}
+                                            room_id_now = room_now.get("room_id")
+                                            sent_ready = (
+                                                _v150_broadcast_room(
+                                                    room_id_now,
+                                                    ntf,
+                                                    "ZN2C_NTF_SETREADY LATEJOIN-v2-shared "
+                                                    f"cmd=0xA112 seat={ready_seat} "
+                                                    f"state={ready_state} "
+                                                    f"body={(_v48_u16(ready_seat) + _v48_u32(ready_state)).hex()}",
+                                                    tpdu_cmd=2,
                                                 )
-                                                ntf = _v134_build_ntf_set_match_room_ready(
-                                                    ready_seat,
-                                                    ready_state,
+                                                if room_id_now is not None
+                                                else []
+                                            )
+                                            if not sent_ready:
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    ntf,
+                                                    label,
+                                                    "ZN2C_NTF_SETREADY LATEJOIN-v2-fallback "
+                                                    f"cmd=0xA112 seat={ready_seat} state={ready_state}",
+                                                    tpdu_cmd=2,
                                                 )
-                                                room_now = role_state.get("v79_created_match_room") or {}
-                                                room_id_now = room_now.get("room_id")
-                                                sent_ready = (
-                                                    _v150_broadcast_room(
-                                                        room_id_now,
-                                                        ntf,
-                                                        "ZN2C_NTF_SETREADY r25-main-shared "
-                                                        f"cmd=0xA112 seat={ready_seat} "
-                                                        f"state={ready_state}(MATCH) "
-                                                        f"body={(_v48_u16(ready_seat) + _v48_u32(ready_state)).hex()}",
-                                                        tpdu_cmd=2,
-                                                    )
-                                                    if room_id_now is not None
-                                                    else []
-                                                )
-                                                if not sent_ready:
-                                                    _v48_send_app(
-                                                        conn, active_tgame_key, ntf, label,
-                                                        "ZN2C_NTF_SETREADY r25-main-fallback "
-                                                        f"cmd=0xA112 seat={ready_seat} "
-                                                        f"state={ready_state}(MATCH) "
-                                                        f"body={(_v48_u16(ready_seat) + _v48_u32(ready_state)).hex()}",
-                                                        tpdu_cmd=2,
-                                                    )
-                                                role_state["v134_ready_ntf_sent"] = True
+                                            role_state["v134_ready_ntf_sent"] = True
 
                                             log(
                                                 "ROOM",
-                                                f"r25-main A110 Ready accepted uin={_v150_role_uin(role_state)} "
-                                                f"ready={ready} "
-                                                f"seat={int(role_state.get('v88_match_seat', 0))} "
-                                                f"state={ready_state}; "
-                                                f"A112_sent={bool(ready)}; "
-                                                "NO server A111 ACK; A112=u16 seat + u32 state on TPDU cmd02; "
-                                                "DS handoff waits for Start",
+                                                f"LATEJOIN-v2 A110 toggle uin={requester_uin} "
+                                                f"was_ready={was_ready} -> ready={ready} "
+                                                f"seat={ready_seat} state={ready_state}; "
+                                                "A112 sent for both Ready and Cancel",
                                             )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_SETGAMESETTINGS:
@@ -8550,66 +8785,87 @@ def handle_placeholder(conn, addr, label):
                                                     room_id, requester_uin
                                                 )
 
-                                                if V143B_DS_CONFIG.enabled:
-                                                    V143B_DS_SPAWNER.prepare_lobby_settings_update(
-                                                        room_id,
-                                                        requester_uin,
+                                                # LATEJOIN-v5.1:
+                                                # A11E updates lobby settings. It must NOT be used
+                                                # as a round-ended signal. The previous branch
+                                                # unconditionally forced started=False, which can
+                                                # turn an already-running room back into an ordinary
+                                                # Ready/Cancel room for late entrants.
+                                                fresh_room = V150_ROOM_REGISTRY.get_room(room_id)
+                                                was_started = bool(
+                                                    fresh_room.get("started")
+                                                    if isinstance(fresh_room, dict)
+                                                    else room.get("started")
+                                                )
+
+                                                if was_started:
+                                                    log(
+                                                        "DS-SETTINGS",
+                                                        "LATEJOIN-v5.1 ignored A11E during active match: "
+                                                        f"room={room_id} uin={requester_uin} "
+                                                        f"mode=0x{int(settings['mode_id']):08x} "
+                                                        f"map=0x{int(settings['map_id']):04x} "
+                                                        f"submode=0x{int(settings['sub_mode_id']):08x} "
+                                                        f"flags=0x{int(settings['flags']):08x}; "
+                                                        "preserving started=True and live DS allocation",
                                                     )
-                                                    V143B_DS_SPAWNER.update_lobby_settings(
+                                                else:
+                                                    if V143B_DS_CONFIG.enabled:
+                                                        V143B_DS_SPAWNER.prepare_lobby_settings_update(
+                                                            room_id,
+                                                            requester_uin,
+                                                        )
+                                                        V143B_DS_SPAWNER.update_lobby_settings(
+                                                            room_id,
+                                                            mode_id=settings["mode_id"],
+                                                            map_id=settings["map_id"],
+                                                            map_name=settings.get("map_string") or None,
+                                                            sub_mode_id=settings["sub_mode_id"],
+                                                            room_flags=settings["flags"],
+                                                        )
+
+                                                    updated_room = V150_ROOM_REGISTRY.update_settings(
                                                         room_id,
+                                                        match_settings_wire=settings["match_settings_wire"],
                                                         mode_id=settings["mode_id"],
                                                         map_id=settings["map_id"],
-                                                        map_name=settings.get("map_string") or None,
+                                                        map_string=settings["map_string"],
                                                         sub_mode_id=settings["sub_mode_id"],
-                                                        room_flags=settings["flags"],
+                                                        flags=settings["flags"],
+                                                        setting_type=settings["setting_type"],
+                                                        value=settings["value"],
+                                                        respawn_time=settings["respawn_time"],
+                                                        recode_type=settings["recode_type"],
+                                                        live_delay_sec=settings["live_delay_sec"],
                                                     )
+                                                    _v150_sync_role_states(updated_room)
+                                                    role_state["v79_created_match_room"] = updated_room
+                                                    role_state.pop("v143b_ds_endpoint", None)
+                                                    role_state.pop("v132_pve_afdev_handoff_sent", None)
 
-                                                try:
-                                                    V150_ROOM_REGISTRY.set_started(room_id, False)
-                                                except RoomRegistryError:
-                                                    pass
-                                                updated_room = V150_ROOM_REGISTRY.update_settings(
-                                                    room_id,
-                                                    match_settings_wire=settings["match_settings_wire"],
-                                                    mode_id=settings["mode_id"],
-                                                    map_id=settings["map_id"],
-                                                    map_string=settings["map_string"],
-                                                    sub_mode_id=settings["sub_mode_id"],
-                                                    flags=settings["flags"],
-                                                    setting_type=settings["setting_type"],
-                                                    value=settings["value"],
-                                                    respawn_time=settings["respawn_time"],
-                                                    recode_type=settings["recode_type"],
-                                                    live_delay_sec=settings["live_delay_sec"],
-                                                )
-                                                _v150_sync_role_states(updated_room)
-                                                role_state["v79_created_match_room"] = updated_room
-                                                role_state.pop("v143b_ds_endpoint", None)
-                                                role_state.pop("v132_pve_afdev_handoff_sent", None)
-
-                                                difficulty_name = {
-                                                    0x00001001: "Easy",
-                                                    0x00001002: "Normal",
-                                                    0x00001003: "Hard",
-                                                }.get(
-                                                    int(settings["sub_mode_id"]),
-                                                    f"SubModeId=0x{int(settings['sub_mode_id']):08x}",
-                                                )
-                                                log(
-                                                    "DS-SETTINGS",
-                                                    "A11E authoritative room settings update: "
-                                                    f"room={room_id} "
-                                                    f"mode=0x{int(settings['mode_id']):08x} "
-                                                    f"map=0x{int(settings['map_id']):04x} "
-                                                    f"submode=0x{int(settings['sub_mode_id']):08x} "
-                                                    f"flags=0x{int(settings['flags']):08x} "
-                                                    f"difficulty={difficulty_name}; "
-                                                    "will be used by lazy AFDEV spawn"
-                                                    + (
-                                                        f" tail={settings['tail'].hex()}"
-                                                        if settings["tail"] else ""
-                                                    ),
-                                                )
+                                                    difficulty_name = {
+                                                        0x00001001: "Easy",
+                                                        0x00001002: "Normal",
+                                                        0x00001003: "Hard",
+                                                    }.get(
+                                                        int(settings["sub_mode_id"]),
+                                                        f"SubModeId=0x{int(settings['sub_mode_id']):08x}",
+                                                    )
+                                                    log(
+                                                        "DS-SETTINGS",
+                                                        "A11E authoritative room settings update: "
+                                                        f"room={room_id} "
+                                                        f"mode=0x{int(settings['mode_id']):08x} "
+                                                        f"map=0x{int(settings['map_id']):04x} "
+                                                        f"submode=0x{int(settings['sub_mode_id']):08x} "
+                                                        f"flags=0x{int(settings['flags']):08x} "
+                                                        f"difficulty={difficulty_name}; "
+                                                        "room still waiting; will be used by lazy AFDEV spawn"
+                                                        + (
+                                                            f" tail={settings['tail'].hex()}"
+                                                            if settings["tail"] else ""
+                                                        ),
+                                                    )
                                             except (ValueError, RoomRegistryError, SpawnerError) as settings_e:
                                                 log(
                                                     "DS-SETTINGS",
@@ -8701,6 +8957,188 @@ def handle_placeholder(conn, addr, label):
                                                     "legacy fixed 65008 A11A suppressed",
                                                 )
 
+                                        elif app["cmd"] == TGAME_ZN_REQ_JOINMATCH:
+                                            # LATEJOIN-v5:
+                                            # v26 disassembly proved A116 is a real compiled
+                                            # TGOnlineMultiGameRoom response handler and that its
+                                            # decoded payload layout matches A11A:
+                                            #
+                                            #   +0x00 u16 Result
+                                            #   +0x02 u32 Ip
+                                            #   +0x06 u16 Port
+                                            #   +0x08 byte DSKey[16]
+                                            #   +0x18 Domain
+                                            #   +0x98 IsUseDomain
+                                            #
+                                            # Therefore the old 2-byte A116 ACK was malformed.
+                                            # Send A116 with the same full GameServerInfo/DSInfo
+                                            # body used by the already-proven A11A serializer.
+                                            requester_uin = _v150_role_uin(role_state)
+                                            room_now = (
+                                                V150_ROOM_REGISTRY.room_for_player(requester_uin)
+                                                or role_state.get("v79_created_match_room")
+                                                or {}
+                                            )
+                                            room_id_now = room_now.get("room_id")
+                                            player_mode = app["body"][0] if app["body"] else 0
+                                            join_seat = int(role_state.get("v88_match_seat", 0))
+
+                                            log(
+                                                "JOINMATCH",
+                                                f"LATEJOIN-v5 A115 accepted uin={requester_uin} "
+                                                f"room={room_id_now} seat={join_seat} "
+                                                f"player_mode=0x{player_mode:02x} "
+                                                f"body={app['body'].hex()}; "
+                                                "sending FULL A116 DSInfo (no A11A replay)",
+                                            )
+
+                                            if room_id_now is None:
+                                                log(
+                                                    "JOINMATCH",
+                                                    f"LATEJOIN-v5 A115 has no room for uin={requester_uin}",
+                                                )
+                                            else:
+                                                allocation = None
+                                                try:
+                                                    allocation = V143B_DS_SPAWNER.allocation_for_room(
+                                                        int(room_id_now)
+                                                    )
+                                                except Exception as exc:
+                                                    log(
+                                                        "DS-JOIN",
+                                                        f"LATEJOIN-v5 allocation lookup failed "
+                                                        f"room={room_id_now}: "
+                                                        f"{type(exc).__name__}: {exc}",
+                                                    )
+
+                                                if (
+                                                    allocation is None
+                                                    or str(getattr(allocation, "state", "")) == "RELEASED"
+                                                ):
+                                                    log(
+                                                        "DS-JOIN",
+                                                        f"LATEJOIN-v5 no live allocation "
+                                                        f"uin={requester_uin} room={room_id_now}",
+                                                    )
+                                                else:
+                                                    handoff_host = str(allocation.public_host)
+                                                    handoff_port = int(allocation.public_port)
+
+                                                    try:
+                                                        ip_value = _v143b_tdr_ipv4(handoff_host)
+                                                        domain = ""
+                                                        use_domain = 0
+                                                    except OSError:
+                                                        ip_value = 0
+                                                        domain = handoff_host
+                                                        use_domain = 1
+
+                                                    # Preserve the useful v3 player-state transition.
+                                                    # A112 + A11A alone was already proven insufficient,
+                                                    # so the only new variable in v5 is a correctly
+                                                    # serialized full A116 response.
+                                                    try:
+                                                        loading_room = V150_ROOM_REGISTRY.set_player_state(
+                                                            requester_uin,
+                                                            TGAME_PLAYERSTATE_LOADINGMATCH,
+                                                            ready=False,
+                                                        )
+                                                        if loading_room is not None:
+                                                            _v150_sync_role_states(loading_room)
+                                                    except RoomRegistryError as state_e:
+                                                        log(
+                                                            "LATEJOIN",
+                                                            f"v5 LoadingMatch registry update failed "
+                                                            f"uin={requester_uin} room={room_id_now}: {state_e}",
+                                                        )
+
+                                                    role_state["v147_room_player_state"] = (
+                                                        TGAME_PLAYERSTATE_LOADINGMATCH
+                                                    )
+                                                    role_state["v132_match_ready"] = False
+
+                                                    loading_ntf = _latejoin_v3_build_loading_state_ntf(
+                                                        join_seat
+                                                    )
+                                                    sent_loading = _v150_broadcast_room(
+                                                        int(room_id_now),
+                                                        loading_ntf,
+                                                        "ZN2C_NTF_SETREADY LATEJOIN-v5 "
+                                                        f"cmd=0xA112 seat={join_seat} "
+                                                        "state=11(LOADINGMATCH)",
+                                                        tpdu_cmd=2,
+                                                    )
+                                                    if not sent_loading:
+                                                        _v48_send_app(
+                                                            conn,
+                                                            active_tgame_key,
+                                                            loading_ntf,
+                                                            label,
+                                                            "ZN2C_NTF_SETREADY LATEJOIN-v5-fallback "
+                                                            f"cmd=0xA112 seat={join_seat} "
+                                                            "state=11(LOADINGMATCH)",
+                                                            tpdu_cmd=2,
+                                                        )
+
+                                                    full_join_body = (
+                                                        _v48_u16(ZONE_ERR_SUCC)
+                                                        + _v87_build_game_server_info(
+                                                            ip=int(ip_value),
+                                                            port=int(handoff_port),
+                                                            ds_key=TGAME_DS_KEY,
+                                                            domain=str(domain),
+                                                            is_use_domain=int(use_domain),
+                                                        )
+                                                    )
+                                                    full_join_rsp = _v62_build_server_app(
+                                                        TGAME_ZN_MAGIC,
+                                                        0xA116,
+                                                        full_join_body,
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        full_join_rsp,
+                                                        label,
+                                                        "ZN2C_RES_JOINMATCH LATEJOIN-v5 "
+                                                        "cmd=0xA116 FULL-DSINFO "
+                                                        f"result=0x8100 room={int(room_id_now)} "
+                                                        f"ds={handoff_host}:{handoff_port} "
+                                                        f"body_len={len(full_join_body)} "
+                                                        f"body={full_join_body.hex()}",
+                                                    )
+
+                                                    role_state["v143b_ds_endpoint"] = (
+                                                        f"{handoff_host}:{handoff_port}"
+                                                    )
+                                                    role_state["v132_pve_afdev_handoff_sent"] = True
+                                                    role_state["v132_pve_afdev_handoff_reason"] = (
+                                                        "LATEJOIN-v5 full A116 DSInfo"
+                                                    )
+                                                    role_state["v132_pve_afdev_handoff_at"] = time.time()
+
+                                                    log(
+                                                        "LATEJOIN",
+                                                        f"v5 full A116 published "
+                                                        f"uin={requester_uin} room={room_id_now} "
+                                                        f"endpoint={handoff_host}:{handoff_port} "
+                                                        f"body_len={len(full_join_body)} "
+                                                        "A11A_replay=NO",
+                                                    )
+
+                                                    threading.Thread(
+                                                        target=_latejoin_v3_probe_ds_peer,
+                                                        args=(
+                                                            int(room_id_now),
+                                                            int(requester_uin),
+                                                        ),
+                                                        name=(
+                                                            f"AF-latejoin-v5-probe-"
+                                                            f"{int(requester_uin)}"
+                                                        ),
+                                                        daemon=True,
+                                                    ).start()
+
                                         elif app["cmd"] == TGAME_ZN_REQ_SETINMATCH:
                                             in_match = (
                                                 app["body"][0]
@@ -8729,6 +9167,23 @@ def handle_placeholder(conn, addr, label):
                                                     )
                                                 except SpawnerError as exc:
                                                     log("DS-CLEANUP", f"r10 A11C player tracking failed: {exc}")
+
+                                                # LATEJOIN-v2: persist the room-visible player state.
+                                                # This makes a subsequent late joiner's A105 show
+                                                # already-playing members as InMatch(12), not Unready(8).
+                                                try:
+                                                    inmatch_room_snapshot = V150_ROOM_REGISTRY.set_player_state(
+                                                        _v150_role_uin(role_state),
+                                                        TGAME_PLAYERSTATE_INMATCH,
+                                                        ready=False,
+                                                    )
+                                                    if inmatch_room_snapshot is not None:
+                                                        _v150_sync_role_states(inmatch_room_snapshot)
+                                                except RoomRegistryError as state_e:
+                                                    log(
+                                                        "LATEJOIN",
+                                                        f"v2 A11C registry state update failed: {state_e}",
+                                                    )
                                                 # r11: use the actual shared-room seat for this UIN and
                                                 # publish the A11D state transition to every room member.
                                                 inmatch_seat = int(role_state.get("v88_match_seat", 0))
@@ -8828,7 +9283,7 @@ def handle_placeholder(conn, addr, label):
                                                 _v150_broadcast_room(
                                                     room_id_now,
                                                     quit_ntf,
-                                                    "ZN2C_NTF_QUITMATCH A119-live "
+                                                    "ZN2C_NTF_QUITMATCH A119-test "
                                                     f"cmd=0xA119 seat={quit_seat}",
                                                 )
                                                 if room_id_now is not None
@@ -8840,8 +9295,102 @@ def handle_placeholder(conn, addr, label):
                                                     active_tgame_key,
                                                     quit_ntf,
                                                     label,
-                                                    "ZN2C_NTF_QUITMATCH A119-live-fallback "
+                                                    "ZN2C_NTF_QUITMATCH A119-test-fallback "
                                                     f"cmd=0xA119 seat={quit_seat}",
+                                                )
+
+                                            # LATEJOIN-v5.2:
+                                            # A117 only removes THIS player from the running
+                                            # match. If another player is still in-match, the
+                                            # round is still active and this client must return
+                                            # to the room in "Join game" state, not Ready.
+                                            #
+                                            # The stock client accepts A119 as the transition
+                                            # back into the room UI, then A11A is the already-
+                                            # verified notification that exposes "Join game".
+                                            # Reassert started=True from the authoritative DS
+                                            # membership so room-registry drift cannot turn a
+                                            # still-running match back into a waiting room.
+                                            resume_join_game = False
+                                            remaining_after_quit = (
+                                                int(quit_result.get("remaining_match_players", 0))
+                                                if isinstance(quit_result, dict)
+                                                else 0
+                                            )
+                                            was_active_quitter = bool(
+                                                quit_result.get("was_active", False)
+                                                if isinstance(quit_result, dict)
+                                                else False
+                                            )
+
+                                            if (
+                                                room_id_now is not None
+                                                and was_active_quitter
+                                                and remaining_after_quit > 0
+                                            ):
+                                                try:
+                                                    V150_ROOM_REGISTRY.set_started(
+                                                        int(room_id_now), True
+                                                    )
+                                                except RoomRegistryError as started_e:
+                                                    log(
+                                                        "LATEJOIN",
+                                                        "v5.2 could not reassert started=True "
+                                                        f"room={room_id_now}: {started_e}",
+                                                    )
+
+                                                # Backend room state must also return this
+                                                # player to unready before offering Join game.
+                                                # Do NOT send A112 here: A119 has already
+                                                # completed the stock quit-match UI transition.
+                                                try:
+                                                    quit_room_snapshot = (
+                                                        V150_ROOM_REGISTRY.set_ready(
+                                                            requester_uin, False
+                                                        )
+                                                    )
+                                                    if quit_room_snapshot is not None:
+                                                        _v150_sync_role_states(
+                                                            quit_room_snapshot
+                                                        )
+                                                except RoomRegistryError as ready_e:
+                                                    log(
+                                                        "LATEJOIN",
+                                                        "v5.2 quit-room unready sync warning "
+                                                        f"uin={requester_uin} "
+                                                        f"room={room_id_now}: {ready_e}",
+                                                    )
+
+                                                role_state["v132_match_ready"] = False
+                                                role_state["v147_room_player_state"] = (
+                                                    TGAME_PLAYERSTATE_UNREADY
+                                                )
+
+                                                resume_join_game = (
+                                                    _latejoin_v2_send_running_match_a11a(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        label,
+                                                        role_state,
+                                                        int(room_id_now),
+                                                        reason=(
+                                                            "A117 returned to room while "
+                                                            f"{remaining_after_quit} other "
+                                                            "match player(s) remain"
+                                                        ),
+                                                        commit_handoff=False,
+                                                    )
+                                                )
+
+                                                log(
+                                                    "LATEJOIN",
+                                                    "v5.2 post-A117 active-round resync "
+                                                    f"uin={requester_uin} "
+                                                    f"room={room_id_now} "
+                                                    f"remaining_match_players="
+                                                    f"{remaining_after_quit} "
+                                                    f"started=True "
+                                                    f"join_game_sync={resume_join_game}",
                                                 )
 
                                             log(
@@ -10131,7 +10680,7 @@ def listen_on_port(port, label, sock=None):
 # Startup
 # ---------------------------------------------------------------------------
 
-print("[BOOT] BUILD=v143b-STABLE + VERIFIED TWO-CLIENT LOBBY/ROOM r20 + DS SPAWNER + PVE CLIENT-MAP/A11E SETTINGS (NO NEW-ACCOUNT BRANCH)")
+print("[BOOT] BUILD=v143b-LATEJOIN-v5.3-TEST + ROUND-END MONITOR GUARD + POST-A117 RESYNC + FULL A116 DSINFO (NO COMMIT)")
 print(f"[BOOT] r13 identity projection self-test={'PASS' if _R13_IDENTITY_PROJECTION_SELFTEST else 'FAIL'}")
 print(f"[BOOT] r14 A102 enterability projection self-test={'PASS' if _R14_A102_PROJECTION_SELFTEST else 'FAIL'}")
 print(f"[BOOT] r15 live A103 EnterRoomByRoomId self-test={'PASS' if _R15_A103_ENTER_SELFTEST else 'FAIL'}")
@@ -10295,4 +10844,3 @@ if __name__ == "__main__":
         if not SERVER_ONLY_MODE:
             _V143V_LOCAL_AP_SYNC.stop()
             update_launch_gate_status(ready=False, reason="server shutting down")
-
