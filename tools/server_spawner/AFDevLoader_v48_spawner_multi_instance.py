@@ -5298,38 +5298,46 @@ def _build_native_movement_bridge_v48(remote_base):
     emit(b"\x8B\x3E")
     emit(b"\x8B\xBF" + struct.pack("<I", PVE_MOVEAUTONOMOUS_SLOT_V48))
 
-    # Reconstruct the absolute client view carried by stock ServerMove:
+    # v51 rotation reconstruction, based on the same-era UE3
+    # PlayerController.ServerMove ordering.
+    #
+    # Controller view rotation:
     #   Pitch = View & 0xFFFF
     #   Yaw   = View >> 16
-    #   Roll  = (ClientRoll & 0xFF) << 8
+    #   Roll  = 0
     #
-    # First compute DeltaRot against the authoritative controller rotation and
-    # push the FRotator by value in reverse DWORD order (Roll,Yaw,Pitch).
-    emit(b"\x8B\x45\x2C")                  # eax = View
-    emit(b"\x8B\xC8")                      # ecx = View
-    emit(b"\x25\xFF\xFF\x00\x00")  # eax = Pitch
-    emit(b"\xC1\xE9\x10")                # ecx = Yaw
-    emit(b"\x8B\x55\x28")                # edx = ClientRoll
-    emit(b"\x81\xE2\xFF\x00\x00\x00")
-    emit(b"\xC1\xE2\x08")                # edx = Roll
-    emit(b"\x2B\x86" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x0))
-    emit(b"\x2B\x8E" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x4))
-    emit(b"\x2B\x96" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x8))
-    emit(b"\x52\x51\x50")                # push DeltaRoll/Yaw/Pitch
+    # ClientRoll belongs to the pawn-facing Rot, not controller ViewRot.
+    # For the normal PVE walking/falling path maxPitch=0, so:
+    #   PawnRot.Pitch = 0
+    #   PawnRot.Yaw   = ViewYaw
+    #   PawnRot.Roll  = (ClientRoll & 0xFF) << 8
+    #
+    # Therefore after installing ViewRot:
+    #   DeltaRot = ControllerRotation - PawnRot
+    #            = {ViewPitch, 0, -(ClientRoll<<8)}
+    #
+    # Swimming/flying MaxPitchLimit + Pawn.FaceRotation remain intentionally
+    # outside this focused pass.
+    emit(b"\x8B\x45\x2C")                  # eax = packed View
+    emit(b"\x8B\xC8")                      # ecx = packed View
+    emit(b"\x25\xFF\xFF\x00\x00")          # eax = ViewPitch
+    emit(b"\xC1\xE9\x10")                  # ecx = ViewYaw
+    emit(b"\x33\xD2")                      # edx = 0 (controller Roll)
 
-    # Commit the absolute controller rotation from the same packed view. This
-    # restores the missing outer ServerMove view stage; no Pawn/ClientLoc or
-    # projectile position is written here.
-    emit(b"\x8B\x45\x2C")
-    emit(b"\x8B\xC8")
-    emit(b"\x25\xFF\xFF\x00\x00")
-    emit(b"\xC1\xE9\x10")
-    emit(b"\x8B\x55\x28")
-    emit(b"\x81\xE2\xFF\x00\x00\x00")
-    emit(b"\xC1\xE2\x08")
+    # Commit controller ViewRot = {Pitch,Yaw,0}.
     emit(b"\x89\x86" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x0))
     emit(b"\x89\x8E" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x4))
     emit(b"\x89\x96" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x8))
+
+    # Push FRotator DeltaRot by value in reverse DWORD order:
+    # Roll, Yaw, Pitch.
+    emit(b"\x8B\x55\x28")                  # edx = ClientRoll
+    emit(b"\x81\xE2\xFF\x00\x00\x00")
+    emit(b"\xC1\xE2\x08")                  # PawnRot.Roll = ClientRoll*256
+    emit(b"\xF7\xDA")                      # DeltaRot.Roll = -PawnRot.Roll
+    emit(b"\x52")                          # DeltaRoll
+    emit(b"\x6A\x00")                      # DeltaYaw = 0
+    emit(b"\x50")                          # DeltaPitch = ViewPitch
 
     # MoveAutonomous(float dt, DWORD flags, FVector accel, FRotator deltaRot).
     emit(b"\xFF\x75\xEC")
@@ -5443,10 +5451,10 @@ def install_native_movement_bridge_v48(hproc):
     print(f"[AFDEV-v48] bridge code = 0x{remote:08X} ({len(bridge)} bytes)")
     print(f"[AFDEV-v48] accel scale constant @ +0x{const_off:X} = 0.1")
     print("[AFDEV-v48] Direct ClientLoc->Pawn.Location writes: NONE")
-    print("[AFDEV-v48] View reconstruction: packed View/ClientRoll -> PC Rotation + DeltaRot")
+    print("[AFDEV-v51] Controller ViewRot={ViewPitch,ViewYaw,0}; ClientRoll is pawn-facing only")
     print("[AFDEV-v48] Projectile spawn positions are NOT patched")
-    print("[AFDEV-v48] physics path: PVE +0x4D0 -> 0x008F24B0")
-    print("[AFDEV-v48] correction path: PVE +0x4CC -> 0x008F2620 (CALLED after physics)")
+    print("[AFDEV-v51] DeltaRot ground/falling={ViewPitch,0,-ClientRoll*256}")\n    print("[AFDEV-v51] physics path: PVE +0x4D0 -> 0x008F24B0")
+    print("[AFDEV-v51] correction path: PVE +0x4CC -> 0x008F2620 (CALLED after physics)")\n    print("[AFDEV-v51] Remaining stock gap: Pawn.FaceRotation + swim/fly pitch clamp")
     print("[AFDEV-v48] ===== END NATIVE MOVEMENT + CORRECTION BRIDGE =====")
     print()
 
