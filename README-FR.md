@@ -101,7 +101,7 @@ Si une étape affiche **FAILED**, corrigez ce problème avant de continuer.
 ## Prérequis
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - votre propre installation Assault Fire PH **v1.0.0.24**
 - ce repository
@@ -164,7 +164,7 @@ cd af-emulator
 ## 2. Créer l'environnement Python
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

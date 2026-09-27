@@ -101,7 +101,7 @@ Raw AUTH plaintext/ciphertext لا يتم حفظه تلقائياً لأنه ق�
 ## المتطلبات
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - نسختك الخاصة من Assault Fire PH **v1.0.0.24**
 - هذا repository
@@ -164,7 +164,7 @@ cd af-emulator
 ## 2. إنشاء بيئة Python
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

@@ -101,7 +101,7 @@ Jika suatu langkah menunjukkan **FAILED**, perbaiki masalah tersebut terlebih da
 ## Yang Anda perlukan
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - instalasi Assault Fire PH **v1.0.0.24** milik Anda sendiri
 - repository ini
@@ -170,7 +170,7 @@ cd af-emulator
 ## 2. Buat environment Python
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

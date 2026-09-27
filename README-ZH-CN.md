@@ -2,7 +2,7 @@
 
 **语言：** [English](README.md) | [Tagalog](README-TL.md) | [Cebuano](README-CEB.md) | **简体中文** | [更多语言](README-LANGUAGES.md)
 
-[![Python](https://img.shields.io/badge/Python-3.12+-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Engine](https://img.shields.io/badge/Engine-Unreal%20Engine%203-lightgrey)](#)
 [![Status](https://img.shields.io/badge/status-preservation%20research-orange)](docs/STATUS.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -108,7 +108,7 @@ Raw AUTH plaintext/ciphertext 可能包含认证信息，因此不会自动保�
 ## 你需要准备
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - 你自己的 Assault Fire PH **v1.0.0.24** 游戏文件
 - 本仓库
@@ -187,7 +187,7 @@ cd af-emulator
 仍然在仓库根目录：
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

@@ -2,7 +2,7 @@
 
 **Wika:** [English](README.md) | **Tagalog** | [Cebuano](README-CEB.md) | [简体中文](README-ZH-CN.md) | [Iba pang wika](README-LANGUAGES.md)
 
-[![Python](https://img.shields.io/badge/Python-3.12+-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Engine](https://img.shields.io/badge/Engine-Unreal%20Engine%203-lightgrey)](#)
 [![Status](https://img.shields.io/badge/status-preservation%20research-orange)](docs/STATUS.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -110,7 +110,7 @@ Huwag laktawan ang failed step. Kapag may command na nagsabing **FAILED**, ayusi
 Kailangan mo ng:
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - sarili mong Assault Fire PH **v1.0.0.24** installation
 - repository na ito
@@ -189,7 +189,7 @@ Kung ZIP ang dinownload mo, i-extract ito at mag-`cd` papunta sa extracted repos
 Habang nasa repository root:
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

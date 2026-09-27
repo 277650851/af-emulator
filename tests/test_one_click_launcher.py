@@ -22,8 +22,9 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_script_bootstraps_supported_python_and_requirements(self):
         s = self.text(SCRIPT)
-        self.assertIn('Python.Python.3.14', s)
-        self.assertIn('Python.Python.3.10', s)
+        self.assertIn('9NQ7512CXL7T', s)
+        self.assertIn('Python Install Manager', s)
+        self.assertIn('install default', s)
         self.assertIn('"requirements.txt"', s)
         self.assertIn('"-m", "venv"', s)
         self.assertIn('"pip", "install"', s)
@@ -54,9 +55,23 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertNotIn('function Test-Python312Path', s)
         self.assertNotIn('function Ensure-Python312', s)
 
+    def test_python_install_manager_runtime_is_found_without_path_alias(self):
+        s = self.text(SCRIPT)
+        self.assertIn('function Find-PythonInstallManager', s)
+        self.assertIn('function Find-ManagedPython', s)
+        self.assertIn('list --format=exe --one 3', s)
+        self.assertIn('Microsoft\\WindowsApps\\pymanager.exe', s)
+        self.assertIn('Add-PythonManagerAliasesToPath', s)
+
+    def test_manual_readme_uses_version_agnostic_python_selector(self):
+        s = self.text(README)
+        self.assertIn('py -3 --version', s)
+        self.assertIn('py -3 -m venv .venv', s)
+        self.assertNotIn('py -3.12', s)
+
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v14', s)
+        self.assertIn('2026-09-27-oneclick-v15', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_does_not_elevate_entire_process(self):
@@ -80,16 +95,17 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('Test-SupportedPythonPath $pyLauncher.Source', s)
         self.assertIn('foreach ($minor in @(14, 13, 12, 11, 10))', s)
 
-    def test_winget_fallback_only_tries_one_python_package(self):
+    def test_python_fallback_uses_latest_stable_without_minor_version_pin(self):
         s = self.text(SCRIPT)
-        self.assertIn('Trying $packageId once', s)
-        self.assertIn('$packageId = "Python.Python.3.12"', s)
-        self.assertNotIn('foreach ($packageId in @(', s)
+        self.assertIn('$managerPackageId = "9NQ7512CXL7T"', s)
+        self.assertIn('& $manager install default', s)
+        self.assertIn('latest stable CPython 3', s)
+        self.assertNotIn('Python.Python.3.12', s)
 
     def test_winget_output_cannot_pollute_bootstrap_python_path(self):
         s = self.text(SCRIPT)
         self.assertIn(
-            '& $winget.Source install --exact --id $packageId --silent --accept-package-agreements --accept-source-agreements 2>&1 |',
+            '& $winget.Source install --exact --id $managerPackageId --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 |',
             s,
         )
         self.assertIn(
@@ -97,18 +113,18 @@ class OneClickLauncherTests(unittest.TestCase):
             s,
         )
         self.assertIn(
-            'leaked winget text would otherwise be captured together with the path',
+            "Keep native winget output off PowerShell's success-output pipeline.",
             s,
         )
 
     def test_root_level_python_install_is_detected_before_winget(self):
         s = self.text(SCRIPT)
         self.assertIn(
-            'support simple root-level installs such as C:\\\\Python313\\\\python.exe',
+            r'support simple root-level installs such as C:\Python313\python.exe',
             s,
         )
         self.assertIn(
-            'Get-ChildItem -LiteralPath ($systemDrive + "\\\\") -Directory -Filter "Python*"',
+            r'Get-ChildItem -LiteralPath ($systemDrive + "\") -Directory -Filter "Python*"',
             s,
         )
 

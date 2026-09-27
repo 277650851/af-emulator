@@ -21,7 +21,7 @@
 ## 필요한 것
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - 본인이 보유한 Assault Fire PH **v1.0.0.24**
 - 이 repository
@@ -105,7 +105,7 @@ cd af-emulator
 ## 2. Python environment 생성
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

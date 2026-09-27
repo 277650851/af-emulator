@@ -2,7 +2,7 @@
 
 **Pinulongan:** [English](README.md) | [Tagalog](README-TL.md) | **Cebuano** | [简体中文](README-ZH-CN.md) | [Ubang pinulongan](README-LANGUAGES.md)
 
-[![Python](https://img.shields.io/badge/Python-3.12+-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://www.python.org/)
 [![Engine](https://img.shields.io/badge/Engine-Unreal%20Engine%203-lightgrey)](#)
 [![Status](https://img.shields.io/badge/status-preservation%20research-orange)](docs/STATUS.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -110,7 +110,7 @@ Ayaw laktawi ang failed step. Kung moingon ang command og **FAILED**, ayoha una 
 Kinahanglan nimo:
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - imong kaugalingong Assault Fire PH **v1.0.0.24** installation
 - kini nga repository
@@ -189,7 +189,7 @@ Kung ZIP ang imong gi-download, i-extract kini ug mag-`cd` ngadto sa extracted r
 Samtang naa sa repository root:
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

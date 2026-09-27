@@ -73,7 +73,7 @@ The script handles the annoying parts for you:
 - asks Windows for Administrator permission;
 - finds the game automatically;
 - checks that the client is the supported **Assault Fire PH v1.0.0.24** build;
-- reuses any working Python 3.10+ installation and only tries Windows Package Manager when no supported Python is available;
+- reuses any working Python 3.10+ installation; if none is found, Windows Package Manager installs Python Install Manager, which supplies the current stable Python 3 release;
 - creates a persistent runtime at `GAME_ROOT\.af-emulator-runtime\venv`; older `venv-py312` runtimes are detected and reused automatically;
 - asks whether you want the verified **permanent TCLS.dll compatibility patch**;
 - creates/verifies the local RSA key pair and installs the matching `APClient.dat`;
@@ -271,7 +271,7 @@ The emulator repository does not include the original game client or proprietary
 Before continuing, these two commands should work:
 
 ```powershell
-py -3.12 --version
+py -3 --version
 git --version
 ```
 
@@ -337,7 +337,7 @@ Your PowerShell line should end with something similar to:
 Copy and paste these two commands:
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

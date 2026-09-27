@@ -101,7 +101,7 @@ Preflight report ทั้งหมดถูกเขียนไว้ที่
 ## สิ่งที่ต้องมี
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - Assault Fire PH **v1.0.0.24** ของคุณเอง
 - repository นี้
@@ -164,7 +164,7 @@ cd af-emulator
 ## 2. สร้าง Python environment
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 

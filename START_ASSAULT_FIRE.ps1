@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v14"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v15"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -201,6 +201,79 @@ function Find-VenvPython([string]$VenvDir) {
     return $null
 }
 
+function Find-PythonInstallManager {
+    foreach ($name in @("pymanager.exe", "pymanager")) {
+        $command = Get-Command $name -ErrorAction SilentlyContinue
+        if ($command -and $command.Source -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) {
+            return (Resolve-Path -LiteralPath $command.Source).Path
+        }
+    }
+
+    if ($env:LOCALAPPDATA) {
+        $candidate = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\pymanager.exe"
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
+}
+
+function Find-ManagedPython {
+    $manager = Find-PythonInstallManager
+    if (-not $manager) {
+        return $null
+    }
+
+    try {
+        # The manager reports the executable for the best installed Python 3 runtime.
+        $rows = @(& $manager list --format=exe --one 3 2>$null)
+        if ($LASTEXITCODE -eq 0) {
+            foreach ($row in $rows) {
+                $candidate = ([string]$row).Trim().Trim('"')
+                if (-not $candidate) {
+                    continue
+                }
+
+                $found = Test-SupportedPythonPath $candidate
+                if ($found) {
+                    return $found
+                }
+            }
+        }
+    } catch {}
+
+    return $null
+}
+
+function Add-PythonManagerAliasesToPath {
+    if (-not $env:LOCALAPPDATA) {
+        return
+    }
+
+    $windowsApps = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"
+    if (-not (Test-Path -LiteralPath $windowsApps -PathType Container)) {
+        return
+    }
+
+    $pathEntries = @()
+    if ($env:Path) {
+        $pathEntries = @($env:Path -split [regex]::Escape([System.IO.Path]::PathSeparator))
+    }
+
+    foreach ($entry in $pathEntries) {
+        if ([string]$entry -and ([string]$entry).TrimEnd('\') -ieq $windowsApps.TrimEnd('\')) {
+            return
+        }
+    }
+
+    if ($env:Path) {
+        $env:Path = $windowsApps + [System.IO.Path]::PathSeparator + $env:Path
+    } else {
+        $env:Path = $windowsApps
+    }
+}
+
 function Resolve-SupportedPython([string]$RepoRoot = "", [string]$GameRoot = "") {
     # Reuse the persistent runtime first. "venv" is the new generic location;
     # "venv-py312" is kept for backward compatibility with one-click v11.
@@ -311,6 +384,13 @@ function Resolve-SupportedPython([string]$RepoRoot = "", [string]$GameRoot = "")
         }
     }
 
+    # Python Install Manager keeps runtimes outside the traditional install folders.
+    # Ask it for its installed Python 3 executable so PATH aliases are not required.
+    $managedPython = Find-ManagedPython
+    if ($managedPython) {
+        return $managedPython
+    }
+
     # Scan common per-user and machine-wide CPython install folders. This also
     # catches installs whose only console executable is python312.exe, etc.
     $roots = New-Object System.Collections.Generic.List[string]
@@ -382,41 +462,69 @@ function Ensure-SupportedPython([string]$RepoRoot, [string]$GameRoot) {
     }
 
     Write-Host "[SETUP] No supported Python 3.10+ runtime was found."
-    Write-Host "[SETUP] Trying Windows Package Manager (winget) only because no usable local Python was detected."
+    Write-Host "[SETUP] Trying Windows Package Manager (winget) to install Python Install Manager because no usable local Python was detected."
 
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if ($winget) {
-        # Do not try several Python packages one after another. That made a
-        # failed detection path take minutes. Python 3.12 is only the automatic
-        # fallback installer; already-installed Python 3.10+ versions are all accepted.
-        $packageId = "Python.Python.3.12"
-        Write-Host "[SETUP] Trying $packageId once..."
-        $wingetExit = 1
+    Add-PythonManagerAliasesToPath
+    $manager = Find-PythonInstallManager
+    if (-not $manager) {
+        $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+        if ($winget) {
+            # This is the official Python Install Manager Store product ID.
+            # It installs the manager, which then selects the latest stable CPython 3.
+            $managerPackageId = "9NQ7512CXL7T"
+            Write-Host "[SETUP] Installing Python Install Manager through Windows Package Manager..."
+            $wingetExit = 1
+            try {
+                # Keep native winget output off PowerShell's success-output pipeline.
+                & $winget.Source install --exact --id $managerPackageId --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 |
+                    ForEach-Object { Write-Host ([string]$_) }
+                $wingetExit = $LASTEXITCODE
+            } catch {
+                Write-Host "[WARNING] winget raised an error while installing Python Install Manager: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+
+            Add-PythonManagerAliasesToPath
+            $manager = Find-PythonInstallManager
+            if (-not $manager) {
+                # An install can report that the manager is already present. Recheck Python
+                # before telling the user to do anything manually.
+                $python = Resolve-SupportedPython $RepoRoot $GameRoot
+                if ($python) {
+                    $versionText = Get-PythonVersionText $python
+                    Write-Host "[OK] Supported Python found after winget attempt: $versionText  $python" -ForegroundColor Green
+                    return $python
+                }
+
+                Write-Host "[WARNING] Python Install Manager was not available after the winget attempt (exit $wingetExit)." -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "[WARNING] winget is not available on this Windows installation." -ForegroundColor Yellow
+        }
+    }
+
+    if ($manager) {
+        Write-Host "[SETUP] Installing the current stable Python 3 runtime..."
+        $managerExit = 1
         try {
-            # Keep native winget output off PowerShell's success-output pipeline.
-            # Ensure-SupportedPython is assigned to $bootstrapPython, so leaked
-            # winget text would otherwise be captured together with the path.
-            & $winget.Source install --exact --id $packageId --silent --accept-package-agreements --accept-source-agreements 2>&1 |
+            & $manager install default 2>&1 |
                 ForEach-Object { Write-Host ([string]$_) }
-            $wingetExit = $LASTEXITCODE
+            $managerExit = $LASTEXITCODE
         } catch {
-            Write-Host "[WARNING] winget raised an error for $($packageId): $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "[WARNING] Python Install Manager raised an error: $($_.Exception.Message)" -ForegroundColor Yellow
         }
 
-        Start-Sleep -Seconds 2
+        Add-PythonManagerAliasesToPath
         $python = Resolve-SupportedPython $RepoRoot $GameRoot
         if ($python) {
             $versionText = Get-PythonVersionText $python
-            Write-Host "[OK] Supported Python located after winget attempt: $versionText  $python" -ForegroundColor Green
+            Write-Host "[OK] Supported Python installed: $versionText  $python" -ForegroundColor Green
             return $python
         }
 
-        Write-Host "[WARNING] $packageId did not provide a usable runtime (exit $wingetExit)." -ForegroundColor Yellow
-    } else {
-        Write-Host "[WARNING] winget is not available on this Windows installation." -ForegroundColor Yellow
+        Write-Host "[WARNING] Python Install Manager did not provide a usable Python 3.10+ runtime (exit $managerExit)." -ForegroundColor Yellow
     }
 
-    throw "Python 3.10 or newer is still unavailable. Install any current 64-bit Python 3 release and rerun this launcher."
+    throw "No usable Python 3.10+ interpreter was found. Install any 64-bit Python 3.10+ version or the Python Install Manager, then rerun this launcher."
 }
 
 function Get-PythonVersionText([string]$Exe) {

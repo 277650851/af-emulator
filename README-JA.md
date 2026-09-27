@@ -21,7 +21,7 @@
 ## 必要なもの
 
 - Windows 10/11
-- Python 3.12
+- Python 3.10+
 - Git
 - 自分で用意した Assault Fire PH **v1.0.0.24**
 - この repository
@@ -105,7 +105,7 @@ cd af-emulator
 ## 2. Python environment を作成
 
 ```powershell
-py -3.12 -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
