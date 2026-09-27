@@ -49,14 +49,14 @@ class OneClickLauncherTests(unittest.TestCase):
     def test_launcher_accepts_python_310_or_newer_instead_of_exact_312(self):
         s = self.text(SCRIPT)
         self.assertIn('function Test-SupportedPythonPath', s)
-        self.assertIn('$major -ne 3 -or $minor -lt 10', s)
-        self.assertIn('Do not lock the launcher to one exact Python minor release.', s)
+        self.assertIn("sys.version_info >= (3,10)", s)
+        self.assertIn('nonstandard executable names such as python312.exe', s)
         self.assertNotIn('function Test-Python312Path', s)
         self.assertNotIn('function Ensure-Python312', s)
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v12', s)
+        self.assertIn('2026-09-27-oneclick-v13', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_does_not_elevate_entire_process(self):
@@ -79,6 +79,12 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('Python Launcher default is supported', s)
         self.assertIn('Test-SupportedPythonPath $pyLauncher.Source', s)
         self.assertIn('foreach ($minor in @(14, 13, 12, 11, 10))', s)
+
+    def test_winget_fallback_only_tries_one_python_package(self):
+        s = self.text(SCRIPT)
+        self.assertIn('Trying $packageId once', s)
+        self.assertIn('$packageId = "Python.Python.3.12"', s)
+        self.assertNotIn('foreach ($packageId in @(', s)
 
     def test_native_command_output_cannot_pollute_return_values(self):
         s = self.text(SCRIPT)
