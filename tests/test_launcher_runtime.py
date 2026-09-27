@@ -50,6 +50,8 @@ foreach ($fn in $ast.FindAll({
 }, $false)) {
     . ([scriptblock]::Create($fn.Extent.Text))
 }
+$script:LAUNCHER_CONFIG_PATH = Join-Path $env:AF_TEST_ROOT "launcher.config.json"
+Initialize-LauncherConfig
 """
 
 
@@ -173,6 +175,7 @@ $afdev = Join-Path $acceptedRoot "Binaries\Win32\TGame_AFDEV.exe"
 if ((Get-Sha256 $afdev) -ne $sourceHash) { throw "Confirmed AFDEV copy does not match patched source" }
 if ((Get-Sha256 $acceptedTGame) -ne $sourceHash) { throw "Original TGame.exe was modified" }
 $script:AF_TEST_CONFIRMATION = "NO"
+$script:LauncherConfig.Preferences | Remove-Member -Name ("ConfirmTGame_" + $sourceHash) -ErrorAction SilentlyContinue
 $declinedRoot = New-TestGame "declined unknown build"
 $declinedAfdev = Join-Path $declinedRoot "Binaries\Win32\TGame_AFDEV.exe"
 $declined = $false
@@ -207,6 +210,7 @@ try {
     $declined = $true
 }
 if (-not $declined) { throw "Already-patched TCLS was accepted without consent" }
+$script:LauncherConfig.Preferences | Remove-Member -Name "ContinueWithPatchedTcls" -ErrorAction SilentlyContinue
 $script:AF_TEST_ANSWER = "YES"
 Ensure-PermanentTCLS $env:AF_TEST_REPO $env:AF_TEST_ROOT $env:AF_TEST_PYTHON
 $script:AF_TEST_HASH = "A" * 64
@@ -222,6 +226,44 @@ Write-Host "AF_RUNTIME_TEST_PASS"
 """)
 
 
+
+
+    def test_launcher_preferences_are_saved_and_reused(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.run_launcher(shell, r"""
+$script:AF_TEST_PROMPTS = 0
+function Read-Host([string]$Prompt) {
+    $script:AF_TEST_PROMPTS++
+    if ($Prompt -like "*saved yes*") { return "y" }
+    if ($Prompt -like "*saved no*") { return "n" }
+    return ""
+}
+if (-not (Read-LauncherChoice -Name "SavedYes" -Prompt "saved yes" -DefaultYes $false)) {
+    throw "Lowercase y was not accepted"
+}
+if (Read-LauncherChoice -Name "SavedNo" -Prompt "saved no" -DefaultYes $true) {
+    throw "Lowercase n was not accepted"
+}
+if (-not (Read-LauncherChoice -Name "SavedDefault" -Prompt "saved default" -DefaultYes $true)) {
+    throw "Enter did not choose the displayed Y default"
+}
+function Read-Host([string]$Prompt) { throw "Saved choice unexpectedly prompted again" }
+if (-not (Read-LauncherChoice -Name "SavedYes" -Prompt "saved yes" -DefaultYes $false)) {
+    throw "Saved Y choice changed"
+}
+if (Read-LauncherChoice -Name "SavedNo" -Prompt "saved no" -DefaultYes $true) {
+    throw "Saved N choice changed"
+}
+if (-not (Read-LauncherChoice -Name "SavedDefault" -Prompt "saved default" -DefaultYes $true)) {
+    throw "Saved default choice changed"
+}
+if ($script:AF_TEST_PROMPTS -ne 3) { throw "Saved choices prompted again" }
+if (-not (Test-Path -LiteralPath $script:LAUNCHER_CONFIG_PATH)) {
+    throw "Launcher preferences file was not written"
+}
+Write-Host "AF_RUNTIME_TEST_PASS"
+""")
 
     def test_native_warning_can_be_tee_logged_without_failing_helper(self):
         for shell in self.shells():
