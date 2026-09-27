@@ -417,7 +417,7 @@ def _v150_session_snapshot(uin):
         return dict(s) if s else None
 
 
-def _v150_send_online(uin, app_plain, desc):
+def _v150_send_online(uin, app_plain, desc, tpdu_cmd=0):
     session = _v150_session_snapshot(uin)
     if not session:
         log("ROOM", f"r11 push skipped uin={int(uin)} offline desc={desc}")
@@ -429,13 +429,12 @@ def _v150_send_online(uin, app_plain, desc):
             app_plain,
             session.get("label") or "ZONE",
             desc,
+            tpdu_cmd=tpdu_cmd,
         )
         return True
     except Exception as exc:
         log("ROOM", f"r11 push failed uin={int(uin)} desc={desc}: {type(exc).__name__}: {exc}")
         return False
-
-
 def _v150_sync_role_states(room):
     """Refresh per-connection compatibility mirrors from the shared room."""
     if not isinstance(room, dict):
@@ -456,7 +455,7 @@ def _v150_sync_role_states(room):
         rs["v88_match_camp"] = int(member.get("camp", 1))
 
 
-def _v150_broadcast_room(room_id, app_plain, desc, exclude=()):
+def _v150_broadcast_room(room_id, app_plain, desc, exclude=(), tpdu_cmd=0):
     room = V150_ROOM_REGISTRY.get_room(int(room_id))
     if not room:
         return []
@@ -466,16 +465,9 @@ def _v150_broadcast_room(room_id, app_plain, desc, exclude=()):
         uin = int(member["uin"])
         if uin in excluded:
             continue
-        if _v150_send_online(uin, app_plain, desc):
+        if _v150_send_online(uin, app_plain, desc, tpdu_cmd=tpdu_cmd):
             sent.append(uin)
     return sent
-
-# v143b-r10: bridge-triggered lazy AFDEV with player-scoped shared-DS cleanup. Backend boot creates NO AFDEV and
-# A10A only reserves a slot. A3A0/A113 arms the lightweight UDP bridge; the
-# first valid DS/UE3 datagram received by that allocated bridge starts v48.
-
-# Exact PH semantic text for this non-success result is not yet recovered.
-# It is configurable and used only when local DS capacity is exhausted.
 V143B_ZONE_ERR_NO_DS_CAPACITY = int(
     os.environ.get("AF_ZONE_ERR_NO_DS_CAPACITY", "0x8101"), 0
 ) & 0xFFFF
@@ -6083,24 +6075,31 @@ def _v57_next_server_seq(state):
     return seq
 
 
-def _v48_send_app(conn, key, app_plain, label, desc):
-    # app_plain is the exact plaintext carried by TPDU cmd00.
-    # v62 downstream GEO/ZN responses begin directly with their TDR package
-    # header (0x8202 or 0x3243); no client-style 4-byte app sequence prefix.
+def _v48_send_app(conn, key, app_plain, label, desc, *, tpdu_cmd=0):
+    # Downlink responses use TPDU cmd00; unsolicited server notifications use
+    # cmd02, whose receive branch enters the normal client delivery path.
+    # Both carry the same mode3-encrypted TDR package, starting at its magic
+    # (0x8202 or 0x3243), without a client-style app sequence prefix.
     # r11: room notifications can originate from another ZONE thread, so every
     # write on a given TCP socket is serialized to prevent packet interleaving.
-    pkt, enc = tgame_build_cmd00_mode3(app_plain, key)
+    tpdu_cmd = int(tpdu_cmd)
+    if tpdu_cmd == 0:
+        pkt, enc = tgame_build_cmd00_mode3(app_plain, key)
+        tpdu_log_mode = "v57-cmd00-server-seq"
+    elif tpdu_cmd == 2:
+        pkt, enc = tgame_build_cmd02_mode3_body(app_plain, key)
+        tpdu_log_mode = "v57-cmd02-notification"
+    else:
+        raise ValueError(f"unsupported downstream TPDU command 0x{tpdu_cmd:02x}")
     with _v150_conn_send_lock(conn):
         conn.sendall(pkt)
     log(
         label,
-        f"TX {desc} v57-cmd00-server-seq "
+        f"TX {desc} {tpdu_log_mode} tpdu_cmd=0x{tpdu_cmd:02x} "
         f"plain_len={len(app_plain)} plain={app_plain.hex()} "
         f"enc_len={len(enc)} wire={_short_hex(pkt, 160)}"
     )
     return pkt
-
-
 def tgame_build_cmd01_chgskey(old_key, mode, new_key=b"LOCAL_GAME_KEY01"):
     """Build the post-SYN key-change packet expected after cmd09.
 

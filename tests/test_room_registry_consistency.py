@@ -317,6 +317,36 @@ class VerifiedLobbyPromotionTests(unittest.TestCase):
         change = block.index("ZN2C_NTF_CHANGEMATCHROOMCAMP r20-shared")
         self.assertLess(refresh, change)
 
+    def test_ready_notification_transport_uses_cmd02_end_to_end(self):
+        server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        self.assertIn(
+            "def _v48_send_app(conn, key, app_plain, label, desc, *, tpdu_cmd=0):",
+            server,
+        )
+        self.assertIn("elif tpdu_cmd == 2:", server)
+        self.assertIn("tgame_build_cmd02_mode3_body(app_plain, key)", server)
+        self.assertIn(
+            "def _v150_send_online(uin, app_plain, desc, tpdu_cmd=0):",
+            server,
+        )
+        self.assertIn(
+            "def _v150_broadcast_room(room_id, app_plain, desc, exclude=(), tpdu_cmd=0):",
+            server,
+        )
+        self.assertIn(
+            "_v150_send_online(uin, app_plain, desc, tpdu_cmd=tpdu_cmd)",
+            server,
+        )
+
+        start = server.index('elif app["cmd"] == TGAME_ZN_REQ_SETMATCHROOMREADY:')
+        end = server.index('elif app["cmd"] == TGAME_ZN_REQ_SETGAMESETTINGS:', start)
+        block = server[start:end]
+        self.assertIn("TGAME_PLAYERSTATE_READYTOMATCH", block)
+        self.assertIn("ZN2C_NTF_SETREADY r25-main-shared", block)
+        self.assertIn("tpdu_cmd=2", block)
+
 
 if __name__ == "__main__":
     unittest.main()
