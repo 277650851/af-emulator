@@ -2817,6 +2817,12 @@ TGAME_ZN_NTF_CHANGEMATCHROOMCAMP = 0xA10F
 TGAME_ZN_REQ_SETMATCHROOMREADY = 0xA110
 TGAME_ZN_RES_SETMATCHROOMREADY = 0xA111
 TGAME_ZN_NTF_SETMATCHROOMREADY = 0xA112
+
+# r25-main READY-WIRE PATCH:
+# Live PH 1.0.0.24 A110 body=00 is the empty request/TDR terminator, not
+# boolean False. The working A112 notification carries the room seat plus
+# EPlayerState_ReadyToMatch (9).
+TGAME_PLAYERSTATE_READYTOMATCH = 9
 TGAME_ZN_REQ_STARTMATCH = 0xA113
 TGAME_ZN_RES_STARTMATCH = 0xA114
 TGAME_ZN_REQ_QUITMATCH = 0xA117
@@ -5822,25 +5828,36 @@ def _v132_build_res_ready():
     )
 
 
-def _v134_build_ntf_set_match_room_ready(seat_index=0):
-    """Build ZN2C_NtfSetMatchRoomReady (A112).
+def _v134_build_ntf_set_match_room_ready(
+    seat_index=0,
+    ready_state=TGAME_PLAYERSTATE_READYTOMATCH,
+):
+    """Build the live-working ZN2C_NtfSetMatchRoomReady (A112).
 
-    Recovery evidence:
-      * proto_c2zn already proves adjacent room seat notifications A10F/A11D
-        serialize seat indexes as u16.
-      * the shipped UTGame.u function
-        TGOnlineMultiGameRoom.OnTGOnlineDelegate_NotifySetReady has exactly
-        one parameter: ByteProperty PlayerSeatIndex.
-      * bSetReady() later tests that room seat's PlayerState for
-        PS_READYTOMATCH / PS_READYTOOBSERVE.
+    PH 1.0.0.24 two-client runtime result:
+        Body = u16 SeatIndex | u32 ReadyState
 
-    The online/TDR layer therefore supplies the wire seat index and narrows it
-    to the script-visible byte-sized seat index.
+    For normal fighter Ready:
+        ReadyState = 9 (EPlayerState_ReadyToMatch)
 
-    Minimal stock notification body:
-      u16 SeatIndex
+    Example seat 1:
+        00 01 00 00 00 09
     """
-    body = _v48_u16(int(seat_index) & 0xFFFF)
+    ready_state = int(ready_state)
+    if ready_state != TGAME_PLAYERSTATE_READYTOMATCH:
+        raise ValueError(
+            f"r25-main only verifies ReadyToMatch=9, got {ready_state}"
+        )
+
+    body = (
+        _v48_u16(int(seat_index) & 0xFFFF)
+        + _v48_u32(ready_state)
+    )
+    if len(body) != 6:
+        raise AssertionError(
+            f"r25-main A112 body len={len(body)}, expected 6"
+        )
+
     return _v62_build_server_app(
         TGAME_ZN_MAGIC,
         TGAME_ZN_NTF_SETMATCHROOMREADY,
@@ -8372,7 +8389,10 @@ def handle_placeholder(conn, addr, label):
                                                 )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_SETMATCHROOMREADY:
-                                            ready = bool(app["body"][0]) if app["body"] else True
+                                            # r25-main: live A110 body=00 is an empty-TDR terminator.
+                                            # It means ReadyToMatch, not ready=False.
+                                            ready = True
+                                            ready_state = TGAME_PLAYERSTATE_READYTOMATCH
                                             requester_uin = _v150_role_uin(role_state)
 
                                             # A player can return from UE3 gameplay directly to
@@ -8435,30 +8455,16 @@ def handle_placeholder(conn, addr, label):
                                                 )
 
                                             role_state["v132_match_ready"] = ready
+                                            role_state["v147_room_player_state"] = ready_state
                                             ready_room_snapshot = V150_ROOM_REGISTRY.set_ready(
                                                 requester_uin, ready
                                             )
                                             if ready_room_snapshot is not None:
                                                 _v150_sync_role_states(ready_room_snapshot)
 
-                                            # First ACK the request exactly as before.
-                                            rsp = _v132_build_res_ready()
-                                            _v48_send_app(
-                                                conn,
-                                                active_tgame_key,
-                                                rsp,
-                                                label,
-                                                "ZN2C_RES_SETMATCHROOMREADY v134 "
-                                                f"cmd=0xA111 result=0x8100 ready={int(ready)}",
-                                            )
-
-                                            # v134: A111 is only the request ACK.  The stock
-                                            # TGOnlineMultiGameRoom has a distinct
-                                            # OnTGOnlineDelegate_NotifySetReady(PlayerSeatIndex)
-                                            # path, corresponding to A112.  Without this
-                                            # notification the backend can record ready=True
-                                            # while the retail room seat remains UNREADY.
-                                            #
+                                            # r25-main: do NOT send A111 here.
+                                            # The working stock PH path completes Ready through
+                                            # the shared A112 room-state notification below.
                                             # The creator is initially seat 0; if the user
                                             # switched camps, v94 already tracks the current
                                             # seat in v88_match_seat.
@@ -8467,7 +8473,8 @@ def handle_placeholder(conn, addr, label):
                                                     role_state.get("v88_match_seat", 0)
                                                 )
                                                 ntf = _v134_build_ntf_set_match_room_ready(
-                                                    ready_seat
+                                                    ready_seat,
+                                                    ready_state,
                                                 )
                                                 room_now = role_state.get("v79_created_match_room") or {}
                                                 room_id_now = room_now.get("room_id")
@@ -8475,8 +8482,11 @@ def handle_placeholder(conn, addr, label):
                                                     _v150_broadcast_room(
                                                         room_id_now,
                                                         ntf,
-                                                        "ZN2C_NTF_SETMATCHROOMREADY r11-shared "
-                                                        f"cmd=0xA112 seat={ready_seat}",
+                                                        "ZN2C_NTF_SETREADY r25-main-shared "
+                                                        f"cmd=0xA112 seat={ready_seat} "
+                                                        f"state={ready_state}(MATCH) "
+                                                        f"body={(_v48_u16(ready_seat) + _v48_u32(ready_state)).hex()}",
+                                                        tpdu_cmd=2,
                                                     )
                                                     if room_id_now is not None
                                                     else []
@@ -8484,18 +8494,23 @@ def handle_placeholder(conn, addr, label):
                                                 if not sent_ready:
                                                     _v48_send_app(
                                                         conn, active_tgame_key, ntf, label,
-                                                        "ZN2C_NTF_SETMATCHROOMREADY v134-fallback "
-                                                        f"cmd=0xA112 seat={ready_seat}",
+                                                        "ZN2C_NTF_SETREADY r25-main-fallback "
+                                                        f"cmd=0xA112 seat={ready_seat} "
+                                                        f"state={ready_state}(MATCH) "
+                                                        f"body={(_v48_u16(ready_seat) + _v48_u32(ready_state)).hex()}",
+                                                        tpdu_cmd=2,
                                                     )
                                                 role_state["v134_ready_ntf_sent"] = True
 
                                             log(
                                                 "ROOM",
-                                                f"v134 A110 Ready accepted uin={_v150_role_uin(role_state)} "
+                                                f"r25-main A110 Ready accepted uin={_v150_role_uin(role_state)} "
                                                 f"ready={ready} "
-                                                f"seat={int(role_state.get('v88_match_seat', 0))}; "
+                                                f"seat={int(role_state.get('v88_match_seat', 0))} "
+                                                f"state={ready_state}; "
                                                 f"A112_sent={bool(ready)}; "
-                                                "DS handoff intentionally waits for Start",
+                                                "NO server A111 ACK; A112=u16 seat + u32 state on TPDU cmd02; "
+                                                "DS handoff waits for Start",
                                             )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_SETGAMESETTINGS:
