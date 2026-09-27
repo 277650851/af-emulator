@@ -5352,6 +5352,16 @@ def _build_native_movement_bridge_v48(remote_base):
     emit(b"\x8B\xCE")
     emit(b"\xFF\xD7")
 
+    # v52 remote-facing replication:
+    # The owning controller ViewYaw is authoritative, but the stripped PH
+    # ServerMove path never executes Pawn.FaceRotation. Other clients render
+    # the remote character from Pawn.Rotation, so mirror only the accepted
+    # horizontal ViewYaw into Pawn.Rotation.Yaw after MoveAutonomous.
+    # Leave pawn Pitch/Roll and all stock correction/location logic untouched.
+    emit(b"\x8B\x45\x2C")                  # eax = packed View
+    emit(b"\xC1\xE8\x10")                  # eax = ViewYaw
+    emit(b"\x89\x83" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x4))
+
     # Restore the real PH ServerMove error/correction stage. Static disassembly
     # proves +0x4CC has the SAME 0x28-byte argument ABI and itself returns
     # `ret 0x28`.  It consumes ClientLoc and TimeStamp to choose ACK vs normal
@@ -5460,7 +5470,8 @@ def install_native_movement_bridge_v48(hproc):
     print("[AFDEV-v51] DeltaRot ground/falling={ViewPitch,0,-ClientRoll*256}")
     print("[AFDEV-v51] physics path: PVE +0x4D0 -> 0x008F24B0")
     print("[AFDEV-v51] correction path: PVE +0x4CC -> 0x008F2620 (CALLED after physics)")
-    print("[AFDEV-v51] Remaining stock gap: Pawn.FaceRotation + swim/fly pitch clamp")
+    print("[AFDEV-v52] Pawn.Rotation.Yaw <- ViewYaw for remote-facing replication")
+    print("[AFDEV-v52] Remaining stock gap: full Pawn.FaceRotation semantics + swim/fly pitch clamp")
     print("[AFDEV-v48] ===== END NATIVE MOVEMENT + CORRECTION BRIDGE =====")
     print()
 

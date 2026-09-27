@@ -27,6 +27,21 @@ class PVERuntimeTests(unittest.TestCase):
         self.assertIn("suspended runtime signature validation", s)
         self.assertIn("verify_and_patch(", s)
 
+
+    def test_loader_replicates_authoritative_pawn_yaw_to_remote_clients(self):
+        s = self.text("tools/server_spawner/AFDevLoader_v48_spawner_multi_instance.py")
+        self.assertIn("Pawn.Rotation.Yaw <- ViewYaw for remote-facing replication", s)
+        self.assertIn(
+            'emit(b"\\xC1\\xE8\\x10")                  # eax = ViewYaw',
+            s,
+        )
+        self.assertIn(
+            'emit(b"\\x89\\x83" + struct.pack("<I", PVE_ACTOR_ROTATION_OFFSET_V48 + 0x4))',
+            s,
+        )
+        self.assertIn("PVE_MOVEAUTONOMOUS_IMPL_V48 = 0x008F24B0", s)
+        self.assertIn("PVE_SERVERMOVE_ERROR_IMPL_V48 = 0x008F2620", s)
+
     def test_multi_peer_bridge_is_present(self):
         s = self.text("tools/bridge/af_ds_udp_bridge_v9_multi_peer_latch.py")
         self.assertIn("SESSION_READY", s)
