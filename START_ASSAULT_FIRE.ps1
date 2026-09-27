@@ -355,14 +355,16 @@ function Resolve-SupportedPython([string]$RepoRoot = "", [string]$GameRoot = "")
         }
 
         foreach ($dir in $dirs) {
-            Get-ChildItem -LiteralPath $dir.FullName -Filter "python*.exe" -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -notmatch "(?i)^pythonw" } |
-                ForEach-Object {
-                    $found = Test-SupportedPythonPath $_.FullName
-                    if ($found) {
-                        return $found
-                    }
+            $pythonFiles = @(
+                Get-ChildItem -LiteralPath $dir.FullName -Filter "python*.exe" -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -notmatch "(?i)^pythonw" }
+            )
+            foreach ($pythonFile in $pythonFiles) {
+                $found = Test-SupportedPythonPath $pythonFile.FullName
+                if ($found) {
+                    return $found
                 }
+            }
         }
     }
 
