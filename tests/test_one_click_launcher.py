@@ -79,8 +79,9 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('Do you have your own PRIVATE.PEM here and want to keep using it?', s)
         self.assertIn('Do you have your own PRIVATE.PEM key to use?', s)
         self.assertIn('Your PRIVATE.PEM was preserved', s)
-        self.assertIn('Replace your PRIVATE.PEM and APClient.dat with a new matching pair? [y/N]', s)
-        self.assertIn('$overwriteOwnKey -notmatch "^(?i)y(es)?$"', s)
+        self.assertIn('Prompt "Replace your PRIVATE.PEM and APClient.dat with a new matching pair?"', s)
+        self.assertIn('-DefaultYes $false -DoNotRemember', s)
+        self.assertIn('Your PRIVATE.PEM was preserved', s)
         self.assertIn('forceNewPair -or', s)
 
     def test_elevated_launch_helper_saves_failure_diagnostics(self):
@@ -353,6 +354,17 @@ class OneClickLauncherTests(unittest.TestCase):
             'Start-Process -FilePath $clientExe',
         ):
             self.assertIn(marker, s)
+
+
+    def test_launcher_preferences_are_local_and_documented(self):
+        s = self.text(SCRIPT)
+        config_example = ROOT / "launcher.config.example.json"
+        self.assertIn('launcher.config.json', s)
+        self.assertIn('function Read-LauncherChoice', s)
+        self.assertIn('ConfirmTGame_', s)
+        self.assertTrue(config_example.is_file())
+        self.assertIn('launcher.config.json', self.text(ROOT / ".gitignore"))
+        self.assertIn('launcher.config.json', self.text(README))
 
     def test_readme_promotes_one_click_path(self):
         s = self.text(README)
