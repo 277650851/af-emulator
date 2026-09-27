@@ -37,7 +37,7 @@ class PVERuntimeTests(unittest.TestCase):
         for marker in ("room_players", "match_players", "ROUND_ENDED"):
             self.assertIn(marker, s)
 
-    def test_active_pve_path_has_no_fixed_install_or_map_fallback(self):
+    def test_active_pve_path_auto_detects_game_dir_without_guessing_maps(self):
         server = self.text("server/assaultfire_server_v143b.py")
         spawner = self.text("server/assaultfire_ds_spawner.py")
         bridge = self.text("tools/bridge/af_ds_udp_bridge_v9_multi_peer_latch.py")
@@ -55,6 +55,7 @@ class PVERuntimeTests(unittest.TestCase):
         self.assertIn("AF_GAME_DIR is not set", spawner)
         self.assertIn("automatic default game", spawner)
         self.assertIn("expected <repo-parent>", spawner)
+        self.assertIn("game_dir_source={V143B_DS_CONFIG.game_dir_source}", server)
         self.assertIn("no resolved AFDEV map for ", spawner)
         self.assertNotIn("ZN2C_NTF_STARTMATCH legacy-non-PVE", server)
         self.assertIn("legacy fixed 65008 A11A suppressed", server)
