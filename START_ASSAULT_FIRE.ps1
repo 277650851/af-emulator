@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v19"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v20"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -1154,13 +1154,16 @@ try {
 
     Write-Step "Starting the automatic TGame launch helper"
     $helper = Join-Path $repoRoot "tools\patches\patch_tcls_suspended_launch.py"
+    $helperLog = Join-Path $gameRoot "af_tgame_launch_helper.log"
     $helperCommand = (
         ". " + (Quote-PS $consoleHelper) + "; " +
         "Disable-AFConsoleBlockingSelection; " +
         '$env:AF_CLIENT_ROOT=' + (Quote-PS $gameRoot) + "; " +
         "Set-Location -LiteralPath " + (Quote-PS $repoRoot) + "; " +
         "Write-Host '[AF-ADMIN] TGame launch/OpenProcess helper running elevated.' -ForegroundColor Green; " +
-        "& " + (Quote-PS $venvPython) + " " + (Quote-PS $helper) + " --timeout 900"
+        "& " + (Quote-PS $venvPython) + " " + (Quote-PS $helper) +
+        " --timeout 900 2>&1 | Tee-Object -FilePath " + (Quote-PS $helperLog) + "; " +
+        '$helperExitCode = $LASTEXITCODE; exit $helperExitCode'
     )
 
     Write-Host "[UAC] Administrator permission is required for the TGame launch helper (OpenProcess/WriteProcessMemory)." -ForegroundColor Yellow
@@ -1206,7 +1209,7 @@ try {
                 Start-Sleep -Milliseconds 250
             }
             if ($helperWindow.HasExited -and $helperWindow.ExitCode -ne 0) {
-                throw "The automatic launch helper failed with exit code $($helperWindow.ExitCode). TGame was not accepted as a successful launch."
+                throw "The automatic launch helper failed with exit code $($helperWindow.ExitCode). TGame was not accepted as a successful launch. See helper log: $helperLog"
             }
             if (-not $helperWindow.HasExited) {
                 Write-Host "[WARNING] TGame exists but the launch helper is still running after 30 seconds. Check the helper window before assuming the launch succeeded." -ForegroundColor Yellow
@@ -1247,7 +1250,7 @@ try {
         }
 
         if ($helperWindow.HasExited -and $helperWindow.ExitCode -ne 0) {
-            throw "The automatic launch helper exited with code $($helperWindow.ExitCode). Check its window/log output."
+            throw "The automatic launch helper exited with code $($helperWindow.ExitCode). See helper log: $helperLog"
         }
         Start-Sleep -Seconds 1
     }
