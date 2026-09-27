@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v20"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v21"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -848,15 +848,25 @@ function Ensure-PermanentTCLS([string]$RepoRoot, [string]$GameRoot, [string]$Ven
     $hash = Get-Sha256 $tcls
 
     if ($hash -eq $TCLS_PATCHED_SHA256) {
-        Write-Host "[OK] TCLS.dll permanent compatibility patch is already installed." -ForegroundColor Green
+        Write-Host "[OK] TCLS.dll matches the verified patched PH build: $hash" -ForegroundColor Green
+        $alreadyPatchedAnswer = Read-Host "TCLS.dll is already patched. Continue without patching it again? [Y/n]"
+        if ($alreadyPatchedAnswer -and $alreadyPatchedAnswer -notmatch "^(?i)y(es)?$") {
+            throw "You chose not to continue with the already-patched TCLS.dll. No patch was applied."
+        }
         return
     }
 
     if ($hash -ne $TCLS_ORIGINAL_SHA256) {
-        throw (
-            "Unsupported TCLS.dll build. Expected the verified original or patched PH v1.0.0.24 DLL, " +
-            "but found SHA256 $hash. Nothing was modified."
-        )
+        Write-Host "[WARN] TCLS.dll hash is not the verified original or known patched hash." -ForegroundColor Yellow
+        Write-Host "       Expected original: $TCLS_ORIGINAL_SHA256"
+        Write-Host "       Expected patched:  $TCLS_PATCHED_SHA256"
+        Write-Host "       Found:             $hash"
+        $unknownTclsAnswer = Read-Host "If this TCLS.dll is already patched for this emulator, type YES to continue"
+        if ($unknownTclsAnswer -cne "YES") {
+            throw "Unknown TCLS.dll hash was not confirmed as patched. Nothing was modified."
+        }
+        Write-Host "[OK] User confirmed patched TCLS.dll. The launch helper will still verify its runtime patch-site bytes before modifying memory." -ForegroundColor Green
+        return
     }
 
     Write-Host ""
@@ -1161,9 +1171,10 @@ try {
         '$env:AF_CLIENT_ROOT=' + (Quote-PS $gameRoot) + "; " +
         "Set-Location -LiteralPath " + (Quote-PS $repoRoot) + "; " +
         "Write-Host '[AF-ADMIN] TGame launch/OpenProcess helper running elevated.' -ForegroundColor Green; " +
+        '$savedErrorActionPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"; ' +
         "& " + (Quote-PS $venvPython) + " " + (Quote-PS $helper) +
         " --timeout 900 2>&1 | Tee-Object -FilePath " + (Quote-PS $helperLog) + "; " +
-        '$helperExitCode = $LASTEXITCODE; exit $helperExitCode'
+        '$helperExitCode = $LASTEXITCODE; $ErrorActionPreference = $savedErrorActionPreference; exit $helperExitCode'
     )
 
     Write-Host "[UAC] Administrator permission is required for the TGame launch helper (OpenProcess/WriteProcessMemory)." -ForegroundColor Yellow
