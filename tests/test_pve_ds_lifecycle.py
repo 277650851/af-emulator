@@ -19,6 +19,14 @@ class PVERuntimeTests(unittest.TestCase):
         self.assertIn("zero_dskey", s)
         self.assertIn("native_movement", s)
 
+    def test_loader_builds_private_afdev_copy_and_gates_nonstock_source(self):
+        s = self.text("tools/server_spawner/AFDevLoader_v48_spawner_multi_instance.py")
+        self.assertIn('source_exe = game_dir / "TGame.exe"', s)
+        self.assertIn("shutil.copy2(source_exe, exe)", s)
+        self.assertIn("source_digest.lower() != digest.lower()", s)
+        self.assertIn("suspended runtime signature validation", s)
+        self.assertIn("verify_and_patch(", s)
+
     def test_multi_peer_bridge_is_present(self):
         s = self.text("tools/bridge/af_ds_udp_bridge_v9_multi_peer_latch.py")
         self.assertIn("SESSION_READY", s)
