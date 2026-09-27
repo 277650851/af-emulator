@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v13"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v14"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -325,6 +325,21 @@ function Resolve-SupportedPython([string]$RepoRoot = "", [string]$GameRoot = "")
         $roots.Add($programFilesX86)
     }
 
+    # Also support simple root-level installs such as C:\Python313\python.exe.
+    # These are common on developer/test machines and may not be on PATH.
+    $systemDrive = if ($env:SystemDrive) { $env:SystemDrive } else { "C:" }
+    foreach ($dir in @(Get-ChildItem -LiteralPath ($systemDrive + "\") -Directory -Filter "Python*" -ErrorAction SilentlyContinue)) {
+        foreach ($pythonFile in @(
+            Get-ChildItem -LiteralPath $dir.FullName -Filter "python*.exe" -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notmatch "(?i)^pythonw" }
+        )) {
+            $found = Test-SupportedPythonPath $pythonFile.FullName
+            if ($found) {
+                return $found
+            }
+        }
+    }
+
     foreach ($root in ($roots | Select-Object -Unique)) {
         if (-not (Test-Path -LiteralPath $root -PathType Container)) {
             continue
@@ -378,7 +393,11 @@ function Ensure-SupportedPython([string]$RepoRoot, [string]$GameRoot) {
         Write-Host "[SETUP] Trying $packageId once..."
         $wingetExit = 1
         try {
-            & $winget.Source install --exact --id $packageId --silent --accept-package-agreements --accept-source-agreements
+            # Keep native winget output off PowerShell's success-output pipeline.
+            # Ensure-SupportedPython is assigned to $bootstrapPython, so leaked
+            # winget text would otherwise be captured together with the path.
+            & $winget.Source install --exact --id $packageId --silent --accept-package-agreements --accept-source-agreements 2>&1 |
+                ForEach-Object { Write-Host ([string]$_) }
             $wingetExit = $LASTEXITCODE
         } catch {
             Write-Host "[WARNING] winget raised an error for $($packageId): $($_.Exception.Message)" -ForegroundColor Yellow
