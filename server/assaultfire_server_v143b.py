@@ -10118,6 +10118,8 @@ print(
     f"max_instances={V143B_DS_CONFIG.max_instances} "
     f"public={V143B_DS_CONFIG.public_host}:{V143B_DS_CONFIG.public_port_base}+slot "
     f"afdev={V143B_DS_CONFIG.target_host}:{V143B_DS_CONFIG.target_port_base}+slot "
+    f"game_dir={V143B_DS_CONFIG.game_dir!r} "
+    f"game_dir_source={V143B_DS_CONFIG.game_dir_source} "
     f"default_map={V143B_DS_CONFIG.default_map!r} "
     "flow=A10A reserve only; A3A0/A113 arm bridge + A11A; first DS UDP -> spawn v48; v72 zero-rekey BEFORE SESSION_READY; latch first handshake until AFDEV replies"
 )
