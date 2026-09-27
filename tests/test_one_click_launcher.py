@@ -71,8 +71,15 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v22', s)
+        self.assertIn('2026-09-27-oneclick-v23', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
+
+    def test_launcher_asks_before_replacing_private_key(self):
+        s = self.text(SCRIPT)
+        self.assertIn('Do you have your own PRIVATE.PEM here and want to keep using it?', s)
+        self.assertIn('Do you have your own PRIVATE.PEM key to use?', s)
+        self.assertIn('Your PRIVATE.PEM was preserved', s)
+        self.assertIn('forceNewPair -or', s)
 
     def test_elevated_launch_helper_saves_failure_diagnostics(self):
         s = self.text(SCRIPT)
