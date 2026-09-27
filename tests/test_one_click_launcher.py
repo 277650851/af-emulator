@@ -71,8 +71,14 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v19', s)
+        self.assertIn('2026-09-27-oneclick-v20', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
+
+    def test_elevated_launch_helper_saves_failure_diagnostics(self):
+        s = self.text(SCRIPT)
+        self.assertIn('af_tgame_launch_helper.log', s)
+        self.assertIn('Tee-Object -FilePath', s)
+        self.assertIn('See helper log: $helperLog', s)
 
     def test_launcher_does_not_elevate_entire_process(self):
         s = self.text(SCRIPT)
