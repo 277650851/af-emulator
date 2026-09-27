@@ -117,7 +117,10 @@ function Read-LauncherChoice(
     [switch]$RememberYesOnly,
     [switch]$DoNotRemember
 ) {
-    $savedChoice = Get-LauncherPreference $Name
+    $savedChoice = $null
+    if (-not $DoNotRemember) {
+        $savedChoice = Get-LauncherPreference $Name
+    }
     if ($null -ne $savedChoice) {
         $label = if ($savedChoice) { "Y" } else { "N" }
         Write-Host ("[CONFIG] Saved choice for {0}: {1}" -f $Name, $label) -ForegroundColor DarkGray
@@ -1015,7 +1018,7 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
         $useOwnPrivateKey = Read-LauncherChoice -Name "UseExistingPrivateKey" -Prompt "Do you have your own PRIVATE.PEM here and want to keep using it?" -DefaultYes $true
         $forceNewPair = -not $useOwnPrivateKey
     } else {
-        if (Read-LauncherChoice -Name "UseOwnPrivateKey" -Prompt "Do you have your own PRIVATE.PEM key to use?" -DefaultYes $false) {
+        if (Read-LauncherChoice -Name "UseOwnPrivateKey" -Prompt "Do you have your own PRIVATE.PEM key to use?" -DefaultYes $false -DoNotRemember) {
             $ownPrivateSource = Read-Host "Enter the full path to your PRIVATE.PEM"
             if (-not (Test-Path -LiteralPath $ownPrivateSource -PathType Leaf)) {
                 throw "Your PRIVATE.PEM was not found at: $ownPrivateSource"
