@@ -507,20 +507,25 @@ function Ensure-SupportedPython([string]$RepoRoot, [string]$GameRoot) {
         $managerExit = 1
         for ($attempt = 1; $attempt -le 2; $attempt++) {
             $managerUpdatedDuringInstall = $false
+            $managerOutput = New-Object System.Collections.Generic.List[string]
             try {
                 & $manager install default 2>&1 |
                     ForEach-Object {
                         $line = [string]$_
+                        [void]$managerOutput.Add($line)
                         Write-Host $line
-                        if ($line -match "(?i)Python install manager was successfully updated") {
-                            $managerUpdatedDuringInstall = $true
-                        }
                     }
                 $managerExit = $LASTEXITCODE
             } catch {
                 $message = $_.Exception.Message
                 Write-Host "[WARNING] Python Install Manager raised an error: $message" -ForegroundColor Yellow
                 if ($message -match "(?i)Python install manager was successfully updated") {
+                    $managerUpdatedDuringInstall = $true
+                }
+            }
+
+            foreach ($line in $managerOutput) {
+                if ($line -match "(?i)Python install manager was successfully updated") {
                     $managerUpdatedDuringInstall = $true
                 }
             }
