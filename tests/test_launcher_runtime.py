@@ -188,5 +188,32 @@ Write-Host "AF_RUNTIME_TEST_PASS"
 """)
 
 
+
+    def test_tcls_patch_state_prompts_without_reapplying(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.run_launcher(shell, r"""
+$TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
+$TCLS_PATCHED_SHA256 = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
+$script:AF_TEST_HASH = $TCLS_PATCHED_SHA256
+$script:AF_TEST_ANSWER = "NO"
+function Get-Sha256([string]$Path) { return $script:AF_TEST_HASH }
+function Read-Host([string]$Prompt) { return $script:AF_TEST_ANSWER }
+$declined = $false
+try {
+    Ensure-PermanentTCLS $env:AF_TEST_REPO $env:AF_TEST_ROOT $env:AF_TEST_PYTHON
+} catch {
+    if ($_.Exception.Message -notmatch "You chose not to continue") { throw }
+    $declined = $true
+}
+if (-not $declined) { throw "Already-patched TCLS was accepted without consent" }
+$script:AF_TEST_ANSWER = "YES"
+Ensure-PermanentTCLS $env:AF_TEST_REPO $env:AF_TEST_ROOT $env:AF_TEST_PYTHON
+$script:AF_TEST_HASH = "A" * 64
+Ensure-PermanentTCLS $env:AF_TEST_REPO $env:AF_TEST_ROOT $env:AF_TEST_PYTHON
+Write-Host "AF_RUNTIME_TEST_PASS"
+""")
+
+
 if __name__ == "__main__":
     unittest.main()
