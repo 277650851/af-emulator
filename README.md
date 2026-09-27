@@ -96,6 +96,14 @@ click START
 
 You do **not** need to manually start the server, set `AF_CLIENT_ROOT`, set `AF_GAME_DIR`, run the hosts helper, run the TCLS launch helper, or create `TGame_AFDEV.exe`.
 
+### Run it again without repeating setup answers
+
+The launcher saves your normal **Y/N choices** in a local `launcher.config.json` file beside `START_ASSAULT_FIRE.ps1`. It uses those choices the next time you run the script. Answers are not case-sensitive, and pressing Enter uses the shown default.
+
+The config is created automatically after your first saved choice. If you want to set the common defaults before the first run, copy `launcher.config.example.json` to `launcher.config.json` in the same folder. You can edit the Y/N values in that file. Delete `launcher.config.json` to answer the prompts again from scratch.
+
+For safety, the launcher still asks before replacing a mismatched `PRIVATE.PEM`. An approved non-stock `TGame.exe` hash is remembered only for that exact file hash; a different build needs a new confirmation. The config stores preferences and approved hashes, **not the contents of your private key**, and Git ignores the local config file.
+
 > [!IMPORTANT]
 > The one-click script does **not** download or redistribute Assault Fire files.
 > It only works with the game files you already have. The local `TGame_AFDEV.exe`
