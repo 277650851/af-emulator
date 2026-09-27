@@ -8,6 +8,11 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
+from tgame_test_fixtures import write_tgame_fixture
 LOAD_FUNCTIONS = r"""
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
@@ -57,7 +62,7 @@ Initialize-LauncherConfig
 
 @unittest.skipUnless(os.name == "nt", "Windows launcher integration")
 class LauncherRuntimeTests(unittest.TestCase):
-    def run_launcher(self, shell, body):
+    def run_launcher(self, shell, body, extra_env=None):
         with tempfile.TemporaryDirectory(prefix="AF runtime with spaces ") as tmp:
             env = dict(os.environ)
             env.update(
@@ -66,6 +71,8 @@ class LauncherRuntimeTests(unittest.TestCase):
                 AF_TEST_ROOT=str(Path(tmp).resolve()),
                 AF_TEST_REPO=str(ROOT),
             )
+            if extra_env:
+                env.update(extra_env)
             result = subprocess.run(
                 [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                  "-Command", LOAD_FUNCTIONS + body],
@@ -151,44 +158,56 @@ Write-Host "AF_RUNTIME_TEST_PASS"
 
 
 
-    def test_unknown_tgame_hash_requires_confirmation_and_preserves_source(self):
-        for shell in self.shells():
-            with self.subTest(shell=shell):
-                self.run_launcher(shell, r"""
+    def test_tgame_hash_mismatch_uses_binary_signature_and_preserves_source(self):
+        with tempfile.TemporaryDirectory(prefix="AF TGame fixtures ") as fixtures:
+            unpatched = write_tgame_fixture(Path(fixtures) / "unpatched.exe", "unpatched")
+            patched = write_tgame_fixture(Path(fixtures) / "patched.exe", "patched")
+            for shell in self.shells():
+                with self.subTest(shell=shell):
+                    self.run_launcher(shell, r"""
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
-$script:AF_TEST_CONFIRMATION = "YES"
-function Read-Host([string]$Prompt) { return $script:AF_TEST_CONFIRMATION }
-function New-TestGame([string]$Name) {
+function Read-Host([string]$Prompt) { throw "TGame verification must not ask for confirmation: $Prompt" }
+function New-TestGame([string]$Name, [string]$Source) {
     $gameRoot = Join-Path $env:AF_TEST_ROOT $Name
     $win32 = Join-Path $gameRoot "Binaries\Win32"
     New-Item -ItemType Directory -Path $win32 -Force | Out-Null
-    $tgame = Join-Path $win32 "TGame.exe"
-    [System.IO.File]::WriteAllBytes($tgame, [byte[]](1, 2, 3, 4, 5))
+    Copy-Item -LiteralPath $Source -Destination (Join-Path $win32 "TGame.exe")
     return $gameRoot
 }
-$acceptedRoot = New-TestGame "confirmed patched build"
-$acceptedTGame = Join-Path $acceptedRoot "Binaries\Win32\TGame.exe"
-$sourceHash = Get-Sha256 $acceptedTGame
-if ($sourceHash -eq $EXPECTED_TGAME_SHA256) { throw "Test fixture unexpectedly matches stock hash" }
-Ensure-AFDev $acceptedRoot
-$afdev = Join-Path $acceptedRoot "Binaries\Win32\TGame_AFDEV.exe"
-if ((Get-Sha256 $afdev) -ne $sourceHash) { throw "Confirmed AFDEV copy does not match patched source" }
-if ((Get-Sha256 $acceptedTGame) -ne $sourceHash) { throw "Original TGame.exe was modified" }
-$script:AF_TEST_CONFIRMATION = "NO"
-$script:LauncherConfig.Preferences | Remove-Member -Name ("ConfirmTGame_" + $sourceHash) -ErrorAction SilentlyContinue
-$declinedRoot = New-TestGame "declined unknown build"
-$declinedAfdev = Join-Path $declinedRoot "Binaries\Win32\TGame_AFDEV.exe"
-$declined = $false
-try {
-    Ensure-AFDev $declinedRoot
-} catch {
-    if ($_.Exception.Message -notmatch "not confirmed as patched") { throw }
-    $declined = $true
+foreach ($candidate in @(
+    @{ Name = "compatible clean build"; Source = $env:AF_TEST_TGAME_UNPATCHED; Status = "clean" },
+    @{ Name = "verified patched build"; Source = $env:AF_TEST_TGAME_PATCHED; Status = "patched" }
+)) {
+    $gameRoot = New-TestGame $candidate.Name $candidate.Source
+    $tgame = Join-Path $gameRoot "Binaries\Win32\TGame.exe"
+    $sourceHash = Get-Sha256 $tgame
+    if ($sourceHash -eq $EXPECTED_TGAME_SHA256) { throw "Test fixture unexpectedly matches stock hash" }
+    Ensure-AFDev $gameRoot $env:AF_TEST_PYTHON $env:AF_TEST_REPO
+    $afdev = Join-Path $gameRoot "Binaries\Win32\TGame_AFDEV.exe"
+    if ((Get-Sha256 $afdev) -ne $sourceHash) { throw "$($candidate.Status) AFDEV copy does not match its source" }
+    if ((Get-Sha256 $tgame) -ne $sourceHash) { throw "Original TGame.exe was modified" }
 }
-if (-not $declined) { throw "Unknown hash was accepted without confirmation" }
-if (Test-Path -LiteralPath $declinedAfdev) { throw "Declined TGame caused an AFDEV copy" }
+
+$invalidRoot = Join-Path $env:AF_TEST_ROOT "unknown invalid build"
+$invalidWin32 = Join-Path $invalidRoot "Binaries\Win32"
+New-Item -ItemType Directory -Path $invalidWin32 -Force | Out-Null
+$invalidTGame = Join-Path $invalidWin32 "TGame.exe"
+[System.IO.File]::WriteAllBytes($invalidTGame, [byte[]](1, 2, 3, 4, 5))
+$invalidAfdev = Join-Path $invalidWin32 "TGame_AFDEV.exe"
+$rejected = $false
+try {
+    Ensure-AFDev $invalidRoot $env:AF_TEST_PYTHON $env:AF_TEST_REPO
+} catch {
+    if ($_.Exception.Message -notmatch "patch-site signature is not recognized") { throw }
+    $rejected = $true
+}
+if (-not $rejected) { throw "Unknown TGame binary was accepted" }
+if (Test-Path -LiteralPath $invalidAfdev) { throw "Unknown TGame caused an AFDEV copy" }
 Write-Host "AF_RUNTIME_TEST_PASS"
-""")
+""", {
+                        "AF_TEST_TGAME_UNPATCHED": str(unpatched),
+                        "AF_TEST_TGAME_PATCHED": str(patched),
+                    })
 
 
 

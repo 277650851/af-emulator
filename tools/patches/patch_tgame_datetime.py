@@ -42,9 +42,10 @@ from ctypes import wintypes
 
 try:
     import launch_preflight_gate as launch_gate
+    import tgame_binary
 except Exception as exc:
     raise SystemExit(
-        "Could not import tools/patches/launch_preflight_gate.py. "
+        "Could not import required helpers from tools/patches. "
         "Keep the repository files together.\n"
         f"Import error: {exc}"
     )
@@ -60,14 +61,8 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 PROCESS_NAME = "TGame.exe"
 
-# 0x014B9510 - 0x00400000
-TARGET_RVA = 0x010B9510
-
-# We overwrite exactly these first 8 bytes:
-#   83 EC 24          sub esp,24
-#   53                push ebx
-#   8B 5C 24 2C      mov ebx,[esp+2C]
-EXPECTED_ORIGINAL = bytes.fromhex("83 EC 24 53 8B 5C 24 2C")
+TARGET_RVA = tgame_binary.TARGET_RVA
+EXPECTED_ORIGINAL = tgame_binary.EXPECTED_ORIGINAL
 
 # Process access rights.
 PROCESS_VM_OPERATION = 0x0008
@@ -295,71 +290,6 @@ def write_memory(process, address, data):
         )
 
 
-def build_trampoline(return_va):
-    """
-    Entry stack before the original prologue:
-        [esp+04] year
-        [esp+08] month
-        [esp+0C] day
-        [esp+10] hour
-        [esp+14] minute
-        [esp+18] second
-        [esp+1C] isdst
-
-    Stub:
-        cmp dword [esp+4],1900
-        jge original_prologue
-
-        mov [esp+4],2026
-        mov [esp+8],9
-        mov [esp+C],19
-        mov [esp+10],12
-        mov [esp+14],0
-        mov [esp+18],0
-        mov [esp+1C],-1
-
-    original_prologue:
-        sub esp,24
-        push ebx
-        mov ebx,[esp+2C]
-        push return_va
-        ret
-    """
-    b = bytearray()
-
-    # cmp dword ptr [esp+4], 1900
-    b += bytes.fromhex("81 7C 24 04 6C 07 00 00")
-
-    # jge +0x38 -> skips the seven 8-byte MOV instructions below.
-    b += bytes.fromhex("7D 38")
-
-    fixes = [
-        (0x04, 2026),
-        (0x08, 9),
-        (0x0C, 19),
-        (0x10, 12),
-        (0x14, 0),
-        (0x18, 0),
-        (0x1C, 0xFFFFFFFF),
-    ]
-
-    for disp, value in fixes:
-        # C7 44 24 xx imm32  => mov dword ptr [esp+disp], imm32
-        b += b"\xC7\x44\x24" + bytes([disp])
-        b += struct.pack("<I", value & 0xFFFFFFFF)
-
-    # Original 8-byte prologue we replaced.
-    b += EXPECTED_ORIGINAL
-
-    # Absolute continuation without clobbering a register:
-    # push return_va
-    # ret
-    b += b"\x68" + struct.pack("<I", return_va & 0xFFFFFFFF)
-    b += b"\xC3"
-
-    return bytes(b)
-
-
 def patch_process(pid, base):
     access = (
         PROCESS_QUERY_INFORMATION
@@ -379,6 +309,21 @@ def patch_process(pid, base):
         original = read_memory(process, target, len(EXPECTED_ORIGINAL))
 
         if original != EXPECTED_ORIGINAL:
+            if tgame_binary.matches_runtime_patch(
+                original,
+                target,
+                continuation,
+                lambda address, size: read_memory(process, address, size),
+            ):
+                print()
+                print("PATCHED (already active)")
+                print(f"  PID          : {pid}")
+                print(f"  TGame base   : 0x{base:08X}")
+                print(f"  target       : 0x{target:08X}")
+                print()
+                print("The verified datetime trampoline is already active.")
+                return
+
             raise RuntimeError(
                 "TGame build/signature mismatch.\n"
                 f"Expected at 0x{target:08X}: {EXPECTED_ORIGINAL.hex(' ')}\n"
@@ -386,7 +331,7 @@ def patch_process(pid, base):
                 "Nothing was patched."
             )
 
-        stub = build_trampoline(continuation)
+        stub = tgame_binary.build_trampoline(continuation)
 
         remote = kernel32.VirtualAllocEx(
             process,

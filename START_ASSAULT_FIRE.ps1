@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v25"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v26"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -1122,7 +1122,43 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
     Set-LauncherPreference "UseExistingPrivateKey" $true
 }
 
-function Ensure-AFDev([string]$GameRoot) {
+function Get-TGameBinaryCheck([string]$RepoRoot, [string]$Path, [string]$VenvPython) {
+    $checker = Join-Path $RepoRoot "tools\patches\tgame_binary.py"
+    if (-not (Test-Path -LiteralPath $checker -PathType Leaf)) {
+        throw "TGame binary checker is missing: $checker"
+    }
+
+    $nativePreference = Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+    if ($null -ne $nativePreference) {
+        $savedNativePreference = $nativePreference.Value
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+    try {
+        $output = & $VenvPython $checker --json $Path
+        $exitCode = $LASTEXITCODE
+    } catch {
+        throw "TGame binary inspection could not run: $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $nativePreference) {
+            $PSNativeCommandUseErrorActionPreference = $savedNativePreference
+        }
+    }
+    if ($exitCode -ne 0) {
+        throw "TGame binary inspection failed with exit code $exitCode. $($output -join ' ')"
+    }
+
+    try {
+        $result = ($output -join "`n") | ConvertFrom-Json
+    } catch {
+        throw "TGame binary checker returned invalid output: $($output -join ' ')"
+    }
+    if ($result.status -notin @("unpatched-compatible", "already-patched", "unsupported")) {
+        throw "TGame binary checker returned an unknown status: $($result.status)"
+    }
+    return $result
+}
+
+function Ensure-AFDev([string]$GameRoot, [string]$VenvPython, [string]$RepoRoot) {
     $win32 = Join-Path $GameRoot "Binaries\Win32"
     $tgame = Join-Path $win32 "TGame.exe"
     $afdev = Join-Path $win32 "TGame_AFDEV.exe"
@@ -1130,18 +1166,25 @@ function Ensure-AFDev([string]$GameRoot) {
     $tgameHash = Get-Sha256 $tgame
     $acceptedTGameHash = $EXPECTED_TGAME_SHA256
     if ($tgameHash -ne $EXPECTED_TGAME_SHA256) {
-        Write-Host "[WARN] TGame.exe hash does not match the stock PH v1.0.0.24 build." -ForegroundColor Yellow
-        Write-Host "       Expected: $EXPECTED_TGAME_SHA256"
-        Write-Host "       Found:    $tgameHash"
-        Write-Host "If this is your already-patched TGame.exe, confirm once for this exact SHA256."
-        $hashPreference = "ConfirmTGame_" + $tgameHash
-        if (-not (Read-LauncherChoice -Name $hashPreference -Prompt "Is this TGame.exe already patched for this emulator?" -DefaultYes $false -RememberYesOnly)) {
-            throw "Unsupported TGame.exe was not confirmed as patched. Nothing was changed."
+        Write-Host "[CHECK] TGame.exe hash differs from the stock PH v1.0.0.24 build; inspecting the PE code signature." -ForegroundColor Yellow
+        Write-Host "       Expected SHA256: $EXPECTED_TGAME_SHA256"
+        Write-Host "       Found SHA256:    $tgameHash"
+        $binaryCheck = Get-TGameBinaryCheck $RepoRoot $tgame $VenvPython
+        if ($binaryCheck.status -eq "unsupported") {
+            throw (
+                "Unsupported TGame.exe. Its hash differs from the validated PH v1.0.0.24 build, " +
+                "and its patch-site signature is not recognized. $($binaryCheck.message) Nothing was changed."
+            )
         }
-        # Use the user's confirmed source hash to validate the private AFDEV copy.
+
+        # Use the inspected source hash to validate the private AFDEV copy.
         # Never replace or modify the original TGame.exe.
         $acceptedTGameHash = $tgameHash
-        Write-Host "[OK] User confirmed patched TGame.exe; its hash will be required for the AFDEV copy." -ForegroundColor Green
+        if ($binaryCheck.status -eq "already-patched") {
+            Write-Host "[OK] TGame.exe contains the fully verified datetime patch; its hash will be required for the AFDEV copy." -ForegroundColor Green
+        } else {
+            Write-Host "[OK] TGame.exe has the exact clean patch-site signature; its hash will be required for the AFDEV copy." -ForegroundColor Green
+        }
     } else {
         Write-Host "[OK] TGame.exe is the validated PH v1.0.0.24 build." -ForegroundColor Green
     }
@@ -1160,7 +1203,7 @@ function Ensure-AFDev([string]$GameRoot) {
     }
 
     if ($replace) {
-        Write-Host "[SETUP] Creating TGame_AFDEV.exe from YOUR OWN TGame.exe..."
+        Write-Host "[SETUP] Creating TGame_AFDEV.exe from YOUR OWN verified TGame.exe..."
         Copy-Item -LiteralPath $tgame -Destination $afdev -Force
     }
 
@@ -1261,8 +1304,8 @@ try {
     $bootstrapPython = Ensure-SupportedPython $repoRoot $gameRoot
     $venvPython = Ensure-Venv $repoRoot $gameRoot $bootstrapPython
 
-    Write-Step "Checking the exact supported game build"
-    Ensure-AFDev $gameRoot
+    Write-Step "Checking the supported TGame build and patch signature"
+    Ensure-AFDev $gameRoot $venvPython $repoRoot
 
     Write-Step "Checking TCLS.dll"
     Ensure-PermanentTCLS $repoRoot $gameRoot $venvPython

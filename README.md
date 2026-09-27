@@ -103,16 +103,17 @@ The launcher saves your normal **Y/N choices** in a local `launcher.config.json`
 
 The config is created automatically after your first saved choice. If you want to set the common defaults before the first run, copy `launcher.config.example.json` to `launcher.config.json` in the same folder. You can edit the Y/N values in that file. Delete `launcher.config.json` to answer the prompts again from scratch.
 
-For safety, the launcher still asks before replacing a mismatched `PRIVATE.PEM`. An approved non-stock `TGame.exe` hash is remembered only for that exact file hash; a different build needs a new confirmation. The config stores preferences and approved hashes, **not the contents of your private key**, and Git ignores the local config file.
+For safety, the launcher still asks before replacing a mismatched `PRIVATE.PEM`. If the TGame hash differs, it checks the PE format and the exact datetime patch site; a patched image must also contain the complete known trampoline. This fallback verifies the patch site, not every byte of the executable, so use the same PH v1.0.0.24 game build. The launcher does not accept a file just because you confirm it. The config stores preferences, **not the contents of your private key**, and Git ignores the local config file.
 
 > [!IMPORTANT]
 > The one-click script does **not** download or redistribute Assault Fire files.
 > It only works with the game files you already have. The local `TGame_AFDEV.exe`
-> copy is created only when your `TGame.exe` matches the exact supported build.
+> copy is created only when `TGame.exe` has the exact supported hash or the
+> expected clean or fully patched datetime patch-site signature is verified.
 
 > [!CAUTION]
-> If the script says the `TGame.exe` or `TCLS.dll` hash is unknown, stop.
-> Do not force a patch onto another game version.
+> If the script cannot verify the `TGame.exe` patch-site signature or reports an
+> unknown `TCLS.dll` hash, stop. Do not force a patch onto another game version.
 
 ---
 

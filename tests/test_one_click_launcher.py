@@ -71,7 +71,7 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v25', s)
+        self.assertIn('2026-09-27-oneclick-v26', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_asks_before_replacing_private_key(self):
@@ -361,7 +361,9 @@ class OneClickLauncherTests(unittest.TestCase):
         config_example = ROOT / "launcher.config.example.json"
         self.assertIn('launcher.config.json', s)
         self.assertIn('function Read-LauncherChoice', s)
-        self.assertIn('ConfirmTGame_', s)
+        self.assertIn('function Get-TGameBinaryCheck', s)
+        self.assertIn('tools\\patches\\tgame_binary.py', s)
+        self.assertNotIn('ConfirmTGame_', s)
         self.assertTrue(config_example.is_file())
         self.assertIn('launcher.config.json', self.text(ROOT / ".gitignore"))
         self.assertIn('launcher.config.json', self.text(README))

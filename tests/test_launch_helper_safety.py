@@ -21,6 +21,8 @@ class LaunchHelperStaticSafetyTests(unittest.TestCase):
         self.assertIn("existing_pids = set(find_processes(PROCESS_NAME))", source)
         self.assertIn("pid not in existing_pids", source)
         self.assertIn("require_game_image_matches", source)
+        self.assertIn("matches_runtime_patch", source)
+        self.assertIn("PATCHED (already active)", source)
         self.assertGreaterEqual(source.count("require_launch_ready()"), 2)
 
 
