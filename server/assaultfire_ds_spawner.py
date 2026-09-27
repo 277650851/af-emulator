@@ -79,6 +79,7 @@ class SpawnerConfig:
     target_host: str = "127.0.0.1"
     target_port_base: int = 7777
     game_dir: str = ""
+    game_dir_source: str = ""
     default_map: str = ""
     game_class: str = "PVEGame.TGSVGame"
     ready_timeout: float = 90.0
@@ -97,6 +98,22 @@ class SpawnerConfig:
         here = Path(__file__).resolve().parent
         repo_root = here.parent
 
+        # AF_GAME_DIR is an override, not a requirement.  The normal layout is:
+        #
+        #   <game root>\Binaries\Win32
+        #   <game root>\af-emulator-main\server\assaultfire_ds_spawner.py
+        #
+        # Therefore a repo at e.g.
+        # D:\AssaultFirePH - Copy\af-emulator-main automatically resolves to
+        # D:\AssaultFirePH - Copy\Binaries\Win32 when AF_GAME_DIR is unset.
+        env_game_dir = os.environ.get("AF_GAME_DIR", "").strip()
+        if env_game_dir:
+            game_dir = str(Path(env_game_dir).expanduser().resolve())
+            game_dir_source = "AF_GAME_DIR"
+        else:
+            game_dir = str((repo_root.parent / "Binaries" / "Win32").resolve())
+            game_dir_source = "repo-parent-default"
+
         def env_bool(name: str, default: bool) -> bool:
             raw = os.environ.get(name)
             if raw is None:
@@ -110,7 +127,8 @@ class SpawnerConfig:
             public_port_base=int(os.environ.get("AF_DS_PUBLIC_PORT_BASE", "65008")),
             target_host=os.environ.get("AF_DS_TARGET_HOST", "127.0.0.1"),
             target_port_base=int(os.environ.get("AF_DS_TARGET_PORT_BASE", "7777")),
-            game_dir=os.environ.get("AF_GAME_DIR", "").strip(),
+            game_dir=game_dir,
+            game_dir_source=game_dir_source,
             default_map=os.environ.get("AF_DS_DEFAULT_MAP", "").strip(),
             game_class=os.environ.get("AF_DS_GAME_CLASS", "PVEGame.TGSVGame"),
             ready_timeout=max(5.0, float(os.environ.get("AF_DS_READY_TIMEOUT", "90"))),
@@ -524,11 +542,26 @@ class DedicatedServerSpawner:
 
             game_dir = str(self.config.game_dir or "").strip()
             if not game_dir:
+                # This can only happen for a manually-constructed SpawnerConfig;
+                # from_env() always supplies either AF_GAME_DIR or the repo-parent
+                # Binaries\Win32 default.
                 raise DSStartupError(
-                    "AF_GAME_DIR is not set; point it at your Assault Fire PH Binaries\\Win32 directory"
+                    "AFDEV game directory is empty; set AF_GAME_DIR or place the "
+                    "repository directly under the Assault Fire game root"
                 )
-            if not Path(game_dir).is_dir():
-                raise DSStartupError(f"AF_GAME_DIR does not exist or is not a directory: {game_dir}")
+
+            game_dir_path = Path(game_dir).expanduser()
+            if not game_dir_path.is_dir():
+                if self.config.game_dir_source == "repo-parent-default":
+                    raise DSStartupError(
+                        "AF_GAME_DIR is not set and the automatic default game "
+                        f"directory does not exist: {game_dir_path} "
+                        "(expected <repo-parent>\\Binaries\\Win32)"
+                    )
+                raise DSStartupError(
+                    f"AF_GAME_DIR does not exist or is not a directory: {game_dir_path}"
+                )
+            game_dir = str(game_dir_path.resolve())
             if not str(allocation.map_name or "").strip():
                 raise DSStartupError(
                     "no resolved AFDEV map for "
