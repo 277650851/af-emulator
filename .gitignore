@@ -1,4 +1,7 @@
 # Secrets / credentials
+launcher.config.json
+launcher.config.json.tmp
+launcher.config.json.invalid.*.bak
 *.pem
 *.PEM
 PRIVATE.PEM
