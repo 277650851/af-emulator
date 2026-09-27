@@ -71,7 +71,7 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v15', s)
+        self.assertIn('2026-09-27-oneclick-v16', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_does_not_elevate_entire_process(self):
@@ -101,6 +101,21 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('& $manager install default', s)
         self.assertIn('latest stable CPython 3', s)
         self.assertNotIn('Python.Python.3.12', s)
+
+    def test_manager_self_update_retries_python_runtime_install(self):
+        s = self.text(SCRIPT)
+        self.assertIn('for ($attempt = 1; $attempt -le 2; $attempt++)', s)
+        self.assertIn('$managerUpdatedDuringInstall = $false', s)
+        self.assertIn('Python install manager was successfully updated', s)
+        self.assertIn(
+            'if ($attempt -eq 1 -and $managerUpdatedDuringInstall)',
+            s,
+        )
+        self.assertIn(
+            'Python Install Manager updated itself; retrying runtime installation',
+            s,
+        )
+        self.assertIn('$manager = Find-PythonInstallManager', s)
 
     def test_winget_output_cannot_pollute_bootstrap_python_path(self):
         s = self.text(SCRIPT)
