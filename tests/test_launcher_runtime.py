@@ -210,7 +210,34 @@ if (-not $declined) { throw "Already-patched TCLS was accepted without consent" 
 $script:AF_TEST_ANSWER = "YES"
 Ensure-PermanentTCLS $env:AF_TEST_REPO $env:AF_TEST_ROOT $env:AF_TEST_PYTHON
 $script:AF_TEST_HASH = "A" * 64
-Ensure-PermanentTCLS $env:AF_TEST_REPO $env:AF_TEST_ROOT $env:AF_TEST_PYTHON
+$unknownDeclined = $false
+try {
+    Ensure-PermanentTCLS $env:AF_TEST_REPO $env:AF_TEST_ROOT $env:AF_TEST_PYTHON
+} catch {
+    if ($_.Exception.Message -notmatch "exact verified patched hash") { throw }
+    $unknownDeclined = $true
+}
+if (-not $unknownDeclined) { throw "Unknown TCLS hash was accepted" }
+Write-Host "AF_RUNTIME_TEST_PASS"
+""")
+
+
+
+    def test_native_warning_can_be_tee_logged_without_failing_helper(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.run_launcher(shell, r"""
+$log = Join-Path $env:AF_TEST_ROOT "native helper.log"
+$saved = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+& $env:AF_TEST_PYTHON -c "import sys; print('harmless warning', file=sys.stderr); print('helper ran')" 2>&1 |
+    Tee-Object -FilePath $log
+$exitCode = $LASTEXITCODE
+$ErrorActionPreference = $saved
+if ($exitCode -ne 0) { throw "Warning changed successful native exit code to $exitCode" }
+if (-not (Select-String -Path $log -Pattern "harmless warning" -Quiet)) {
+    throw "Native stderr was not saved in helper log"
+}
 Write-Host "AF_RUNTIME_TEST_PASS"
 """)
 
