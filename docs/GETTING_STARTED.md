@@ -44,18 +44,18 @@ No Git? You can also use GitHub's **Code → Download ZIP**, extract it, and ope
 
 ## 2. Install Python and the dependency
 
-Python **3.12** is recommended.
+Python **3.10 or newer** is supported.
 
 Check that Python works:
 
 ```powershell
-py -3.12 --version
+py --version
 ```
 
 Create a small virtual environment:
 
 ```powershell
-py -3.12 -m venv .venv
+py -m venv .venv
 ```
 
 Install the dependency:
