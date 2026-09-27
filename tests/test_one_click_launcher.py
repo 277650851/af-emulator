@@ -79,6 +79,8 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('Do you have your own PRIVATE.PEM here and want to keep using it?', s)
         self.assertIn('Do you have your own PRIVATE.PEM key to use?', s)
         self.assertIn('Your PRIVATE.PEM was preserved', s)
+        self.assertIn('Replace your PRIVATE.PEM and APClient.dat with a new matching pair? [y/N]', s)
+        self.assertIn('$overwriteOwnKey -notmatch "^(?i)y(es)?$"', s)
         self.assertIn('forceNewPair -or', s)
 
     def test_elevated_launch_helper_saves_failure_diagnostics(self):
