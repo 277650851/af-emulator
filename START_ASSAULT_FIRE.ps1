@@ -29,10 +29,121 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v24"
+$LAUNCHER_REVISION = "2026-09-27-oneclick-v25"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
+
+$script:LAUNCHER_CONFIG_PATH = Join-Path $PSScriptRoot "launcher.config.json"
+$script:LauncherConfig = $null
+
+function New-DefaultLauncherConfig {
+    return [pscustomobject]@{
+        Version = 1
+        Preferences = [pscustomobject]@{}
+    }
+}
+
+function Save-LauncherConfig {
+    $temporaryPath = $script:LAUNCHER_CONFIG_PATH + ".tmp"
+    try {
+        $script:LauncherConfig |
+            ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath $temporaryPath -Encoding UTF8
+        Move-Item -LiteralPath $temporaryPath -Destination $script:LAUNCHER_CONFIG_PATH -Force
+    } catch {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        Write-Host "[WARNING] Could not save launcher preferences: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+function Initialize-LauncherConfig {
+    $script:LauncherConfig = New-DefaultLauncherConfig
+    if (-not (Test-Path -LiteralPath $script:LAUNCHER_CONFIG_PATH -PathType Leaf)) {
+        return
+    }
+
+    try {
+        $loaded = Get-Content -LiteralPath $script:LAUNCHER_CONFIG_PATH -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        if ($null -eq $loaded -or [int]$loaded.Version -ne 1) {
+            throw "Unsupported or missing config version."
+        }
+        if ($null -eq $loaded.PSObject.Properties["Preferences"] -or $null -eq $loaded.Preferences) {
+            $loaded | Add-Member -MemberType NoteProperty -Name Preferences -Value ([pscustomobject]@{}) -Force
+        }
+        if ($loaded.Preferences -isnot [pscustomobject]) {
+            throw "Preferences must be a JSON object."
+        }
+        $script:LauncherConfig = $loaded
+    } catch {
+        $backupPath = $script:LAUNCHER_CONFIG_PATH + ".invalid." + (Get-Date -Format "yyyyMMdd_HHmmss") + ".bak"
+        Copy-Item -LiteralPath $script:LAUNCHER_CONFIG_PATH -Destination $backupPath -Force
+        Write-Host "[WARNING] Launcher config could not be read. A backup was saved to $backupPath; defaults will be used." -ForegroundColor Yellow
+        $script:LauncherConfig = New-DefaultLauncherConfig
+    }
+}
+
+function Set-LauncherPreference([string]$Name, [bool]$Value) {
+    $savedValue = if ($Value) { "Y" } else { "N" }
+    $script:LauncherConfig.Preferences |
+        Add-Member -MemberType NoteProperty -Name $Name -Value $savedValue -Force
+    Save-LauncherConfig
+}
+
+function Get-LauncherPreference([string]$Name) {
+    $property = $script:LauncherConfig.Preferences.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+
+    $value = $property.Value
+    if ($value -is [bool]) {
+        return $value
+    }
+    if ([string]$value -match "^(?i)y(es)?$") {
+        return $true
+    }
+    if ([string]$value -match "^(?i)n(o)?$") {
+        return $false
+    }
+    return $null
+}
+
+function Read-LauncherChoice(
+    [string]$Name,
+    [string]$Prompt,
+    [bool]$DefaultYes,
+    [switch]$RememberYesOnly,
+    [switch]$DoNotRemember
+) {
+    $savedChoice = Get-LauncherPreference $Name
+    if ($null -ne $savedChoice) {
+        $label = if ($savedChoice) { "Y" } else { "N" }
+        Write-Host ("[CONFIG] Saved choice for {0}: {1}" -f $Name, $label) -ForegroundColor DarkGray
+        return [bool]$savedChoice
+    }
+
+    $suffix = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
+    while ($true) {
+        $answer = Read-Host "$Prompt $suffix"
+        if ([string]::IsNullOrWhiteSpace($answer)) {
+            $choice = $DefaultYes
+        } elseif ($answer -match "^(?i)y(es)?$") {
+            $choice = $true
+        } elseif ($answer -match "^(?i)n(o)?$") {
+            $choice = $false
+        } else {
+            Write-Host "Please enter Y or N, or press Enter to use the default." -ForegroundColor Yellow
+            continue
+        }
+
+        if (-not $DoNotRemember -and (-not $RememberYesOnly -or $choice)) {
+            Set-LauncherPreference $Name $choice
+        }
+        return [bool]$choice
+    }
+}
 
 function Write-Title([string]$Text) {
     Write-Host ""
@@ -784,8 +895,7 @@ function Stop-RunningGameProcesses {
         foreach ($p in $running) {
             Write-Host ("  {0} PID={1}" -f $p.ProcessName, $p.Id)
         }
-        $answer = Read-Host "Close these Assault Fire processes automatically? [Y/n]"
-        if ($answer -and $answer -notmatch "^(?i)y(es)?$") {
+        if (-not (Read-LauncherChoice -Name "CloseGameProcesses" -Prompt "Close these Assault Fire processes automatically?" -DefaultYes $true)) {
             throw "Close client.exe/TGame.exe/TGame_AFDEV.exe, then run this script again."
         }
 
@@ -799,8 +909,7 @@ function Stop-RunningGameProcesses {
     if ($debugger) {
         Write-Host ""
         Write-Host "x32dbg is running, but the clean one-click launch helper requires it detached/closed."
-        $answer = Read-Host "Close x32dbg automatically? [Y/n]"
-        if ($answer -and $answer -notmatch "^(?i)y(es)?$") {
+        if (-not (Read-LauncherChoice -Name "CloseDebugger" -Prompt "Close x32dbg automatically?" -DefaultYes $true)) {
             throw "Close or detach x32dbg, then run this script again."
         }
         Stop-Process -Id $debugger.Id -Force -ErrorAction SilentlyContinue
@@ -832,8 +941,7 @@ function Stop-ExistingEmulatorServer([string]$RepoRoot) {
     foreach ($p in $matches) {
         Write-Host "[FOUND] Existing emulator server PID=$($p.ProcessId)"
     }
-    $answer = Read-Host "Stop the existing emulator server and start a clean one? [Y/n]"
-    if ($answer -and $answer -notmatch "^(?i)y(es)?$") {
+    if (-not (Read-LauncherChoice -Name "StopExistingServer" -Prompt "Stop the existing emulator server and start a clean one?" -DefaultYes $true)) {
         throw "An emulator server is already running."
     }
 
@@ -849,8 +957,7 @@ function Ensure-PermanentTCLS([string]$RepoRoot, [string]$GameRoot, [string]$Ven
 
     if ($hash -eq $TCLS_PATCHED_SHA256) {
         Write-Host "[OK] TCLS.dll matches the verified patched PH build: $hash" -ForegroundColor Green
-        $alreadyPatchedAnswer = Read-Host "TCLS.dll is already patched. Continue without patching it again? [Y/n]"
-        if ($alreadyPatchedAnswer -and $alreadyPatchedAnswer -notmatch "^(?i)y(es)?$") {
+        if (-not (Read-LauncherChoice -Name "ContinueWithPatchedTcls" -Prompt "TCLS.dll is already patched. Continue without patching it again?" -DefaultYes $true)) {
             throw "You chose not to continue with the already-patched TCLS.dll. No patch was applied."
         }
         return
@@ -873,8 +980,7 @@ function Ensure-PermanentTCLS([string]$RepoRoot, [string]$GameRoot, [string]$Ven
     Write-Host "The emulator can install the verified permanent raw-PEM compatibility patch once."
     Write-Host "It creates TCLS.dll.bak and verifies the final SHA256."
     Write-Host ""
-    $answer = Read-Host "Patch TCLS.dll permanently so you do not have to do this setup again? [Y/n]"
-    if ($answer -and $answer -notmatch "^(?i)y(es)?$") {
+    if (-not (Read-LauncherChoice -Name "ApplyTclsPatch" -Prompt "Patch TCLS.dll permanently so you do not have to do this setup again?" -DefaultYes $true)) {
         throw (
             "The current emulator preflight requires the verified patched TCLS build. " +
             "No patch was applied because you selected No."
@@ -906,12 +1012,10 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
     $useOwnPrivateKey = $false
     $forceNewPair = $false
     if (Test-Path -LiteralPath $privateKey -PathType Leaf) {
-        $ownKeyAnswer = Read-Host "Do you have your own PRIVATE.PEM here and want to keep using it? [Y/n]"
-        $useOwnPrivateKey = (-not $ownKeyAnswer -or $ownKeyAnswer -match "^(?i)y(es)?$")
+        $useOwnPrivateKey = Read-LauncherChoice -Name "UseExistingPrivateKey" -Prompt "Do you have your own PRIVATE.PEM here and want to keep using it?" -DefaultYes $true
         $forceNewPair = -not $useOwnPrivateKey
     } else {
-        $ownKeyAnswer = Read-Host "Do you have your own PRIVATE.PEM key to use? [y/N]"
-        if ($ownKeyAnswer -match "^(?i)y(es)?$") {
+        if (Read-LauncherChoice -Name "UseOwnPrivateKey" -Prompt "Do you have your own PRIVATE.PEM key to use?" -DefaultYes $false) {
             $ownPrivateSource = Read-Host "Enter the full path to your PRIVATE.PEM"
             if (-not (Test-Path -LiteralPath $ownPrivateSource -PathType Leaf)) {
                 throw "Your PRIVATE.PEM was not found at: $ownPrivateSource"
@@ -928,8 +1032,7 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
         $ownKeyCheckExitCode = $LASTEXITCODE
         if ($ownKeyCheckExitCode -ne 0) {
             Write-Host "[WARN] Your PRIVATE.PEM does not match the installed APClient.dat or verified TCLS build." -ForegroundColor Yellow
-            $overwriteOwnKey = Read-Host "Replace your PRIVATE.PEM and APClient.dat with a new matching pair? [y/N]"
-            if ($overwriteOwnKey -notmatch "^(?i)y(es)?$") {
+            if (-not (Read-LauncherChoice -Name "OverwriteMismatchedPrivateKey" -Prompt "Replace your PRIVATE.PEM and APClient.dat with a new matching pair?" -DefaultYes $false -DoNotRemember)) {
                 throw "Your PRIVATE.PEM was preserved. Install its matching APClient.dat or rerun and choose Y to replace the local key pair."
             }
 
@@ -947,9 +1050,11 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
                 throw "The replacement RSA/APClient pair did not pass TCLS verification. Backups were kept."
             }
             Write-Host "[OK] Replacement RSA/APClient pair passed verification. Original files are backed up." -ForegroundColor Green
+            Set-LauncherPreference "UseExistingPrivateKey" $true
             return
         }
         Write-Host "[OK] Your PRIVATE.PEM matches the client APClient.dat and verified TCLS build. It was kept unchanged." -ForegroundColor Green
+        Set-LauncherPreference "UseExistingPrivateKey" $true
         return
     }
 
@@ -968,6 +1073,7 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
             "--client-config-dir", $clientConfig,
             "--force"
         ) -Description "generate and install local RSA/APClient pair"
+        Set-LauncherPreference "UseExistingPrivateKey" $true
     } else {
         $copyNeeded = $true
         if (Test-Path -LiteralPath $clientAP -PathType Leaf) {
@@ -1010,6 +1116,7 @@ function Ensure-Keys([string]$RepoRoot, [string]$GameRoot, [string]$VenvPython) 
         throw "TCLS/RSA/APClient verification still fails after automatic repair."
     }
     Write-Host "[OK] TCLS/RSA/APClient repaired and verified." -ForegroundColor Green
+    Set-LauncherPreference "UseExistingPrivateKey" $true
 }
 
 function Ensure-AFDev([string]$GameRoot) {
@@ -1023,9 +1130,9 @@ function Ensure-AFDev([string]$GameRoot) {
         Write-Host "[WARN] TGame.exe hash does not match the stock PH v1.0.0.24 build." -ForegroundColor Yellow
         Write-Host "       Expected: $EXPECTED_TGAME_SHA256"
         Write-Host "       Found:    $tgameHash"
-        Write-Host "If this is your already-patched TGame.exe, confirm to continue."
-        $patchedAnswer = Read-Host "Is this TGame.exe already patched for this emulator? Type YES to continue"
-        if ($patchedAnswer -cne "YES") {
+        Write-Host "If this is your already-patched TGame.exe, confirm once for this exact SHA256."
+        $hashPreference = "ConfirmTGame_" + $tgameHash
+        if (-not (Read-LauncherChoice -Name $hashPreference -Prompt "Is this TGame.exe already patched for this emulator?" -DefaultYes $false -RememberYesOnly)) {
             throw "Unsupported TGame.exe was not confirmed as patched. Nothing was changed."
         }
         # Use the user's confirmed source hash to validate the private AFDEV copy.
@@ -1094,6 +1201,8 @@ function Wait-ForLaunchGate([string]$StatusPath, [int]$TimeoutSeconds = 45) {
     }
     throw "Timed out waiting for server preflight_status.json."
 }
+
+Initialize-LauncherConfig
 
 Write-Title "Assault Fire PH - ONE CLICK SETUP + PLAY"
 Write-Host "[AF-ONECLICK] Launcher revision: $LAUNCHER_REVISION"
