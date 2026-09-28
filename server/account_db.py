@@ -144,6 +144,50 @@ def init_db(db_path: str | os.PathLike[str] | None = None) -> Path:
     return path
 
 
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (str(name),),
+        ).fetchone()
+    )
+
+
+def _allocate_uin_for_username(conn: sqlite3.Connection, username_norm: str) -> int:
+    """Allocate from the shared account/game-identity UIN namespace.
+
+    If this login already has a local game identity, registration adopts that
+    same UIN so the nickname/wallet/inventory profile remains attached to the
+    account instead of creating a second identity.
+    """
+    if _table_exists(conn, "game_identities"):
+        mapped = conn.execute(
+            "SELECT uin FROM game_identities WHERE login_key = ?",
+            (username_norm,),
+        ).fetchone()
+        if mapped:
+            mapped_uin = int(mapped["uin"])
+            occupied = conn.execute(
+                "SELECT username_norm FROM accounts WHERE uin = ?",
+                (mapped_uin,),
+            ).fetchone()
+            if occupied and str(occupied["username_norm"]) != username_norm:
+                raise sqlite3.IntegrityError(
+                    f"mapped game UIN {mapped_uin} already belongs to another account"
+                )
+            return mapped_uin
+
+    row = conn.execute("SELECT MAX(uin) AS max_uin FROM accounts").fetchone()
+    max_uin = row["max_uin"] if row and row["max_uin"] is not None else FIRST_UIN - 1
+
+    if _table_exists(conn, "game_identities"):
+        grow = conn.execute("SELECT MAX(uin) AS max_uin FROM game_identities").fetchone()
+        if grow and grow["max_uin"] is not None:
+            max_uin = max(int(max_uin), int(grow["max_uin"]))
+
+    return max(FIRST_UIN, int(max_uin) + 1)
+
+
 def create_account(
     username: str,
     password: str,
@@ -167,11 +211,7 @@ def create_account(
         if existing:
             raise DuplicateUsername("That username is already registered.")
 
-        row = conn.execute(
-            "SELECT MAX(uin) AS max_uin FROM accounts"
-        ).fetchone()
-        max_uin = row["max_uin"] if row and row["max_uin"] is not None else FIRST_UIN - 1
-        uin = max(FIRST_UIN, int(max_uin) + 1)
+        uin = _allocate_uin_for_username(conn, username_norm)
 
         conn.execute(
             """
