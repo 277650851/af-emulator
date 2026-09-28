@@ -8,4 +8,4 @@ This folder contains tools for checking the client files and performing the supp
 - `patch_tgame_datetime.py` and `tgame_binary.py` support the verified TGame compatibility workflow.
 - `launch_preflight_gate.py` enforces the local launch gate.
 
-The one-click `START_ASSAULT_FIRE.ps1` path is the normal player workflow. For manual setup, follow the exact steps in the [main README](../../README.md). Do not force a patch when a file or signature is unknown. When using the suspended-launch helper, do not also run the datetime patch separately.
+The one-click `START_ASSAULT_FIRE.ps1` path is the normal player workflow. It verifies the datetime patch site, saves an exact `TGame.exe.bak`, applies a position-independent permanent patch when a safe executable-section code cave exists, then verifies the installed image. Unknown signatures, conflicting backups, and missing/ambiguous caves fail without overwriting TGame. For manual setup, follow the exact steps in the [main README](../../README.md). When using the suspended-launch helper, do not also run the datetime patch separately.

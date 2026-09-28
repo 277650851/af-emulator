@@ -46,6 +46,75 @@ class TGameBinaryTests(unittest.TestCase):
         self.assertEqual(result["status"], "already-patched")
         self.assertIn("complete datetime trampoline", result["message"])
 
+    def test_position_independent_static_patch_is_accepted_with_dynamic_base(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(
+                Path(temp) / "TGame.exe", "pic-patched", dynamic_base=True
+            )
+            result = tgame_binary.classify_tgame_binary(path)
+
+        self.assertEqual(result["status"], "already-patched")
+        self.assertIn("position-independent", result["message"])
+
+    def test_apply_permanent_patch_creates_exact_backup_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "unpatched")
+            original = path.read_bytes()
+            backup = Path(str(path) + ".bak")
+
+            result = tgame_binary.apply_static_datetime_patch(path)
+            patched = path.read_bytes()
+            repeated = tgame_binary.apply_static_datetime_patch(path)
+
+            self.assertEqual(result["status"], "patched")
+            self.assertEqual(backup.read_bytes(), original)
+            self.assertNotEqual(patched, original)
+            self.assertEqual(repeated["status"], "already-patched")
+            self.assertEqual(path.read_bytes(), patched)
+            self.assertEqual(
+                tgame_binary.classify_tgame_binary(path)["status"], "already-patched"
+            )
+
+    def test_apply_refuses_without_code_cave_and_leaves_target_and_backup_untouched(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "unpatched")
+            with tgame_binary.PE32Image(path) as image:
+                section = image.section_for_rva(
+                    tgame_binary.TARGET_RVA,
+                    len(tgame_binary.EXPECTED_ORIGINAL),
+                    executable=True,
+                )
+                target_offset = image.rva_to_file_offset(
+                    tgame_binary.TARGET_RVA,
+                    len(tgame_binary.EXPECTED_ORIGINAL),
+                    executable=True,
+                )
+            with path.open("r+b") as stream:
+                stream.seek(section.raw_pointer)
+                stream.write(b"\x90" * section.raw_size)
+                stream.seek(target_offset)
+                stream.write(tgame_binary.EXPECTED_ORIGINAL)
+
+            original = path.read_bytes()
+            backup = Path(str(path) + ".bak")
+            with self.assertRaisesRegex(tgame_binary.TGameBinaryError, "no .* code cave"):
+                tgame_binary.apply_static_datetime_patch(path)
+
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse(backup.exists())
+
+    def test_apply_refuses_existing_backup_for_different_original(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "unpatched")
+            original = path.read_bytes()
+            backup = Path(str(path) + ".bak")
+            backup.write_bytes(b"different old build")
+
+            with self.assertRaisesRegex(tgame_binary.TGameBinaryError, "does not match"):
+                tgame_binary.apply_static_datetime_patch(path)
+
+            self.assertEqual(path.read_bytes(), original)
+
     def test_unbacked_fixed_rva_uses_unique_clean_signature_from_executable_section(self):
         with tempfile.TemporaryDirectory() as temp:
             path = write_tgame_fixture(Path(temp) / "TGame.exe", "relocated")
@@ -116,6 +185,28 @@ class TGameBinaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "already-patched")
 
+    def test_cli_apply_writes_patch_and_machine_readable_backup_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "unpatched")
+            original = path.read_bytes()
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(PATCH_TOOLS / "tgame_binary.py"),
+                    "--apply",
+                    "--json",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], "patched")
+            self.assertEqual(Path(payload["backup_path"]).read_bytes(), original)
+
     def test_relocatable_static_patch_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             path = write_tgame_fixture(
@@ -139,6 +230,19 @@ class TGameBinaryTests(unittest.TestCase):
                 site,
                 continuation,
                 lambda address, size: expected if address == trampoline and size == len(expected) else b"",
+            )
+        )
+        static_expected = tgame_binary.build_static_trampoline(site, trampoline)
+        self.assertTrue(
+            tgame_binary.matches_runtime_patch(
+                entry,
+                site,
+                continuation,
+                lambda address, size: (
+                    static_expected
+                    if address == trampoline and size == len(static_expected)
+                    else b""
+                ),
             )
         )
         self.assertFalse(

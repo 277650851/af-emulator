@@ -158,7 +158,7 @@ Write-Host "AF_RUNTIME_TEST_PASS"
 
 
 
-    def test_tgame_hash_mismatch_uses_binary_signature_and_preserves_source(self):
+    def test_ensure_afdev_permanently_patches_verified_clean_tgame_with_backup(self):
         with tempfile.TemporaryDirectory(prefix="AF TGame fixtures ") as fixtures:
             unpatched = write_tgame_fixture(Path(fixtures) / "unpatched.exe", "unpatched")
             patched = write_tgame_fixture(Path(fixtures) / "patched.exe", "patched")
@@ -188,8 +188,18 @@ foreach ($candidate in @(
     if ($sourceHash -eq $EXPECTED_TGAME_SHA256) { throw "Test fixture unexpectedly matches stock hash" }
     Ensure-AFDev $gameRoot $env:AF_TEST_PYTHON $env:AF_TEST_REPO
     $afdev = Join-Path $gameRoot "Binaries\Win32\TGame_AFDEV.exe"
-    if ((Get-Sha256 $afdev) -ne $sourceHash) { throw "$($candidate.Status) AFDEV copy does not match its source" }
-    if ((Get-Sha256 $tgame) -ne $sourceHash) { throw "Original TGame.exe was modified" }
+    $finalHash = Get-Sha256 $tgame
+    if ((Get-Sha256 $afdev) -ne $finalHash) { throw "$($candidate.Status) AFDEV copy does not match patched source" }
+    $finalCheck = Get-TGameBinaryCheck $env:AF_TEST_REPO $tgame $env:AF_TEST_PYTHON
+    if ($finalCheck.status -ne "already-patched") { throw "$($candidate.Status) TGame is not verified patched: $($finalCheck.message)" }
+    if ($candidate.Status -eq "clean" -or $candidate.Status -eq "relocated") {
+        $backup = "$tgame.bak"
+        if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) { throw "$($candidate.Status) TGame backup is missing" }
+        if ((Get-Sha256 $backup) -ne $sourceHash) { throw "$($candidate.Status) TGame backup does not match its original bytes" }
+        if ($finalHash -eq $sourceHash) { throw "$($candidate.Status) TGame was not permanently patched" }
+    } elseif ($finalHash -ne $sourceHash) {
+        throw "Already-patched TGame was unexpectedly modified"
+    }
 }
 
 $invalidRoot = Join-Path $env:AF_TEST_ROOT "unknown invalid build"

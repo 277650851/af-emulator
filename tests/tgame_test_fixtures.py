@@ -20,10 +20,15 @@ RAW_POINTER = 0x200
 
 def write_tgame_fixture(path: Path, state: str = "unpatched", *, dynamic_base: bool = False) -> Path:
     path = Path(path)
-    patched_stub = tgame_binary.build_trampoline(
-        IMAGE_BASE + tgame_binary.TARGET_RVA + len(tgame_binary.EXPECTED_ORIGINAL)
-    )
     trampoline_rva = tgame_binary.TARGET_RVA - 0x200
+    if state == "pic-patched":
+        patched_stub = tgame_binary.build_static_trampoline(
+            tgame_binary.TARGET_RVA, trampoline_rva
+        )
+    else:
+        patched_stub = tgame_binary.build_trampoline(
+            IMAGE_BASE + tgame_binary.TARGET_RVA + len(tgame_binary.EXPECTED_ORIGINAL)
+        )
     last_rva = max(
         tgame_binary.TARGET_RVA + tgame_binary.PATCHED_ENTRY_SIZE,
         trampoline_rva + len(patched_stub),
@@ -69,7 +74,7 @@ def write_tgame_fixture(path: Path, state: str = "unpatched", *, dynamic_base: b
         target_offset = RAW_POINTER + tgame_binary.TARGET_RVA - SECTION_RVA
         if state == "unpatched":
             entry = tgame_binary.EXPECTED_ORIGINAL
-        elif state == "patched":
+        elif state in {"patched", "pic-patched"}:
             displacement = trampoline_rva - (tgame_binary.TARGET_RVA + 5)
             entry = b"\xE9" + struct.pack("<i", displacement) + b"\x90\x90\x90"
             trampoline_offset = RAW_POINTER + trampoline_rva - SECTION_RVA

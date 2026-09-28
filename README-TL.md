@@ -13,7 +13,7 @@ Isa itong hindi opisyal na proyekto para mapangalagaan ang **Assault Fire PH** a
 3. Awtomatikong susuriin ng launcher ang bersyon at setup, ihahanda ang mga lokal na key, at sisimulan ang server, launch helper, at game client.
 4. Mag-login sa client. Kapag lumitaw na ang **START**, i-click ito para magpatuloy.
 
-Sa normal na one-click setup, hindi mo kailangang mano-manong patakbuhin ang server o patch tools. Hindi nagda-download o namamahagi ng game files ang script; sarili mong lokal na files lang ang ginagamit nito. Kung hindi tugma ang bersyon o hindi ma-verify ang signature ng `TGame.exe` o `TCLS.dll`, huminto at huwag pilitin ang patch.
+Sa normal na one-click setup, hindi mo kailangang mano-manong patakbuhin ang server o patch tools. Hindi nagda-download o namamahagi ng game files ang script; sarili mong lokal na files lang ang ginagamit nito. Kung hindi tugma ang bersyon o hindi ma-verify ang signature ng `TGame.exe` o `TCLS.dll`, huminto at huwag pilitin ang patch. Bago mag-launch, permanenteng inilalapat ng launcher ang beripikadong date/time patch sa `TGame.exe` at gumagawa muna ng eksaktong backup na `TGame.exe.bak`. Kapag hindi ma-verify ang signature o makahanap ng ligtas na code space, hindi nito babaguhin ang file.
 
 ## Manual setup at para sa developer
 

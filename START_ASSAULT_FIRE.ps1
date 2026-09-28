@@ -15,8 +15,9 @@ Recommended layout:
 The repository contents may also be copied directly into the game root.
 
 This script does NOT download or redistribute Assault Fire game files.
-When PvE support is prepared, TGame_AFDEV.exe is made as a local private copy
-of the user's exact validated TGame.exe.
+Before launch, the verified datetime patch is applied to the user's TGame.exe
+with an exact TGame.exe.bak backup. TGame_AFDEV.exe is then made as a local
+private copy of that verified patched executable.
 #>
 
 [CmdletBinding()]
@@ -79,7 +80,7 @@ if (-not (Test-IsAdministrator)) {
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-28-oneclick-v32"
+$LAUNCHER_REVISION = "2026-09-28-oneclick-v33"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -580,23 +581,53 @@ function Ensure-Keys([string]$RepoRoot,[string]$GameRoot,[string]$VenvPython){
     Write-Host "[REPAIR] Existing RSA files are inconsistent. Rebuilding the local pair..."; Backup-IfExists $privateKey "oneclick_mismatch"; Backup-IfExists $publicKey "oneclick_mismatch"; Backup-IfExists $clientAP "oneclick_mismatch"; Invoke-Checked -Exe $VenvPython -Arguments @($generator,"--client-config-dir",$clientConfig,"--force") -Description "regenerate matching local RSA/APClient pair"; & $VenvPython $diagnose --client-root $GameRoot; if($LASTEXITCODE -ne 0){throw "TCLS/RSA/APClient verification still fails after automatic repair."}; Write-Host "[OK] TCLS/RSA/APClient repaired and verified." -ForegroundColor Green; Set-LauncherPreference "UseExistingPrivateKey" $true
 }
 
-function Get-TGameBinaryCheck([string]$RepoRoot,[string]$Path,[string]$VenvPython){
+function Get-TGameBinaryCheck([string]$RepoRoot,[string]$Path,[string]$VenvPython,[switch]$Apply){
     $checker=Join-Path $RepoRoot "tools\patches\tgame_binary.py"; if(-not(Test-Path -LiteralPath $checker -PathType Leaf)){throw "TGame binary checker is missing: $checker"}
     $nativePreference=Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue; if($null -ne $nativePreference){$savedNativePreference=$nativePreference.Value; $PSNativeCommandUseErrorActionPreference=$false}
-    try{$output=& $VenvPython $checker --json $Path; $exitCode=$LASTEXITCODE}catch{throw "TGame binary inspection could not run: $($_.Exception.Message)"}finally{if($null -ne $nativePreference){$PSNativeCommandUseErrorActionPreference=$savedNativePreference}}
+    $arguments=@(); if($Apply){$arguments+=@("--apply")}; $arguments+=@("--json",$Path)
+    try{$output=& $VenvPython $checker @arguments; $exitCode=$LASTEXITCODE}catch{throw "TGame binary inspection/patch could not run: $($_.Exception.Message)"}finally{if($null -ne $nativePreference){$PSNativeCommandUseErrorActionPreference=$savedNativePreference}}
     # The checker intentionally returns exit code 1 for a well-formed
     # {status:"unsupported"} result. Parse the machine-readable result first
     # so Ensure-AFDev can report the precise unsupported-signature message.
     try{$result=($output -join "`n")|ConvertFrom-Json}catch{throw "TGame binary checker returned invalid output (exit $exitCode): $($output -join ' ')"}
-    if($result.status -notin @("unpatched-compatible","already-patched","unsupported")){throw "TGame binary checker returned an unknown status: $($result.status)"}
+    $knownStatuses=@("unpatched-compatible","already-patched","unsupported"); if($Apply){$knownStatuses+=@("patched")}
+    if($result.status -notin $knownStatuses){throw "TGame binary checker returned an unknown status: $($result.status)"}
     if($exitCode -ne 0 -and $result.status -ne "unsupported"){throw "TGame binary inspection failed with exit code $exitCode. $($output -join ' ')"}
     return $result
 }
 
 function Ensure-AFDev([string]$GameRoot,[string]$VenvPython,[string]$RepoRoot){
-    $win32=Join-Path $GameRoot "Binaries\Win32"; $tgame=Join-Path $win32 "TGame.exe"; $afdev=Join-Path $win32 "TGame_AFDEV.exe"; $tgameHash=Get-Sha256 $tgame; $acceptedTGameHash=$EXPECTED_TGAME_SHA256
-    if($tgameHash -ne $EXPECTED_TGAME_SHA256){Write-Host "[CHECK] TGame.exe hash differs from the stock PH v1.0.0.24 build; inspecting the PE code signature." -ForegroundColor Yellow; Write-Host "       Expected SHA256: $EXPECTED_TGAME_SHA256"; Write-Host "       Found SHA256:    $tgameHash"; $binaryCheck=Get-TGameBinaryCheck $RepoRoot $tgame $VenvPython; if($binaryCheck.status -eq "unsupported"){throw("Unsupported TGame.exe. Its hash differs from the validated PH v1.0.0.24 build, "+"and its patch-site signature is not recognized. $($binaryCheck.message) Nothing was changed.")}; $acceptedTGameHash=$tgameHash; if($binaryCheck.status -eq "already-patched"){Write-Host "[OK] TGame.exe contains the fully verified datetime patch; its hash will be required for the AFDEV copy." -ForegroundColor Green}else{Write-Host "[OK] TGame.exe has a verified clean datetime patch signature at RVA $($binaryCheck.target_rva); the runtime helper will verify it again before patching." -ForegroundColor Green}}
-    else{Write-Host "[OK] TGame.exe is the validated PH v1.0.0.24 build." -ForegroundColor Green}
+    $win32=Join-Path $GameRoot "Binaries\Win32"; $tgame=Join-Path $win32 "TGame.exe"; $afdev=Join-Path $win32 "TGame_AFDEV.exe"; $tgameHash=Get-Sha256 $tgame
+    if($tgameHash -eq $EXPECTED_TGAME_SHA256){Write-Host "[OK] TGame.exe matches the validated PH v1.0.0.24 build." -ForegroundColor Green}
+    else{Write-Host "[CHECK] TGame.exe hash differs from the stock PH v1.0.0.24 build; verifying its datetime patch signature." -ForegroundColor Yellow; Write-Host "       Expected SHA256: $EXPECTED_TGAME_SHA256"; Write-Host "       Found SHA256:    $tgameHash"}
+
+    $binaryCheck=Get-TGameBinaryCheck $RepoRoot $tgame $VenvPython
+    if($binaryCheck.status -eq "unsupported"){
+        throw("Unsupported TGame.exe. Its patch-site signature is not recognized: $($binaryCheck.message) Nothing was changed.")
+    }
+    if($binaryCheck.status -eq "unpatched-compatible"){
+        Write-Host "[PATCH] Applying the verified datetime patch to TGame.exe. A byte-exact TGame.exe.bak is required first." -ForegroundColor Yellow
+        $patchResult=Get-TGameBinaryCheck $RepoRoot $tgame $VenvPython -Apply
+        if($patchResult.status -notin @("patched","already-patched")){
+            throw "Permanent TGame datetime patch failed safely: $($patchResult.message)"
+        }
+        $backupPath="$tgame.bak"
+        if(-not(Test-Path -LiteralPath $backupPath -PathType Leaf)){
+            throw "The datetime patch completed without a TGame.exe.bak backup. TGame.exe was not accepted."
+        }
+        if((Get-Sha256 $backupPath) -ne $tgameHash){
+            throw "TGame.exe.bak does not match the original TGame.exe. The patched game was not accepted."
+        }
+        $binaryCheck=Get-TGameBinaryCheck $RepoRoot $tgame $VenvPython
+        if($binaryCheck.status -ne "already-patched"){
+            throw "TGame.exe failed verification after the permanent datetime patch: $($binaryCheck.message)"
+        }
+        Write-Host "[OK] TGame.exe datetime patch is installed and verified; original saved as TGame.exe.bak." -ForegroundColor Green
+    }
+    else{
+        Write-Host "[OK] TGame.exe already contains the fully verified datetime patch." -ForegroundColor Green
+    }
+    $acceptedTGameHash=Get-Sha256 $tgame
     $replace=$false; if(-not(Test-Path -LiteralPath $afdev -PathType Leaf)){$replace=$true; Write-Host "[SETUP] TGame_AFDEV.exe is missing."}else{$afdevHash=Get-Sha256 $afdev; if($afdevHash -ne $acceptedTGameHash){Write-Host "[REPAIR] Existing TGame_AFDEV.exe does not match the accepted TGame.exe."; Backup-IfExists $afdev "oneclick_wrong_build"
             $replace = $true
         }
@@ -763,7 +794,7 @@ try{
     Write-Host "  2. When the START button appears, click START."
     Write-Host ""
     Write-Host "You do NOT need to run the server, patcher, hosts helper, or client.exe manually anymore."
-    Write-Host "The temporary suspended-launch and TGame datetime patches will be applied automatically."
+    Write-Host "The TGame datetime patch is permanent and backed up as TGame.exe.bak; launch suspension is temporary."
     Write-Host ""
     Write-Host "[WAIT] Waiting for TGame.exe to appear (up to 15 minutes)..."
     $deadline = (Get-Date).AddMinutes(15)
@@ -773,7 +804,7 @@ try{
             Write-Host ""
             Write-Host "[WAIT] TGame.exe appeared as PID=$($game.Id). Waiting for the datetime patch and resume..."
             Wait-ForTgameHelperComplete $helperLog $helperWindow 60
-            Write-Host "[SUCCESS] TGame datetime patch was applied and its primary thread resumed." -ForegroundColor Green
+            Write-Host "[SUCCESS] TGame datetime patch was verified and its primary thread resumed." -ForegroundColor Green
             Write-Host "[SUCCESS] TGame.exe launched. PID=$($game.Id)" -ForegroundColor Green
             if ($KeepServer) {
                 Write-Host "[SUCCESS] -KeepServer was selected; the emulator server will remain running."

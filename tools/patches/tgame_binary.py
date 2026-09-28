@@ -4,15 +4,21 @@
 The whole-file SHA-256 is the primary build check. If it differs, this module
 checks the PE32 image and the exact code at the datetime patch site. When the
 usual RVA has no file bytes, it accepts only one matching clean signature or a
-complete known trampoline in an executable section.
+complete known trampoline in an executable section. Its optional permanent
+patch operation requires a verified code cave and an exact `.bak` backup.
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
+import hashlib
 import json
+import os
+import shutil
 import struct
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -139,10 +145,9 @@ class PE32Image:
                 )
             )
 
-    def read_rva(self, rva: int, size: int, *, executable: bool = False) -> bytes:
-        if rva < self.size_of_headers and rva + size <= self.size_of_headers:
-            return self.read_at(rva, size)
-
+    def section_for_rva(
+        self, rva: int, size: int, *, executable: bool = False
+    ) -> Section:
         matches = []
         for section in self.sections:
             span = max(section.virtual_size, section.raw_size)
@@ -159,7 +164,19 @@ class PE32Image:
             raise TGameBinaryError(f"RVA 0x{rva:X} is not in an executable section")
         if delta + size > section.raw_size:
             raise UnbackedRVAError(f"RVA 0x{rva:X} has no backing file bytes")
-        return self.read_at(section.raw_pointer + delta, size)
+        return section
+
+    def rva_to_file_offset(
+        self, rva: int, size: int, *, executable: bool = False
+    ) -> int:
+        if rva < self.size_of_headers and rva + size <= self.size_of_headers:
+            return rva
+        section = self.section_for_rva(rva, size, executable=executable)
+        return section.raw_pointer + rva - section.virtual_address
+
+    def read_rva(self, rva: int, size: int, *, executable: bool = False) -> bytes:
+        offset = self.rva_to_file_offset(rva, size, executable=executable)
+        return self.read_at(offset, size)
 
 
 def find_original_patch_sites(image: PE32Image) -> list[int]:
@@ -182,7 +199,7 @@ def find_original_patch_sites(image: PE32Image) -> list[int]:
             if offset < 0:
                 break
             end = offset + len(EXPECTED_ORIGINAL)
-            embedded_copy = (
+            old_static_trampoline = (
                 offset >= len(embedded_copy_prefix)
                 and data[offset - len(embedded_copy_prefix):offset]
                 == embedded_copy_prefix
@@ -190,17 +207,21 @@ def find_original_patch_sites(image: PE32Image) -> list[int]:
                 and data[end] == 0x68
                 and data[end + 5] == 0xC3
             )
-            if not embedded_copy:
+            relative_static_trampoline = (
+                offset >= len(embedded_copy_prefix)
+                and data[offset - len(embedded_copy_prefix):offset]
+                == embedded_copy_prefix
+                and len(data) >= end + 5
+                and data[end] == 0xE9
+            )
+            if not (old_static_trampoline or relative_static_trampoline):
                 sites.add(section.virtual_address + offset)
             offset += 1
     return sorted(sites)
 
 
 def find_static_patch_sites(image: PE32Image) -> list[int]:
-    """Find entries whose jump reaches the exact supported file trampoline."""
-    if image.dll_characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE:
-        return []
-
+    """Find entries that reach an exact supported on-disk trampoline."""
     sites: set[int] = set()
     for section in image.sections:
         if not (section.characteristics & IMAGE_SCN_MEM_EXECUTE):
@@ -215,23 +236,25 @@ def find_static_patch_sites(image: PE32Image) -> list[int]:
                 site_rva = section.virtual_address + offset
                 displacement = struct.unpack("<i", entry[1:5])[0]
                 trampoline_rva = site_rva + 5 + displacement
-                expected_stub = build_trampoline(
-                    image.image_base + site_rva + len(EXPECTED_ORIGINAL)
-                )
-                try:
-                    actual_stub = image.read_rva(
-                        trampoline_rva, len(expected_stub), executable=True
-                    )
-                except TGameBinaryError:
-                    actual_stub = b""
-                if actual_stub == expected_stub:
+                kind = _static_trampoline_kind(image, site_rva, trampoline_rva)
+                if kind == "position-independent":
+                    sites.add(site_rva)
+                    offset = data.find(b"\xE9", offset + 1)
+                    continue
+
+                # Earlier development builds used an absolute `push VA; ret`
+                # tail. It is valid only when Windows will not relocate the
+                # image, so retain recognition for fixed-base files only.
+                if (
+                    kind == "absolute"
+                    and not (image.dll_characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)
+                ):
                     sites.add(site_rva)
             offset = data.find(b"\xE9", offset + 1)
     return sorted(sites)
 
 
-def build_trampoline(return_va: int) -> bytes:
-    """Build the exact instruction sequence used by the runtime datetime fix."""
+def _build_datetime_prefix() -> bytearray:
     code = bytearray.fromhex("81 7C 24 04 6C 07 00 00 7D 38")
     fixes = (
         (0x04, 2026),
@@ -245,9 +268,51 @@ def build_trampoline(return_va: int) -> bytes:
     for displacement, value in fixes:
         code += b"\xC7\x44\x24" + bytes((displacement,))
         code += struct.pack("<I", value & 0xFFFFFFFF)
+    return code
+
+
+def build_trampoline(return_va: int) -> bytes:
+    """Build the runtime trampoline, which returns to an absolute VA."""
+    code = _build_datetime_prefix()
     code += EXPECTED_ORIGINAL
     code += b"\x68" + struct.pack("<I", return_va & 0xFFFFFFFF) + b"\xC3"
     return bytes(code)
+
+
+def build_static_trampoline(site_rva: int, trampoline_rva: int) -> bytes:
+    """Build a position-independent trampoline for a permanent file patch."""
+    code = _build_datetime_prefix()
+    code += EXPECTED_ORIGINAL
+    continuation_rva = site_rva + len(EXPECTED_ORIGINAL)
+    displacement = continuation_rva - (trampoline_rva + len(code) + 5)
+    if not -(2**31) <= displacement < 2**31:
+        raise TGameBinaryError("static trampoline is outside the x86 rel32 range")
+    code += b"\xE9" + struct.pack("<i", displacement)
+    return bytes(code)
+
+
+def _static_trampoline_kind(
+    image: PE32Image, site_rva: int, trampoline_rva: int
+) -> str | None:
+    """Return the recognized on-disk trampoline format at an executable RVA."""
+    position_independent = build_static_trampoline(site_rva, trampoline_rva)
+    try:
+        if image.read_rva(
+            trampoline_rva, len(position_independent), executable=True
+        ) == position_independent:
+            return "position-independent"
+    except TGameBinaryError:
+        pass
+
+    absolute = build_trampoline(
+        image.image_base + site_rva + len(EXPECTED_ORIGINAL)
+    )
+    try:
+        if image.read_rva(trampoline_rva, len(absolute), executable=True) == absolute:
+            return "absolute"
+    except TGameBinaryError:
+        pass
+    return None
 
 
 def is_patched_entry(entry: bytes) -> bool:
@@ -269,11 +334,259 @@ def matches_runtime_patch(
         return False
     displacement = struct.unpack("<i", entry[1:5])[0]
     trampoline_va = site_va + 5 + displacement
+    static_stub = build_static_trampoline(site_va, trampoline_va)
     try:
-        actual_stub = read_memory(trampoline_va, len(build_trampoline(continuation_va)))
+        actual_static_stub = read_memory(trampoline_va, len(static_stub))
+    except Exception:
+        actual_static_stub = b""
+    if actual_static_stub == static_stub:
+        return True
+    runtime_stub = build_trampoline(continuation_va)
+    try:
+        actual_runtime_stub = read_memory(trampoline_va, len(runtime_stub))
     except Exception:
         return False
-    return actual_stub == build_trampoline(continuation_va)
+    return actual_runtime_stub == runtime_stub
+
+
+def _find_code_cave(
+    image: PE32Image, section: Section, size: int, site_rva: int
+) -> tuple[int, int]:
+    """Find the closest aligned run of executable-section fill bytes."""
+    mapped_raw_size = min(
+        section.raw_size,
+        section.virtual_size if section.virtual_size else section.raw_size,
+    )
+    if mapped_raw_size < size:
+        raise TGameBinaryError("the patch site's executable section is too small for a trampoline")
+
+    data = image.read_at(section.raw_pointer, mapped_raw_size)
+    candidates: list[tuple[int, int, int, int]] = []
+    run_start: int | None = None
+
+    def record_run(start: int, end: int) -> None:
+        start_rva = section.virtual_address + start
+        end_rva = section.virtual_address + end
+        cave_rva = (start_rva + 15) & ~15
+        entry_end = site_rva + PATCHED_ENTRY_SIZE
+        if cave_rva + size > end_rva:
+            return
+        if cave_rva < entry_end and cave_rva + size > site_rva:
+            return
+        available = end_rva - cave_rva
+        candidates.append(
+            (
+                abs(cave_rva - site_rva),
+                -available,
+                cave_rva,
+                section.raw_pointer + cave_rva - section.virtual_address,
+            )
+        )
+
+    for offset, value in enumerate(data):
+        if value in (0x00, 0xCC):
+            if run_start is None:
+                run_start = offset
+        elif run_start is not None:
+            record_run(run_start, offset)
+            run_start = None
+    if run_start is not None:
+        record_run(run_start, len(data))
+
+    if not candidates:
+        raise TGameBinaryError(
+            f"no {size}-byte executable code cave made of 0x00/0xCC fill "
+            f"was found in section {section.name!r}"
+        )
+    candidates.sort()
+    if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
+        raise TGameBinaryError(
+            "multiple equally suitable executable code caves were found; "
+            "refusing an ambiguous permanent patch"
+        )
+    return candidates[0][2], candidates[0][3]
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest().upper()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
+def _write_sibling_temp(target: Path, data: bytes, metadata_source: Path) -> Path:
+    fd, name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        shutil.copystat(metadata_source, temporary)
+        return temporary
+    except Exception:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_replace(target: Path, replacement: Path) -> None:
+    if os.name == "nt":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        replace_file = kernel32.ReplaceFileW
+        replace_file.argtypes = (
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        )
+        replace_file.restype = ctypes.c_int
+        if not replace_file(str(target), str(replacement), None, 0, None, None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return
+    os.replace(replacement, target)
+
+
+def apply_static_datetime_patch(
+    path: str | Path, backup_path: str | Path | None = None
+) -> dict[str, str]:
+    """Permanently patch a verified TGame file, preserving a byte-exact backup.
+
+    Only a unique, file-backed clean patch site and a nearby aligned run of
+    executable-section 0x00/0xCC fill are accepted. The replacement is built
+    beside the target, validated as a complete patched PE, and atomically
+    installed after the original backup has been verified.
+    """
+    target = Path(path)
+    backup = Path(backup_path) if backup_path else Path(str(target) + ".bak")
+    if target.resolve() == backup.resolve():
+        raise TGameBinaryError("backup path must not refer to TGame.exe itself")
+
+    classification = classify_tgame_binary(target)
+    if classification["status"] == "unsupported":
+        raise TGameBinaryError(
+            "TGame file was not changed because its patch site is not verified: "
+            + classification["message"]
+        )
+    if classification["status"] == "already-patched":
+        return {
+            "status": "already-patched",
+            "path": str(target),
+            "target_rva": classification.get("target_rva", ""),
+            "message": "The exact datetime patch and trampoline are already present.",
+        }
+
+    try:
+        site_rva = int(classification["target_rva"], 0)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TGameBinaryError("binary checker returned an invalid target RVA") from exc
+
+    original_digest = _file_sha256(target)
+    original_data = target.read_bytes()
+    if _sha256(original_data) != original_digest:
+        raise TGameBinaryError("TGame.exe changed while it was being inspected")
+
+    with PE32Image(target) as image:
+        site_offset = image.rva_to_file_offset(
+            site_rva, len(EXPECTED_ORIGINAL), executable=True
+        )
+        if original_data[site_offset : site_offset + len(EXPECTED_ORIGINAL)] != EXPECTED_ORIGINAL:
+            raise TGameBinaryError(
+                "TGame patch-site bytes changed after signature validation; file was not modified"
+            )
+        site_section = image.section_for_rva(
+            site_rva, len(EXPECTED_ORIGINAL), executable=True
+        )
+        stub_length = (
+            len(_build_datetime_prefix()) + len(EXPECTED_ORIGINAL) + 5
+        )
+        trampoline_rva, trampoline_offset = _find_code_cave(
+            image, site_section, stub_length, site_rva
+        )
+        entry_displacement = trampoline_rva - (site_rva + 5)
+        if not -(2**31) <= entry_displacement < 2**31:
+            raise TGameBinaryError("code cave is outside the x86 entry-jump range")
+        entry_patch = (
+            b"\xE9"
+            + struct.pack("<i", entry_displacement)
+            + PATCHED_ENTRY_SUFFIX
+        )
+        trampoline = build_static_trampoline(site_rva, trampoline_rva)
+
+    cave_before = original_data[trampoline_offset : trampoline_offset + len(trampoline)]
+    if len(cave_before) != len(trampoline):
+        raise TGameBinaryError("selected code cave extends beyond the TGame file")
+    if any(value not in (0x00, 0xCC) for value in cave_before):
+        raise TGameBinaryError("selected code cave changed or contains non-fill bytes")
+
+    patched_data = bytearray(original_data)
+    patched_data[site_offset : site_offset + len(entry_patch)] = entry_patch
+    patched_data[trampoline_offset : trampoline_offset + len(trampoline)] = trampoline
+
+    temporary = _write_sibling_temp(target, bytes(patched_data), target)
+    try:
+        verified = classify_tgame_binary(temporary)
+        if (
+            verified["status"] != "already-patched"
+            or verified.get("target_rva") != f"0x{site_rva:08X}"
+        ):
+            raise TGameBinaryError(
+                "temporary patched TGame failed read-back validation: "
+                + verified["message"]
+            )
+
+        if backup.exists():
+            if _file_sha256(backup) != original_digest:
+                raise TGameBinaryError(
+                    f"backup already exists but does not match the original TGame.exe: {backup}"
+                )
+        else:
+            shutil.copy2(target, backup)
+            if _file_sha256(backup) != original_digest:
+                backup.unlink(missing_ok=True)
+                raise TGameBinaryError("byte-exact TGame.exe backup verification failed")
+
+        if _file_sha256(target) != original_digest:
+            raise TGameBinaryError("TGame.exe changed before replacement; no patch was installed")
+        _atomic_replace(target, temporary)
+
+        installed = classify_tgame_binary(target)
+        if (
+            installed["status"] != "already-patched"
+            or installed.get("target_rva") != f"0x{site_rva:08X}"
+        ):
+            rollback = _write_sibling_temp(target, backup.read_bytes(), backup)
+            try:
+                _atomic_replace(target, rollback)
+            finally:
+                rollback.unlink(missing_ok=True)
+            raise TGameBinaryError(
+                "installed TGame patch failed read-back validation; the original was restored from backup"
+            )
+
+        return {
+            "status": "patched",
+            "path": str(target),
+            "backup_path": str(backup),
+            "original_sha256": original_digest,
+            "patched_sha256": _file_sha256(target),
+            "target_rva": f"0x{site_rva:08X}",
+            "trampoline_rva": f"0x{trampoline_rva:08X}",
+            "message": "Permanent TGame datetime patch applied and verified.",
+        }
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def classify_tgame_binary(path: str | Path) -> dict[str, str]:
@@ -301,18 +614,16 @@ def classify_tgame_binary(path: str | Path) -> dict[str, str]:
             if is_patched_entry(entry):
                 displacement = struct.unpack("<i", entry[1:5])[0]
                 trampoline_rva = TARGET_RVA + 5 + displacement
-                expected_stub = build_trampoline(
-                    image.image_base + TARGET_RVA + len(EXPECTED_ORIGINAL)
-                )
-                stub = image.read_rva(
-                    trampoline_rva, len(expected_stub), executable=True
-                )
-                if stub != expected_stub:
+                kind = _static_trampoline_kind(image, TARGET_RVA, trampoline_rva)
+                if kind is None:
                     raise TGameBinaryError(
                         "the patch-site jump exists, but its target does not match "
                         "the verified datetime trampoline"
                     )
-                if image.dll_characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE:
+                if (
+                    kind == "absolute"
+                    and image.dll_characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
+                ):
                     raise TGameBinaryError(
                         "the static datetime patch is not accepted in a relocatable "
                         "image because its trampoline contains an absolute return address"
@@ -322,7 +633,8 @@ def classify_tgame_binary(path: str | Path) -> dict[str, str]:
                     "target_rva": f"0x{TARGET_RVA:08X}",
                     "message": (
                         f"PE32/i386 patch site RVA 0x{TARGET_RVA:08X} and its complete "
-                        "datetime trampoline match the verified patch."
+                        "datetime trampoline match the verified patch. "
+                        f"Trampoline type: {kind}."
                     ),
                 }
 
@@ -380,15 +692,29 @@ def classify_tgame_binary(path: str | Path) -> dict[str, str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="print a JSON result")
-    parser.add_argument("path", help="TGame.exe to inspect")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="apply the verified permanent patch and save TGame.exe.bak",
+    )
+    parser.add_argument("path", help="TGame.exe to inspect or patch")
     args = parser.parse_args(argv)
 
-    result = classify_tgame_binary(args.path)
+    if args.apply:
+        try:
+            result = apply_static_datetime_patch(args.path)
+            exit_code = 0
+        except (OSError, TGameBinaryError, struct.error) as exc:
+            result = {"status": "unsupported", "message": str(exc)}
+            exit_code = 1
+    else:
+        result = classify_tgame_binary(args.path)
+        exit_code = 0 if result["status"] != "unsupported" else 1
     if args.json:
         print(json.dumps(result, separators=(",", ":")))
     else:
         print(f"[{result['status']}] {result['message']}")
-    return 0 if result["status"] != "unsupported" else 1
+    return exit_code
 
 
 if __name__ == "__main__":

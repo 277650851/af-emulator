@@ -133,6 +133,30 @@ class LaunchPreflightGateTests(unittest.TestCase):
                 r"D:\OtherClient\Binaries\Win32\TGame.exe",
             )
 
+    def test_expected_tgame_path_translates_nt_device_path(self):
+        data = self.good_status()
+        data["client_root"] = (
+            r"\Device\HarddiskVolume3\Program Files (x86)"
+            r"\Level Up Games\Assault Fire PH"
+        )
+
+        result = gate.expected_tgame_path(
+            data,
+            device_map={"C:": r"\Device\HarddiskVolume1", "D:": r"\Device\HarddiskVolume3"},
+        )
+
+        self.assertEqual(
+            result,
+            r"D:\Program Files (x86)\Level Up Games\Assault Fire PH\Binaries\Win32\TGame.exe",
+        )
+
+    def test_expected_tgame_path_rejects_unmapped_device_path(self):
+        data = self.good_status()
+        data["client_root"] = r"\Device\HarddiskVolume99\Games\Assault Fire PH"
+
+        with self.assertRaisesRegex(gate.LaunchGateError, "could not be mapped"):
+            gate.expected_tgame_path(data, device_map={})
+
     def test_loaded_tcls_must_be_same_file_checked_by_server(self):
         data = self.good_status()
         gate.require_loaded_tcls_matches(

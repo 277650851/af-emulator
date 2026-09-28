@@ -13,7 +13,7 @@ Proyek tidak resmi untuk pelestarian **Assault Fire PH** dan emulasi servernya. 
 3. Launcher memeriksa versi dan konfigurasi, menyiapkan kunci lokal, lalu menjalankan server, helper peluncuran, dan klien game.
 4. Login di klien. Saat tombol **START** muncul, klik untuk melanjutkan.
 
-Dalam alur satu klik normal, Anda tidak perlu menjalankan server atau alat patch secara manual. Skrip tidak mengunduh atau membagikan file game; skrip hanya menggunakan file lokal milik Anda. Jika versi tidak cocok atau tanda tangan `TGame.exe` atau `TCLS.dll` tidak dapat diverifikasi, berhenti dan jangan memaksakan patch.
+Dalam alur satu klik normal, Anda tidak perlu menjalankan server atau alat patch secara manual. Skrip tidak mengunduh atau membagikan file game; skrip hanya menggunakan file lokal milik Anda. Jika versi tidak cocok atau tanda tangan `TGame.exe` atau `TCLS.dll` tidak dapat diverifikasi, berhenti dan jangan memaksakan patch. Sebelum game dijalankan, launcher memasang patch tanggal/waktu terverifikasi secara permanen pada `TGame.exe` setelah membuat cadangan identik bernama `TGame.exe.bak`. Jika tanda tangan atau area kode aman tidak dapat diverifikasi, file tidak diubah.
 
 ## Setup manual dan pengembangan
 

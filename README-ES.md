@@ -13,7 +13,7 @@ Proyecto no oficial para preservar **Assault Fire PH** y emular su servidor. Ni 
 3. El lanzador verifica la versión y la configuración, prepara las claves locales y abre el servidor, la ayuda de inicio y el cliente del juego.
 4. Inicia sesión en el cliente. Cuando aparezca **START**, haz clic para continuar.
 
-Con el flujo normal de un clic no tienes que iniciar manualmente el servidor ni las herramientas de parcheo. El script no descarga ni redistribuye archivos del juego: solo usa los tuyos. Si la versión no coincide o no se puede verificar la firma de `TGame.exe` o `TCLS.dll`, detente; no fuerces el parche.
+Con el flujo normal de un clic no tienes que iniciar manualmente el servidor ni las herramientas de parcheo. El script no descarga ni redistribuye archivos del juego: solo usa los tuyos. Si la versión no coincide o no se puede verificar la firma de `TGame.exe` o `TCLS.dll`, detente; no fuerces el parche. Antes de iniciar, el lanzador aplica permanentemente el parche verificado de fecha y hora a `TGame.exe`, tras guardar una copia exacta como `TGame.exe.bak`. Si no puede verificar la firma o encontrar un espacio de código seguro, no modifica el archivo.
 
 ## Configuración manual y desarrollo
 

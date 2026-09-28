@@ -6,12 +6,15 @@ Purpose
 -------
 For the validated Assault Fire PH v1.0.0.24 preservation setup, temporarily
 patch the loaded TCLS.dll so its CreateProcessW call launches TGame.exe with
-CREATE_SUSPENDED.  As soon as the new child TGame process is observed, this
-helper restores TCLS.dll, applies the repository's verified TGame datetime
-runtime patch while the child is still suspended, and resumes TGame.
+CREATE_SUSPENDED. As soon as the new child TGame process is observed, this
+helper restores TCLS.dll, verifies/applies the repository's TGame datetime
+patch while the child is still suspended, and resumes TGame. The one-click
+launcher applies the datetime patch to disk first and saves TGame.exe.bak.
 
-Nothing on disk is modified.  The TCLS patch is process-memory only and is
-restored immediately after child creation.
+This helper does not modify files on disk. The TCLS patch is process-memory
+only and is restored immediately after child creation. The one-click launcher
+permanently patches TGame.exe beforehand and preserves its original bytes in
+TGame.exe.bak.
 
 Validated TCLS patch site
 -------------------------
@@ -584,7 +587,10 @@ def main():
     args = parse_args()
 
     print("Assault Fire PH - TCLS suspended-launch helper")
-    print("Runtime-only; no game DLL/EXE is modified on disk.")
+    print(
+        "TCLS suspension is temporary in-memory; one-click setup patches "
+        "TGame.exe and saves TGame.exe.bak."
+    )
     print()
 
     gate_status = launch_gate.require_launch_ready()

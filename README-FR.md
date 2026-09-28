@@ -13,7 +13,7 @@ Projet non officiel consacré à la préservation d’**Assault Fire PH** et à 
 3. Le lanceur vérifie la version et la configuration, prépare les clés locales, puis démarre le serveur, l’assistant de lancement et le client.
 4. Connectez-vous au client. Lorsque le bouton **START** apparaît, cliquez dessus pour continuer.
 
-Avec le parcours normal en un clic, vous n’avez pas à démarrer manuellement le serveur ni les outils de patch. Le script ne télécharge ni ne redistribue les fichiers du jeu : il utilise uniquement votre copie locale. Si la version ne correspond pas ou si la signature de `TGame.exe` ou `TCLS.dll` ne peut pas être vérifiée, arrêtez-vous et ne forcez pas le patch.
+Avec le parcours normal en un clic, vous n’avez pas à démarrer manuellement le serveur ni les outils de patch. Le script ne télécharge ni ne redistribue les fichiers du jeu : il utilise uniquement votre copie locale. Si la version ne correspond pas ou si la signature de `TGame.exe` ou `TCLS.dll` ne peut pas être vérifiée, arrêtez-vous et ne forcez pas le patch. Avant le lancement, le lanceur applique définitivement le correctif de date/heure vérifié à `TGame.exe`, après avoir créé une sauvegarde identique nommée `TGame.exe.bak`. Si la signature ou une zone de code sûre ne peut pas être vérifiée, le fichier n’est pas modifié.
 
 ## Configuration manuelle et développement
 

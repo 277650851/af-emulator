@@ -223,35 +223,43 @@ def require_launch_ready(
     return data
 
 
-def _device_path_to_dos_path(value: str) -> str:
+def _device_path_to_dos_path(
+    value: str, *, device_map: Mapping[str, str] | None = None
+) -> str:
     """Translate GetMappedFileNameW \\Device\\... paths to a drive-letter path."""
     raw = str(value)
-    if os.name != "nt" or not raw.lower().startswith("\\device\\"):
+    if not raw.lower().startswith("\\device\\"):
         return raw
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.QueryDosDeviceW.argtypes = [
-        ctypes.c_wchar_p,
-        ctypes.c_wchar_p,
-        ctypes.c_uint32,
-    ]
-    kernel32.QueryDosDeviceW.restype = ctypes.c_uint32
+    if device_map is None:
+        if os.name != "nt":
+            return raw
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.QueryDosDeviceW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+        ]
+        kernel32.QueryDosDeviceW.restype = ctypes.c_uint32
+        device_map = {}
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = f"{letter}:"
+            buf = ctypes.create_unicode_buffer(4096)
+            if not kernel32.QueryDosDeviceW(drive, buf, len(buf)):
+                continue
+            # QueryDosDevice returns multiple NUL-separated targets; the
+            # ctypes buffer exposes the first mapping, which is sufficient.
+            device_map[drive] = buf.value.split("\0", 1)[0]
 
-    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-        drive = f"{letter}:"
-        buf = ctypes.create_unicode_buffer(4096)
-        if not kernel32.QueryDosDeviceW(drive, buf, len(buf)):
-            continue
-        # QueryDosDevice can return multiple NUL-separated targets; the
-        # ctypes buffer exposes the first mapping, which is sufficient here.
-        device = buf.value.rstrip("\\")
+    for drive, mapped_device in device_map.items():
+        device = str(mapped_device).rstrip("\\")
         if not device:
             continue
         if raw.lower() == device.lower():
-            return drive
+            return str(drive)
         prefix = device + "\\"
         if raw.lower().startswith(prefix.lower()):
-            return drive + raw[len(device):]
+            return str(drive) + raw[len(device):]
     return raw
 
 
@@ -277,11 +285,22 @@ def require_loaded_tcls_matches(status: Mapping, loaded_tcls_path: str) -> None:
         )
 
 
-def expected_tgame_path(status: Mapping) -> str:
+def expected_tgame_path(
+    status: Mapping, *, device_map: Mapping[str, str] | None = None
+) -> str:
     root = status.get("client_root")
     if not root:
         raise LaunchGateError("GAME LAUNCH BLOCKED: preflight client root is missing")
-    return os.fspath(Path(str(root)) / "Binaries" / "Win32" / "TGame.exe")
+    normalized_root = _device_path_to_dos_path(str(root), device_map=device_map)
+    if normalized_root.lower().startswith("\\device\\"):
+        raise LaunchGateError(
+            "GAME LAUNCH BLOCKED: Windows returned a device path for the client root, "
+            "but it could not be mapped to a drive letter. Check that the game is "
+            "installed on a mounted local drive and restart the launcher."
+        )
+    if os.name == "nt" or ntpath.splitdrive(normalized_root)[0]:
+        return ntpath.join(normalized_root, "Binaries", "Win32", "TGame.exe")
+    return os.fspath(Path(normalized_root) / "Binaries" / "Win32" / "TGame.exe")
 
 
 def require_game_image_matches(status: Mapping, loaded_tgame_path: str) -> None:

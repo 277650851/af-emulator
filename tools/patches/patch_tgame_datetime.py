@@ -23,7 +23,9 @@ replaces the seven date/time arguments with:
 Then it executes the original overwritten prologue and returns to the
 original TGame code at +8.
 
-This is a *runtime-only* patch. It does not modify TGame.exe on disk.
+This standalone utility patches a running process only; it does not modify
+TGame.exe on disk. The one-click launcher uses the verified permanent patcher
+in tgame_binary.py and saves the original as TGame.exe.bak before launch.
 
 Usage
 -----
