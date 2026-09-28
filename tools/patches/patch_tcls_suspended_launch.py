@@ -612,11 +612,12 @@ def main():
     tcls_armed = False
 
     try:
-        tcls_base, tcls_path = wait_for_module(hclient, TCLS_MODULE, 15.0)
+        tcls_base, tcls_path = wait_for_module(hclient, TCLS_MODULE, 120.0)
         if not tcls_base:
             raise RuntimeError(
                 f"Found {CLIENT_PROCESS} PID={client_pid}, but {TCLS_MODULE} "
-                "was not mapped. Leave the launcher at START and retry."
+                "was not mapped within 120 seconds. Keep the launcher open, "
+                "finish logging in, and check the helper log."
             )
 
         gate_status = launch_gate.require_launch_ready()

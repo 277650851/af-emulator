@@ -189,6 +189,15 @@ kernel32.WriteProcessMemory.argtypes = [
 ]
 kernel32.WriteProcessMemory.restype = wintypes.BOOL
 
+kernel32.VirtualProtectEx.argtypes = [
+    wintypes.HANDLE,
+    wintypes.LPVOID,
+    ctypes.c_size_t,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+kernel32.VirtualProtectEx.restype = wintypes.BOOL
+
 kernel32.VirtualAllocEx.argtypes = [
     wintypes.HANDLE,
     wintypes.LPVOID,
@@ -364,18 +373,41 @@ def patch_process(pid, base, target_rva=TARGET_RVA):
         rel32 = (remote_addr - (target + 5)) & 0xFFFFFFFF
         entry_patch = b"\xE9" + struct.pack("<I", rel32) + b"\x90\x90\x90"
 
-        write_memory(process, target, entry_patch)
-
-        kernel32.FlushInstructionCache(
-            process,
-            ctypes.c_void_p(target),
-            len(entry_patch),
-        )
-        kernel32.FlushInstructionCache(
+        if not kernel32.FlushInstructionCache(
             process,
             ctypes.c_void_p(remote_addr),
             len(stub),
-        )
+        ):
+            raise winerr("FlushInstructionCache(trampoline)")
+
+        entry_page_protection = wintypes.DWORD(0)
+        if not kernel32.VirtualProtectEx(
+            process,
+            ctypes.c_void_p(target),
+            len(entry_patch),
+            PAGE_EXECUTE_READWRITE,
+            ctypes.byref(entry_page_protection),
+        ):
+            raise winerr("VirtualProtectEx(make TGame entry writable)")
+
+        try:
+            write_memory(process, target, entry_patch)
+            if not kernel32.FlushInstructionCache(
+                process,
+                ctypes.c_void_p(target),
+                len(entry_patch),
+            ):
+                raise winerr("FlushInstructionCache(TGame entry)")
+        finally:
+            restored_page_protection = wintypes.DWORD(0)
+            if not kernel32.VirtualProtectEx(
+                process,
+                ctypes.c_void_p(target),
+                len(entry_patch),
+                entry_page_protection.value,
+                ctypes.byref(restored_page_protection),
+            ):
+                raise winerr("VirtualProtectEx(restore TGame entry protection)")
 
         verify = read_memory(process, target, len(entry_patch))
         if verify != entry_patch:

@@ -71,7 +71,7 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-27-oneclick-v27', s)
+        self.assertIn('2026-09-28-oneclick-v29', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_asks_before_replacing_private_key(self):
@@ -374,6 +374,23 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('START_ASSAULT_FIRE.ps1', s)
         self.assertIn('TGame_AFDEV.exe', s)
 
+
+    def test_launcher_waits_for_tcls_armed_before_prompting_for_start(self):
+        s = self.text(SCRIPT)
+        self.assertIn("function Wait-ForTclsHelperArmed", s)
+        self.assertIn("Remove-Item -LiteralPath $helperLog", s)
+        self.assertIn("TCLS ARMED", s)
+        self.assertIn("HelperProcess.HasExited", s)
+        self.assertIn("Timed out after $TimeoutSeconds seconds waiting", s)
+        self.assertIn("do not click START yet", s)
+        self.assertIn(" -u ", s)
+
+        client_launch = s.index("Start-Process -FilePath $clientExe")
+        armed_wait = s.index("Wait-ForTclsHelperArmed $helperLog $helperWindow")
+        start_instructions = s.index('Write-Title "YOU ARE DONE WITH SETUP"')
+        self.assertLess(client_launch, armed_wait)
+        self.assertLess(armed_wait, start_instructions)
+        self.assertNotIn("Start-Sleep -Milliseconds 700", s)
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-27-oneclick-v28-test"
+$LAUNCHER_REVISION = "2026-09-28-oneclick-v29"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -558,6 +558,39 @@ function Ensure-AFDev([string]$GameRoot,[string]$VenvPython,[string]$RepoRoot){
 
 function Wait-ForLaunchGate([string]$StatusPath,[int]$TimeoutSeconds=45){$deadline=(Get-Date).AddSeconds($TimeoutSeconds); $last=$null; while((Get-Date)-lt $deadline){if(Test-Path -LiteralPath $StatusPath -PathType Leaf){try{$last=Get-Content -LiteralPath $StatusPath -Raw|ConvertFrom-Json; if($last.launch_ready -eq $true){return $last}; if($last.passed -eq $false -and $last.errors -and @($last.errors).Count -gt 0){$joined=(@($last.errors)-join "; "); throw "Server preflight failed: $joined"}}catch{if($_.Exception.Message -like "Server preflight failed:*"){throw}}}; Start-Sleep -Milliseconds 250}; if($last){$errors=if($last.errors){@($last.errors)-join "; "}else{"no detailed error was recorded"}; throw "Timed out waiting for game launch gate UNLOCKED. Last preflight: $errors"}; throw "Timed out waiting for server preflight_status.json."}
 
+function Wait-ForTclsHelperArmed(
+    [string]$LogPath,
+    [System.Diagnostics.Process]$HelperProcess,
+    [int]$TimeoutSeconds = 120
+) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $logText = ""
+        if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+            $logText = Get-Content -LiteralPath $LogPath -Raw -ErrorAction SilentlyContinue
+        }
+
+        if ($logText -match '(?im)^\s*(?:\[SAFE STOP\]|ERROR:)') {
+            throw "The elevated launch helper reported an error before arming TCLS. See helper log: $LogPath"
+        }
+        if ($logText -match '(?m)^\s*TCLS ARMED\s*$') {
+            return
+        }
+        if ($HelperProcess.HasExited) {
+            throw "The elevated launch helper exited with code $($HelperProcess.ExitCode) before reporting TCLS ARMED. See helper log: $LogPath"
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    $tail = @()
+    if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+        $tail = @(Get-Content -LiteralPath $LogPath -Tail 12 -ErrorAction SilentlyContinue)
+    }
+    $detail = if ($tail.Count -gt 0) { $tail -join [Environment]::NewLine } else { "No helper output was written." }
+    throw "Timed out after $TimeoutSeconds seconds waiting for the elevated helper to report TCLS ARMED. $detail Helper log: $LogPath"
+}
+
 Initialize-LauncherConfig
 Write-Title "Assault Fire PH - ONE CLICK SETUP + PLAY"
 Write-Host "[AF-ONECLICK] Launcher revision: $LAUNCHER_REVISION"
@@ -581,11 +614,52 @@ try{
     Write-Host "[UAC] Administrator permission is required for the server runtime because the AFDEV/OpenProcess path needs elevated process access." -ForegroundColor Yellow
     try{$serverWindow=Start-Process -FilePath "powershell.exe" -Verb RunAs -WorkingDirectory $repoRoot -PassThru -ArgumentList @("-NoProfile","-NoExit","-ExecutionPolicy","Bypass","-Command",$serverCommand)}catch{throw "Administrator permission for the emulator server was cancelled or failed: $($_.Exception.Message)"}
     Write-Host "[WAIT] Waiting for server preflight and listener gate..."; $status=Wait-ForLaunchGate $statusPath 45; Write-Host "[OK] Server launch gate is UNLOCKED. Server PID=$($status.server_pid)" -ForegroundColor Green
-    Write-Step "Starting the automatic TGame launch helper"; $helper=Join-Path $repoRoot "tools\patches\patch_tcls_suspended_launch.py"; $helperLog=Join-Path $gameRoot "af_tgame_launch_helper.log"; $helperCommand=(". "+(Quote-PS $consoleHelper)+"; "+"Disable-AFConsoleBlockingSelection; "+'$env:AF_CLIENT_ROOT='+(Quote-PS $gameRoot)+"; "+"Set-Location -LiteralPath "+(Quote-PS $repoRoot)+"; "+"Write-Host '[AF-ADMIN] TGame launch/OpenProcess helper running elevated.' -ForegroundColor Green; "+'$savedErrorActionPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"; '+"& "+(Quote-PS $venvPython)+" "+(Quote-PS $helper)+" --timeout 900 2>&1 | Tee-Object -FilePath "+(Quote-PS $helperLog)+"; "+'$helperExitCode = $LASTEXITCODE; $ErrorActionPreference = $savedErrorActionPreference; exit $helperExitCode')
+    Write-Step "Starting the automatic TGame launch helper"
+    $helper = Join-Path $repoRoot "tools\patches\patch_tcls_suspended_launch.py"
+    $helperLog = Join-Path $gameRoot "af_tgame_launch_helper.log"
+    if (Test-Path -LiteralPath $helperLog) {
+        Remove-Item -LiteralPath $helperLog -Force -ErrorAction Stop
+    }
+    $helperCommand = (
+        ". " + (Quote-PS $consoleHelper) + "; " +
+        "Disable-AFConsoleBlockingSelection; " +
+        '$env:AF_CLIENT_ROOT=' + (Quote-PS $gameRoot) + "; " +
+        "Set-Location -LiteralPath " + (Quote-PS $repoRoot) + "; " +
+        "Write-Host '[AF-ADMIN] TGame launch/OpenProcess helper running elevated.' -ForegroundColor Green; " +
+        '$savedErrorActionPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"; ' +
+        "& " + (Quote-PS $venvPython) + " -u " + (Quote-PS $helper) +
+        " --timeout 900 2>&1 | Tee-Object -FilePath " + (Quote-PS $helperLog) + "; " +
+        '$helperExitCode = $LASTEXITCODE; $ErrorActionPreference = $savedErrorActionPreference; exit $helperExitCode'
+    )
     Write-Host "[UAC] Administrator permission is required for the TGame launch helper (OpenProcess/WriteProcessMemory)." -ForegroundColor Yellow
-    try{$helperWindow=Start-Process -FilePath "powershell.exe" -Verb RunAs -WorkingDirectory $repoRoot -PassThru -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-Command",$helperCommand)}catch{throw "Administrator permission for the TGame launch helper was cancelled or failed: $($_.Exception.Message)"}
-    Start-Sleep -Milliseconds 700; Write-Step "Launching Assault Fire client.exe for you"; Start-Process -FilePath $clientExe -WorkingDirectory (Split-Path -Parent $clientExe)|Out-Null
-    Write-Title "YOU ARE DONE WITH SETUP"; Write-Host "The emulator server is running."; Write-Host "The launch helper is running automatically."; Write-Host "The Assault Fire launcher was opened automatically."; Write-Host ""; Write-Host "What you do now:" -ForegroundColor Green; Write-Host "  1. Log in normally in the Assault Fire launcher."; Write-Host "  2. When the START button appears, click START."; Write-Host ""; Write-Host "You do NOT need to run the server, patcher, hosts helper, or client.exe manually anymore."; Write-Host "The temporary suspended-launch patch and TGame datetime patch are applied automatically every launch."; Write-Host ""; Write-Host "[WAIT] Waiting for TGame.exe to appear (up to 15 minutes)..."
+    try {
+        $helperWindow = Start-Process -FilePath "powershell.exe" -Verb RunAs -WorkingDirectory $repoRoot -PassThru -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $helperCommand
+        )
+    } catch {
+        throw "Administrator permission for the TGame launch helper was cancelled or failed: $($_.Exception.Message)"
+    }
+
+    Write-Step "Launching Assault Fire client.exe for you"
+    Start-Process -FilePath $clientExe -WorkingDirectory (Split-Path -Parent $clientExe) | Out-Null
+    Write-Host "[WAIT] Log in to the Assault Fire launcher now, but do not click START yet." -ForegroundColor Yellow
+    Write-Host "[WAIT] Waiting for the elevated helper to arm TCLS..."
+    Wait-ForTclsHelperArmed $helperLog $helperWindow 120
+    Write-Host "[OK] TCLS is armed. You can click START now." -ForegroundColor Green
+
+    Write-Title "YOU ARE DONE WITH SETUP"
+    Write-Host "The emulator server is running."
+    Write-Host "The launch helper is armed and waiting for the game launch."
+    Write-Host "The Assault Fire launcher was opened automatically."
+    Write-Host ""
+    Write-Host "What you do now:" -ForegroundColor Green
+    Write-Host "  1. Log in normally in the Assault Fire launcher."
+    Write-Host "  2. When the START button appears, click START."
+    Write-Host ""
+    Write-Host "You do NOT need to run the server, patcher, hosts helper, or client.exe manually anymore."
+    Write-Host "The temporary suspended-launch and TGame datetime patches will be applied automatically."
+    Write-Host ""
+    Write-Host "[WAIT] Waiting for TGame.exe to appear (up to 15 minutes)..."
     $deadline=(Get-Date).AddMinutes(15)
     while((Get-Date)-lt $deadline){$game=Get-Process -Name "TGame" -ErrorAction SilentlyContinue|Select-Object -First 1; if($game){Write-Host ""; Write-Host "[WAIT] TGame.exe appeared as PID=$($game.Id). Waiting for the automatic launch helper to finish..."; $helperDeadline=(Get-Date).AddSeconds(30); while(-not $helperWindow.HasExited -and (Get-Date)-lt $helperDeadline){Start-Sleep -Milliseconds 250}; if($helperWindow.HasExited -and $helperWindow.ExitCode -ne 0){throw "The automatic launch helper failed with exit code $($helperWindow.ExitCode). TGame was not accepted as a successful launch. See helper log: $helperLog"}; if(-not $helperWindow.HasExited){Write-Host "[WARNING] TGame exists but the launch helper is still running after 30 seconds. Check the helper window before assuming the launch succeeded." -ForegroundColor Yellow}else{Write-Host "[SUCCESS] TGame launch helper completed successfully." -ForegroundColor Green}; Write-Host "[SUCCESS] TGame.exe launched. PID=$($game.Id)" -ForegroundColor Green; if($KeepServer){Write-Host "[SUCCESS] -KeepServer was selected; the emulator server will remain running."; Start-Sleep -Seconds 2; exit 0}; Write-Host "[SESSION] This one-click window will stay open while you play."; Write-Host "[SESSION] When TGame.exe closes, it will stop the emulator server automatically."; try{Wait-Process -Id $game.Id}catch{}; Write-Host ""; Write-Host "[CLEANUP] TGame.exe closed. Stopping the emulator server..."; try{if($status.server_pid){Stop-Process -Id ([int]$status.server_pid) -Force -ErrorAction SilentlyContinue}}catch{}; try{if($serverWindow -and -not $serverWindow.HasExited){Stop-Process -Id $serverWindow.Id -Force -ErrorAction SilentlyContinue}}catch{}; Write-Host "[CLEANUP] Done." -ForegroundColor Green; Read-Host "Press Enter to close"; exit 0}; if($helperWindow.HasExited -and $helperWindow.ExitCode -ne 0){throw "The automatic launch helper exited with code $($helperWindow.ExitCode). See helper log: $helperLog"}; Start-Sleep -Seconds 1}
     throw "Timed out waiting for TGame.exe. The server is still running; check the launcher/helper window for the exact error."
