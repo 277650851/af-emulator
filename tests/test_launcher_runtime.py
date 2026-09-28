@@ -307,6 +307,40 @@ if (-not (Select-String -Path $log -Pattern "harmless warning" -Quiet)) {
 Write-Host "AF_RUNTIME_TEST_PASS"
 """)
 
+    def test_encoded_helper_child_runs_and_appends_log_with_paths_with_spaces(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.run_launcher(shell, r"""
+$pythonHelper = Join-Path $env:AF_TEST_ROOT "python helper with spaces.py"
+$log = Join-Path $env:AF_TEST_ROOT "TGame helper log with spaces.log"
+Set-Content -LiteralPath $pythonHelper -Value 'print("AF_RUNTIME_ENCODED_CHILD_OK")' -Encoding UTF8
+New-Item -ItemType File -Path $log -Force | Out-Null
+$childCommand = (
+    '$ErrorActionPreference = "Continue"; ' +
+    'Add-Content -LiteralPath ' + (Quote-PS $log) + ' -Value "[AF-HELPER-BOOT] entered" -Encoding UTF8; ' +
+    '& ' + (Quote-PS $env:AF_TEST_PYTHON) + ' -u ' + (Quote-PS $pythonHelper) +
+    ' 2>&1 | Tee-Object -FilePath ' + (Quote-PS $log) + ' -Append; ' +
+    '$childExitCode = $LASTEXITCODE; ' +
+    'Add-Content -LiteralPath ' + (Quote-PS $log) + ' -Value ("[AF-HELPER-BOOT] exit=" + $childExitCode) -Encoding UTF8; ' +
+    'exit $childExitCode'
+)
+$encoded = ConvertTo-PowerShellEncodedCommand $childCommand
+$shellExe = if ($PSVersionTable.PSEdition -eq "Core") {
+    Join-Path $PSHOME "pwsh.exe"
+} else {
+    Join-Path $PSHOME "powershell.exe"
+}
+$child = Start-Process -FilePath $shellExe -WorkingDirectory $env:AF_TEST_ROOT -PassThru -Wait -ArgumentList @(
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded
+)
+if ($child.ExitCode -ne 0) { throw "Encoded helper child exited with code $($child.ExitCode)" }
+$logText = Get-Content -LiteralPath $log -Raw -Encoding UTF8
+foreach ($marker in @("[AF-HELPER-BOOT] entered", "AF_RUNTIME_ENCODED_CHILD_OK", "[AF-HELPER-BOOT] exit=0")) {
+    if ($logText -notmatch [regex]::Escape($marker)) { throw "Helper log is missing marker: $marker`n$logText" }
+}
+Write-Host "AF_RUNTIME_TEST_PASS"
+""")
+
 
 
     def test_ensure_keys_asks_and_preserves_existing_or_supplied_private_pem(self):

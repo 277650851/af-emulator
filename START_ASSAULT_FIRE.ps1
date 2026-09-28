@@ -79,7 +79,7 @@ if (-not (Test-IsAdministrator)) {
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-28-oneclick-v30"
+$LAUNCHER_REVISION = "2026-09-28-oneclick-v31"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -221,6 +221,11 @@ function Stop-WithMessage([string]$Message) {
 
 function Quote-PS([string]$Value) {
     return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function ConvertTo-PowerShellEncodedCommand([string]$Command) {
+    $bytes = [System.Text.Encoding]::Unicode.GetBytes($Command)
+    return [Convert]::ToBase64String($bytes)
 }
 
 function Get-Sha256([string]$Path) {
@@ -708,20 +713,30 @@ try{
     }
     New-Item -ItemType File -Path $helperLog -Force | Out-Null
     $helperCommand = (
+        '$ErrorActionPreference = "Continue"; ' +
+        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value "[AF-HELPER-BOOT] PowerShell helper command entered." -Encoding UTF8; ' +
+        'try { ' +
         ". " + (Quote-PS $consoleHelper) + "; " +
         "Disable-AFConsoleBlockingSelection; " +
         '$env:AF_CLIENT_ROOT=' + (Quote-PS $gameRoot) + "; " +
         "Set-Location -LiteralPath " + (Quote-PS $repoRoot) + "; " +
         "Write-Host '[AF-ADMIN] TGame launch/OpenProcess helper running elevated.' -ForegroundColor Green; " +
-        '$savedErrorActionPreference = $ErrorActionPreference; $ErrorActionPreference = "Continue"; ' +
+        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value "[AF-HELPER-BOOT] Starting Python helper." -Encoding UTF8; ' +
         "& " + (Quote-PS $venvPython) + " -u " + (Quote-PS $helper) +
-        " --timeout 900 2>&1 | Tee-Object -FilePath " + (Quote-PS $helperLog) + "; " +
-        '$helperExitCode = $LASTEXITCODE; $ErrorActionPreference = $savedErrorActionPreference; exit $helperExitCode'
+        " --timeout 900 2>&1 | Tee-Object -FilePath " + (Quote-PS $helperLog) + " -Append; " +
+        '$helperExitCode = $LASTEXITCODE; ' +
+        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value ("[AF-HELPER-BOOT] Python helper exited with code " + $helperExitCode) -Encoding UTF8; ' +
+        'exit $helperExitCode; ' +
+        '} catch { ' +
+        '$helperFailure = "[AF-HELPER-BOOT] PowerShell helper failed: " + $_.Exception.Message; ' +
+        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value $helperFailure -Encoding UTF8; ' +
+        'Write-Error $_; exit 1 }'
     )
+    $helperEncodedCommand = ConvertTo-PowerShellEncodedCommand $helperCommand
     Write-Host "[ADMIN] The TGame launch helper inherits this launcher's Administrator token." -ForegroundColor Green
     try {
         $helperWindow = Start-Process -FilePath $currentPowerShellExe -WorkingDirectory $repoRoot -PassThru -ArgumentList @(
-            "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $helperCommand
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $helperEncodedCommand
         )
     } catch {
         throw "Could not start the elevated TGame launch helper: $($_.Exception.Message)"

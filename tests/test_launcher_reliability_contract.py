@@ -32,6 +32,17 @@ class LauncherReliabilityContractTests(unittest.TestCase):
         self.assertIn("$HelperProcess.ExitCode", wait_body)
         self.assertIn("helper log is empty or was never written", wait_body)
 
+    def test_helper_uses_encoded_command_and_logs_bootstrap_stages(self):
+        source = SCRIPT.read_text(encoding="utf-8", errors="replace")
+        self.assertIn('ConvertTo-PowerShellEncodedCommand $helperCommand', source)
+        self.assertIn('[System.Text.Encoding]::Unicode.GetBytes($Command)', source)
+        self.assertIn('"-EncodedCommand", $helperEncodedCommand', source)
+        self.assertIn('[AF-HELPER-BOOT] PowerShell helper command entered.', source)
+        self.assertIn('[AF-HELPER-BOOT] Starting Python helper.', source)
+        self.assertIn('Tee-Object -FilePath', source)
+        self.assertIn(' -Append', source)
+        self.assertIn('Python helper exited with code', source)
+
     def test_tgame_wait_fails_if_helper_exits_before_resume_marker(self):
         source = SCRIPT.read_text(encoding="utf-8", errors="replace")
         start = source.index("function Wait-ForTgameHelperComplete")
