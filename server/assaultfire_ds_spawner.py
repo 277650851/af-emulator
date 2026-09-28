@@ -348,6 +348,86 @@ class DedicatedServerSpawner:
             )
             return allocation
 
+    def prepare_lobby_for_match(
+        self, *, owner_id: int, owner_nickname: str = "",
+        room_id: Optional[int] = None, map_name: Optional[str] = None,
+        max_players: int = 4, mode_id: int = 0x00002001,
+        map_id: int = 0x002F, sub_mode_id: int = 0x00001001,
+        room_flags: int = 0x00003008,
+    ) -> DSAllocation:
+        """Resolve the requested match settings before arming its DS bridge.
+
+        StartRoomAlloc can arrive on a fresh client connection after a prior
+        lobby reservation has left stale settings under the same owner. Reuse
+        the authoritative room allocation when supplied, otherwise reuse or
+        create the owner's allocation, then reconcile it against the selected
+        ModeId/MapId before any endpoint is advertised.
+        """
+        owner_id = int(owner_id)
+        owner_nickname = str(owner_nickname or "").strip()[:31]
+
+        if room_id is None:
+            allocation = self.reserve_lobby(
+                owner_id=owner_id,
+                owner_nickname=owner_nickname,
+                map_name=map_name,
+                max_players=max_players,
+                mode_id=mode_id,
+                map_id=map_id,
+                sub_mode_id=sub_mode_id,
+                room_flags=room_flags,
+            )
+            room_id = allocation.room_id
+        else:
+            allocation = self.allocation_for_room(int(room_id))
+            if allocation is None:
+                raise SpawnerError(
+                    f"no DS reservation exists for selected room {int(room_id)}"
+                )
+            if int(allocation.owner_id) != owner_id:
+                raise SpawnerError(
+                    f"selected DS room {int(room_id)} belongs to owner="
+                    f"{int(allocation.owner_id)}, not requester={owner_id}"
+                )
+            if allocation.state == "RELEASED":
+                raise SpawnerError(
+                    f"selected DS room {int(room_id)} has been fully released"
+                )
+
+        normalized_mode = int(mode_id) & 0xFFFFFFFF
+        normalized_map_id = int(map_id) & 0xFFFF
+        normalized_sub_mode = int(sub_mode_id) & 0xFFFFFFFF
+        normalized_flags = int(room_flags) & 0xFFFFFFFF
+        verified_target = room_target_for(normalized_mode, normalized_map_id)
+        desired_map = str(map_name or "").strip()
+        if verified_target is not None and not desired_map:
+            desired_map = verified_target[0]
+        desired_game = (
+            verified_target[1]
+            if verified_target is not None
+            else str(self.config.game_class or "").strip()
+        )
+
+        settings_match = (
+            allocation.mode_id == normalized_mode
+            and allocation.map_id == normalized_map_id
+            and allocation.sub_mode_id == normalized_sub_mode
+            and allocation.room_flags == normalized_flags
+            and allocation.map_name == desired_map
+            and allocation.game_class == desired_game
+        )
+        if settings_match:
+            return allocation
+
+        return self.update_lobby_settings(
+            int(room_id),
+            mode_id=normalized_mode,
+            map_id=normalized_map_id,
+            sub_mode_id=normalized_sub_mode,
+            room_flags=normalized_flags,
+            map_name=map_name,
+        )
+
     def set_owner_nickname(self, owner_id: int, nickname: str) -> Optional[DSAllocation]:
         owner_id = int(owner_id)
         nickname = str(nickname or "").strip()[:31]

@@ -6128,6 +6128,8 @@ def _v132_send_pve_afdev_handoff(
     role_state,
     *,
     reason,
+    room=None,
+    start_settings=None,
     mode_id=None,
 ):
     """Send A11A once using this room's stable-v143b DS allocation.
@@ -6136,6 +6138,46 @@ def _v132_send_pve_afdev_handoff(
     lightweight UDP bridge, then advertises it immediately. TGame's first valid
     DS datagram to that bridge is what starts the v48 AFDEV loader.
     """
+    room_for_handoff = (
+        room
+        if isinstance(room, dict)
+        else role_state.get("v79_created_match_room") or {}
+    )
+    room_id = room_for_handoff.get("room_id") or role_state.get(
+        "v143b_ds_room_id"
+    )
+    use_client_map = os.environ.get("AF_DS_USE_CLIENT_MAP", "1").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    map_override = None
+    if not use_client_map:
+        map_override = V143B_DS_CONFIG.default_map or None
+
+    requested_settings = None
+    if isinstance(start_settings, dict):
+        requested_settings = {
+            "mode_id": start_settings.get("mode_id"),
+            "match_map_id": start_settings.get("match_map_id"),
+            "sub_mode_id": start_settings.get("sub_mode_id"),
+            "room_flags": start_settings.get("room_flags"),
+            "map_name": map_override,
+        }
+    elif room_for_handoff.get("room_id") is not None:
+        room_map_name = (
+            str(room_for_handoff.get("map_string") or "").strip()
+            if use_client_map
+            else ""
+        )
+        requested_settings = {
+            "mode_id": room_for_handoff.get("mode_id"),
+            "match_map_id": room_for_handoff.get("map_id"),
+            "sub_mode_id": room_for_handoff.get("sub_mode_id"),
+            "room_flags": room_for_handoff.get("flags"),
+            "map_name": room_map_name or map_override,
+        }
+
+    if mode_id is None and isinstance(requested_settings, dict):
+        mode_id = requested_settings.get("mode_id")
     mode_now = _v132_room_mode(role_state, mode_id)
     if not TGAME_PVE_DIRECT_AFDEV or mode_now not in TGAME_AFDEV_MODE_IDS:
         return False
@@ -6155,11 +6197,50 @@ def _v132_send_pve_afdev_handoff(
     handoff_port = TGAME_AFDEV_PORT
     allocation = None
 
-    if V143B_DS_CONFIG.enabled:
-        room = role_state.get("v79_created_match_room") or {}
-        room_id = room.get("room_id") or role_state.get("v143b_ds_room_id")
+    if (
+        isinstance(room_for_handoff, dict)
+        and room_for_handoff.get("room_id") is not None
+    ):
+        role_state["v79_created_match_room"] = room_for_handoff
+        role_state["v143b_ds_room_id"] = int(room_for_handoff["room_id"])
 
-        if room_id is None:
+    if V143B_DS_CONFIG.enabled:
+        if isinstance(requested_settings, dict):
+            try:
+                allocation = V143B_DS_SPAWNER.prepare_lobby_for_match(
+                    owner_id=int(role_state.get("uin") or 10001),
+                    owner_nickname=_v150_role_nickname(role_state),
+                    room_id=(int(room_id) if room_id is not None else None),
+                    max_players=max(
+                        2,
+                        int(room_for_handoff.get("fighter_capacity") or 0),
+                    ),
+                    mode_id=int(requested_settings["mode_id"]),
+                    map_id=int(requested_settings["match_map_id"]),
+                    sub_mode_id=int(requested_settings["sub_mode_id"]),
+                    room_flags=int(requested_settings["room_flags"]),
+                    map_name=requested_settings.get("map_name"),
+                )
+                room_id = allocation.room_id
+                role_state["v143b_ds_room_id"] = int(room_id)
+                log(
+                    "DS-HANDOFF",
+                    f"match handoff prepared DS room={room_id} reason={reason} "
+                    f"mode=0x{allocation.mode_id:08x} "
+                    f"map=0x{allocation.map_id:04x} "
+                    f"map_name={allocation.map_name!r} "
+                    f"submode=0x{allocation.sub_mode_id:08x} "
+                    f"flags=0x{allocation.room_flags:08x}",
+                )
+            except (KeyError, TypeError, ValueError, SpawnerError) as exc:
+                log(
+                    "DS-HANDOFF",
+                    f"{reason} DS settings preparation failed "
+                    f"mode=0x{mode_now:08x}: {type(exc).__name__}: {exc}; "
+                    "no endpoint advertised",
+                )
+                return False
+        elif room_id is None:
             # Covers allocator/quick-start paths that skipped A10A.
             try:
                 allocation = V143B_DS_SPAWNER.reserve_lobby(
@@ -6451,8 +6532,9 @@ def _v72_parse_start_room_alloc(body):
       u8  MapCount
       u32 MapIds[MapCount]
 
-    The 32-byte MatchSettings sub-structure is preserved raw for now.  The
-    first 4 bytes are ModeId and bytes 4..5 track MapId in our captures.
+    The fixed MatchSettings layout used by the PH client captures includes
+    ModeId, MapId, SubModeId, and room Flags at known offsets. Keep the full
+    structure as well for diagnostics/future fields.
     """
     if len(body) < 42:
         raise ValueError(f"StartRoomAlloc body too short: {len(body)}B")
@@ -6469,11 +6551,17 @@ def _v72_parse_start_room_alloc(body):
     maps = [struct.unpack_from(">I", body, 42 + 4*i)[0] for i in range(map_count)]
     mode_id = struct.unpack_from(">I", match, 0)[0] if len(match) >= 4 else None
     match_map_id = struct.unpack_from(">H", match, 4)[0] if len(match) >= 6 else None
+    # These two packed fields are byte-aligned at offsets 11 and 15 in the
+    # captured 32-byte MatchSettings payload (they are not naturally aligned).
+    sub_mode_id = struct.unpack_from(">I", match, 11)[0] if len(match) >= 15 else None
+    room_flags = struct.unpack_from(">I", match, 15)[0] if len(match) >= 19 else None
     return {
         "uin": uin,
         "match": match,
         "mode_id": mode_id,
         "match_map_id": match_map_id,
+        "sub_mode_id": sub_mode_id,
+        "room_flags": room_flags,
         "hard_level": hard_level,
         "map_count": map_count,
         "maps": maps,
@@ -9183,6 +9271,7 @@ def handle_placeholder(conn, addr, label):
                                                 label,
                                                 role_state,
                                                 reason="A113 StartMatch accepted",
+                                                room=room_for_start,
                                             )
 
                                             if not pve_handoff:
@@ -9889,6 +9978,8 @@ def handle_placeholder(conn, addr, label):
                                                 label,
                                                 role_state,
                                                 reason="A3A0 StartRoomAlloc accepted",
+                                                room=allocation_room,
+                                                start_settings=ra,
                                                 mode_id=ra.get("mode_id"),
                                             )
                                             if not roomalloc_handoff:
