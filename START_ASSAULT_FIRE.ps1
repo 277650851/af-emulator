@@ -712,24 +712,28 @@ try{
         Remove-Item -LiteralPath $helperLog -Force -ErrorAction Stop
     }
     New-Item -ItemType File -Path $helperLog -Force | Out-Null
+    # Windows PowerShell 5.1's Tee-Object writes UTF-16LE (Unicode), while
+    # PowerShell 7 writes UTF-8 without a BOM. Keep the helper's boot messages
+    # in the same encoding so the log stays readable while it is being tailed.
+    $helperLogEncoding = if ($PSVersionTable.PSEdition -eq "Core") { "utf8" } else { "Unicode" }
     $helperCommand = (
         '$ErrorActionPreference = "Continue"; ' +
-        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value "[AF-HELPER-BOOT] PowerShell helper command entered." -Encoding UTF8; ' +
+        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value "[AF-HELPER-BOOT] PowerShell helper command entered." -Encoding ' + $helperLogEncoding + '; ' +
         'try { ' +
         ". " + (Quote-PS $consoleHelper) + "; " +
         "Disable-AFConsoleBlockingSelection; " +
         '$env:AF_CLIENT_ROOT=' + (Quote-PS $gameRoot) + "; " +
         "Set-Location -LiteralPath " + (Quote-PS $repoRoot) + "; " +
         "Write-Host '[AF-ADMIN] TGame launch/OpenProcess helper running elevated.' -ForegroundColor Green; " +
-        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value "[AF-HELPER-BOOT] Starting Python helper." -Encoding UTF8; ' +
+        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value "[AF-HELPER-BOOT] Starting Python helper." -Encoding ' + $helperLogEncoding + '; ' +
         "& " + (Quote-PS $venvPython) + " -u " + (Quote-PS $helper) +
         " --timeout 900 2>&1 | Tee-Object -FilePath " + (Quote-PS $helperLog) + " -Append; " +
         '$helperExitCode = $LASTEXITCODE; ' +
-        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value ("[AF-HELPER-BOOT] Python helper exited with code " + $helperExitCode) -Encoding UTF8; ' +
+        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value ("[AF-HELPER-BOOT] Python helper exited with code " + $helperExitCode) -Encoding ' + $helperLogEncoding + '; ' +
         'exit $helperExitCode; ' +
         '} catch { ' +
         '$helperFailure = "[AF-HELPER-BOOT] PowerShell helper failed: " + $_.Exception.Message; ' +
-        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value $helperFailure -Encoding UTF8; ' +
+        'Add-Content -LiteralPath ' + (Quote-PS $helperLog) + ' -Value $helperFailure -Encoding ' + $helperLogEncoding + '; ' +
         'Write-Error $_; exit 1 }'
     )
     $helperEncodedCommand = ConvertTo-PowerShellEncodedCommand $helperCommand

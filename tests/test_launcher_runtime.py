@@ -234,7 +234,7 @@ try {
     $declined = $true
 }
 if (-not $declined) { throw "Already-patched TCLS was accepted without consent" }
-$script:LauncherConfig.Preferences | Remove-Member -Name "ContinueWithPatchedTcls" -ErrorAction SilentlyContinue
+[void]$script:LauncherConfig.Preferences.PSObject.Properties.Remove("ContinueWithPatchedTcls")
 $script:AF_TEST_ANSWER = "YES"
 Ensure-PermanentTCLS $env:AF_TEST_REPO $env:AF_TEST_ROOT $env:AF_TEST_PYTHON
 $script:AF_TEST_HASH = "A" * 64
@@ -313,15 +313,16 @@ Write-Host "AF_RUNTIME_TEST_PASS"
                 self.run_launcher(shell, r"""
 $pythonHelper = Join-Path $env:AF_TEST_ROOT "python helper with spaces.py"
 $log = Join-Path $env:AF_TEST_ROOT "TGame helper log with spaces.log"
+$logEncoding = if ($PSVersionTable.PSEdition -eq "Core") { "utf8" } else { "Unicode" }
 Set-Content -LiteralPath $pythonHelper -Value 'print("AF_RUNTIME_ENCODED_CHILD_OK")' -Encoding UTF8
 New-Item -ItemType File -Path $log -Force | Out-Null
 $childCommand = (
     '$ErrorActionPreference = "Continue"; ' +
-    'Add-Content -LiteralPath ' + (Quote-PS $log) + ' -Value "[AF-HELPER-BOOT] entered" -Encoding UTF8; ' +
+    'Add-Content -LiteralPath ' + (Quote-PS $log) + ' -Value "[AF-HELPER-BOOT] entered" -Encoding ' + $logEncoding + '; ' +
     '& ' + (Quote-PS $env:AF_TEST_PYTHON) + ' -u ' + (Quote-PS $pythonHelper) +
     ' 2>&1 | Tee-Object -FilePath ' + (Quote-PS $log) + ' -Append; ' +
     '$childExitCode = $LASTEXITCODE; ' +
-    'Add-Content -LiteralPath ' + (Quote-PS $log) + ' -Value ("[AF-HELPER-BOOT] exit=" + $childExitCode) -Encoding UTF8; ' +
+    'Add-Content -LiteralPath ' + (Quote-PS $log) + ' -Value ("[AF-HELPER-BOOT] exit=" + $childExitCode) -Encoding ' + $logEncoding + '; ' +
     'exit $childExitCode'
 )
 $encoded = ConvertTo-PowerShellEncodedCommand $childCommand
@@ -334,7 +335,7 @@ $child = Start-Process -FilePath $shellExe -WorkingDirectory $env:AF_TEST_ROOT -
     "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded
 )
 if ($child.ExitCode -ne 0) { throw "Encoded helper child exited with code $($child.ExitCode)" }
-$logText = Get-Content -LiteralPath $log -Raw -Encoding UTF8
+$logText = [System.IO.File]::ReadAllText($log)
 foreach ($marker in @("[AF-HELPER-BOOT] entered", "AF_RUNTIME_ENCODED_CHILD_OK", "[AF-HELPER-BOOT] exit=0")) {
     if ($logText -notmatch [regex]::Escape($marker)) { throw "Helper log is missing marker: $marker`n$logText" }
 }
@@ -364,6 +365,7 @@ function New-KeyTestCase([string]$Name, [bool]$WithPrivate) {
 }
 $externalSource = Join-Path $env:AF_TEST_ROOT "my own PRIVATE.PEM"
 Set-Content -LiteralPath $externalSource -Value "external private key" -Encoding Ascii -Force
+$externalSourceHash = Get-Sha256 $externalSource
 $script:AF_TEST_EXTERNAL_PRIVATE = $externalSource
 function Read-Host([string]$Prompt) {
     if ($Prompt -like "*full path to your PRIVATE.PEM*") {
@@ -379,10 +381,10 @@ if ([System.IO.File]::ReadAllText($existing.Private) -ne $existingBefore) {
 }
 $external = New-KeyTestCase "external key" $false
 Ensure-Keys $external.Repo $external.Game $env:AF_TEST_PYTHON
-if ([System.IO.File]::ReadAllText($external.Private) -ne "external private key") {
+if ((Get-Sha256 $external.Private) -ne $externalSourceHash) {
     throw "Supplied PRIVATE.PEM was not copied into the server key location"
 }
-if ([System.IO.File]::ReadAllText($externalSource) -ne "external private key") {
+if ((Get-Sha256 $externalSource) -ne $externalSourceHash) {
     throw "Supplied PRIVATE.PEM source was modified"
 }
 Write-Host "AF_RUNTIME_TEST_PASS"
