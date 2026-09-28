@@ -19,7 +19,13 @@ class LaunchHelperStaticSafetyTests(unittest.TestCase):
         self.assertIn('row["ppid"] == parent_pid', source)
         self.assertIn("require_game_image_matches", source)
         self.assertIn("wait_for_module(hclient, TCLS_MODULE, 120.0)", source)
-        self.assertIn("target_rva_for_image(game_path)", source)
+        self.assertIn("game_file_path = launch_gate.expected_tgame_path(gate_status)", source)
+        self.assertIn("target_rva_for_image(game_file_path)", source)
+        self.assertNotIn("target_rva_for_image(game_path)", source)
+        self.assertGreaterEqual(
+            source.count("launch_gate.require_game_image_matches(gate_status, game_path)"),
+            2,
+        )
         self.assertIn("patch_process(game_pid, game_base, target_rva)", source)
         patch_call = source.index("datetime_patch.patch_process(game_pid, game_base, target_rva)")
         patched_marker = source.index("[AF-DATETIME-PATCHED]")

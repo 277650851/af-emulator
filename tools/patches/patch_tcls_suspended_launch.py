@@ -715,16 +715,20 @@ def main():
                 "The child is being left suspended."
             )
         print(f"[TGAME] base=0x{game_base:08X}")
-        print(f"[TGAME] path={game_path}")
+        print(f"[TGAME] mapped path={game_path}")
         gate_status = launch_gate.require_launch_ready()
         launch_gate.require_game_image_matches(gate_status, game_path)
+        game_file_path = launch_gate.expected_tgame_path(gate_status)
+        print(f"[TGAME] preflight file path={game_file_path}")
         print("[LAUNCH-GATE] PASS - TGame.exe belongs to the preflight-approved client.")
     finally:
         kernel32.CloseHandle(hgame)
 
     try:
         gate_status = launch_gate.require_launch_ready()
-        target_rva = datetime_patch.target_rva_for_image(game_path)
+        launch_gate.require_game_image_matches(gate_status, game_path)
+        game_file_path = launch_gate.expected_tgame_path(gate_status)
+        target_rva = datetime_patch.target_rva_for_image(game_file_path)
         print(f"[PATCH-SITE] verified file signature at RVA 0x{target_rva:08X}")
         datetime_patch.patch_process(game_pid, game_base, target_rva)
         print(
