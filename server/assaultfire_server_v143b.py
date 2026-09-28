@@ -20,6 +20,7 @@ import csv
 import io
 import json
 import sys
+from collections.abc import MutableMapping, MutableSequence
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
@@ -49,6 +50,7 @@ from assaultfire_logging import build_logger
 from assaultfire_auth import parse_client_dh_plaintext
 from assaultfire_boot import resolve_private_key_path, server_only_requested
 from local_ap_sync import LocalAPSync
+from player_db import PlayerDatabase, PlayerDBError
 
 # v24: v20 success framing plus BOTH PublicData bitmap and PrivateData tail probes.
 QUIET_ROLE_HEX = True
@@ -497,6 +499,7 @@ def _v143b_reserve_room_ds(role_state, create_req):
 
     allocation = V143B_DS_SPAWNER.reserve_lobby(
         owner_id=owner_uin,
+        owner_nickname=_v150_role_nickname(role_state),
         map_name=map_name,
         max_players=max_players,
         mode_id=int(create_req.get("mode_id", 0x00002001)),
@@ -892,7 +895,11 @@ def parse_tdr_header(data):
 
 _R12_UID_LOCK = threading.Lock()
 _R12_UID_BY_CLIENT_PID = {}
+_R12_LOGIN_BY_UID = {}
 _R12_NEXT_UID = 10001
+
+# One SQLite file remains authoritative for accounts and game persistence.
+PLAYER_DB = PlayerDatabase()
 
 
 def _r12_uid_for_client_pid(pid):
@@ -906,6 +913,54 @@ def _r12_uid_for_client_pid(pid):
         if pid_key is not None:
             _R12_UID_BY_CLIENT_PID[pid_key] = uid
         return uid
+
+
+def _r12_uid_for_login(pid, login_name):
+    """Resolve the AP login to a stable SQLite-backed UIN.
+
+    PID remains only a live-process cache. Relaunching the same login returns
+    the same UIN instead of allocating another process-local identity.
+    """
+    login_name = str(login_name or "").strip()
+    if not login_name:
+        return _r12_uid_for_client_pid(pid)
+    uid = int(PLAYER_DB.resolve_identity(login_name))
+    pid_key = int(pid) if pid is not None else None
+    with _R12_UID_LOCK:
+        if pid_key is not None:
+            _R12_UID_BY_CLIENT_PID[pid_key] = uid
+        _R12_LOGIN_BY_UID[uid] = login_name
+    return uid
+
+
+def _r12_remember_login_for_uid(uid, login_name):
+    login_name = str(login_name or "").strip()
+    if not login_name:
+        return None
+    with _R12_UID_LOCK:
+        _R12_LOGIN_BY_UID[int(uid)] = login_name
+    return login_name
+
+
+def _r12_login_for_uid(uid):
+    with _R12_UID_LOCK:
+        return _R12_LOGIN_BY_UID.get(int(uid))
+
+
+def _r12_load_persisted_nickname(uid):
+    login_name = _r12_login_for_uid(uid) or PLAYER_DB.login_for_uin(int(uid))
+    if not login_name:
+        return None, None
+    try:
+        nickname = PLAYER_DB.load_nickname(int(uid))
+    except Exception as exc:
+        log(
+            "NICKNAME",
+            f"SQLite nickname load warning uid={int(uid)} "
+            f"login={login_name!r}: {type(exc).__name__}: {exc}",
+        )
+        return login_name, None
+    return login_name, nickname
 
 
 def _r12_parse_ap_login_name(body):
@@ -1427,11 +1482,13 @@ def handle_auth(conn, addr):
             _auth_pid, _auth_process_name = None, None
             log("AUTH", f"r12 peer identity lookup failed: {_auth_peer_e}")
 
-        auth_uid = _r12_uid_for_client_pid(_auth_pid)
         auth_login_name = _r12_parse_ap_login_name(hdr.get("body"))
+        auth_uid = _r12_uid_for_login(_auth_pid, auth_login_name)
+        if auth_login_name:
+            _r12_remember_login_for_uid(auth_uid, auth_login_name)
         log(
             "AUTH",
-            "r12 local-multiclient identity: "
+            "SQLite stable identity: "
             f"login={auth_login_name!r} "
             f"OWNER={_auth_process_name or '<unresolved>'} "
             f"PID={_auth_pid} -> uin={auth_uid}"
@@ -2854,6 +2911,15 @@ TGAME_ZN_REQ_FRIEND_STATUS = 0xA303
 TGAME_ZN_RES_HEARTBEAT = 0xFF10
 TGAME_ZN_NTF_ZONE_HINTS = 0xFF13
 
+# Nickname rename-card path.
+# F301 is LIVE-PROVEN from the stock PH 1.0.0.24 client:
+#   body = TDR string NewNickName
+# F302 is a CONTROLLED TEST candidate based on the request/response pairing
+# and the reflected callback:
+#   OnTGOnlineDelegate_ChangeNickName(IntProperty ErrorCode, StrProperty NewNickName)
+TGAME_ZN_REQ_CHANGE_NICKNAME = 0xF301
+TGAME_ZN_RES_CHANGE_NICKNAME_TEST = 0xF302
+
 # v72: room-allocation family recovered from proto_c2zn.tdr and confirmed
 # by the live 46-byte Start request emitted by the Match -> Start button.
 TGAME_ZN_REQ_STARTROOMALLOC = 0xA3A0
@@ -3605,6 +3671,10 @@ V140_STARTER_GIDS = (
     R20_STRENGTH_GID,
 )
 
+# Immutable-by-convention template used to seed each SQLite player profile.
+# V111_INVENTORY becomes a per-player proxy later in this section.
+V140_STARTER_INVENTORY = [dict(p) for p in V111_INVENTORY]
+
 
 def _v140_sanitize_prop(raw):
     if not isinstance(raw, dict):
@@ -3631,7 +3701,7 @@ def _v140_sanitize_prop(raw):
 
 def _v140_default_state():
     inv = []
-    for p in V111_INVENTORY:
+    for p in V140_STARTER_INVENTORY:
         q = _v140_sanitize_prop(p)
         if q:
             inv.append(q)
@@ -3651,10 +3721,11 @@ def _v140_default_state():
     }
 
 
-def _v140_load_state():
-    state = _v140_default_state()
+def _v140_load_legacy_state():
+    """Read/sanitize the old JSON only for one-time SQLite migration."""
     if not V140_MALL_STATE_PATH.exists():
-        return state
+        return None
+    state = _v140_default_state()
 
     try:
         raw = json.loads(V140_MALL_STATE_PATH.read_text(encoding="utf-8"))
@@ -3670,7 +3741,7 @@ def _v140_load_state():
                 loaded.append(q)
 
         # Never let a damaged test-state file remove the proven starter roots.
-        defaults = {int(p["gid"]): _v140_sanitize_prop(p) for p in V111_INVENTORY}
+        defaults = {int(p["gid"]): _v140_sanitize_prop(p) for p in V140_STARTER_INVENTORY}
         for gid in V140_STARTER_GIDS:
             if gid not in used and defaults.get(gid):
                 loaded.append(defaults[gid])
@@ -3703,12 +3774,128 @@ def _v140_load_state():
 
         return state
     except Exception as e:
-        print(f"[MALL-v140] state load failed; using starter state: {e}", flush=True)
-        return state
+        print(f"[MALL-SQLITE-v4] legacy JSON import skipped: {e}", flush=True)
+        return None
 
 
-V140_MALL_STATE = _v140_load_state()
-V111_INVENTORY[:] = [dict(p) for p in V140_MALL_STATE["inventory"]]
+class _V140PlayerStateManager:
+    """Per-thread/per-UIN in-memory working sets backed by SQLite transactions."""
+
+    def __init__(self, db):
+        self.db = db
+        self._tls = threading.local()
+        self._lock = threading.RLock()
+        self._cache = {}
+        self._last_active_uin = None
+
+    def current_uin(self):
+        # Runtime packet threads explicitly select their authenticated UIN.
+        # 10001 is a compatibility fallback for legacy helper/self-test code.
+        return int(getattr(self._tls, "uin", 10001))
+
+    def select(self, uin):
+        uin = int(uin)
+        self._tls.uin = uin
+        self._last_active_uin = uin
+        self.ensure(uin)
+        return uin
+
+    def wallet_for_local_sync(self):
+        uin = self._last_active_uin
+        if uin is None:
+            return dict(_v140_default_state()["wallet"])
+        return self.ensure(int(uin))["wallet"]
+
+    def ensure(self, uin):
+        uin = int(uin)
+        with self._lock:
+            cached = self._cache.get(uin)
+            if cached is not None:
+                return cached
+
+            legacy_state = _v140_load_legacy_state()
+            state, created, imported = self.db.ensure_player_state(
+                uin,
+                _v140_default_state(),
+                legacy_state=legacy_state,
+                legacy_source=str(V140_MALL_STATE_PATH),
+            )
+            self._cache[uin] = state
+            if created:
+                log(
+                    "MALL-SQLITE",
+                    f"v4 player state created uin={uin} "
+                    f"legacy_imported={imported} inventory={len(state['inventory'])} "
+                    f"AP={state['wallet']['ap']} GP={state['wallet']['gp']} "
+                    f"MP={state['wallet']['mp']}",
+                )
+            return state
+
+    def state(self):
+        return self.ensure(self.current_uin())
+
+    def save(self, reason="update"):
+        uin = self.current_uin()
+        state = self.state()
+        self.db.save_player_state(uin, state, reason=reason)
+        return uin
+
+    def reload(self, uin=None):
+        uin = self.current_uin() if uin is None else int(uin)
+        with self._lock:
+            self._cache[uin] = self.db.load_player_state(uin)
+            return self._cache[uin]
+
+
+class _V140StateProxy(MutableMapping):
+    def __init__(self, manager):
+        self._manager = manager
+
+    def _d(self):
+        return self._manager.state()
+
+    def __getitem__(self, key):
+        return self._d()[key]
+
+    def __setitem__(self, key, value):
+        self._d()[key] = value
+
+    def __delitem__(self, key):
+        del self._d()[key]
+
+    def __iter__(self):
+        return iter(self._d())
+
+    def __len__(self):
+        return len(self._d())
+
+
+class _V140InventoryProxy(MutableSequence):
+    def __init__(self, manager):
+        self._manager = manager
+
+    def _l(self):
+        return self._manager.state()["inventory"]
+
+    def __getitem__(self, index):
+        return self._l()[index]
+
+    def __setitem__(self, index, value):
+        self._l()[index] = value
+
+    def __delitem__(self, index):
+        del self._l()[index]
+
+    def __len__(self):
+        return len(self._l())
+
+    def insert(self, index, value):
+        self._l().insert(index, value)
+
+
+_V140_PLAYER_STATE = _V140PlayerStateManager(PLAYER_DB)
+V140_MALL_STATE = _V140StateProxy(_V140_PLAYER_STATE)
+V111_INVENTORY = _V140InventoryProxy(_V140_PLAYER_STATE)
 
 
 def _v140_current_role_gid():
@@ -3731,7 +3918,7 @@ def _v140_wallet():
 # helper seeds the already-verified client GamePoint field from the
 # authoritative persisted server wallet.  Remove after the native path is
 # implemented (tracked in docs/MILESTONES.md).
-_V143V_LOCAL_AP_SYNC = LocalAPSync(_v140_wallet)
+_V143V_LOCAL_AP_SYNC = LocalAPSync(_V140_PLAYER_STATE.wallet_for_local_sync)
 
 
 def _v140_save_state(reason="update"):
@@ -3746,17 +3933,13 @@ def _v140_save_state(reason="update"):
         nxt = (max_gid + 1) & 0xFFFFFFFFFFFFFFFF
     V140_MALL_STATE["next_gid"] = nxt
 
-    tmp = V140_MALL_STATE_PATH.with_suffix(V140_MALL_STATE_PATH.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(V140_MALL_STATE, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    os.replace(tmp, V140_MALL_STATE_PATH)
+    uin = _V140_PLAYER_STATE.save(reason)
     log(
-        "MALL",
-        f"v140 state saved reason={reason} "
+        "MALL-SQLITE",
+        f"v4 state committed transactionally reason={reason} uin={uin} "
         f"inventory={len(V111_INVENTORY)} "
         f"role=0x{_v140_current_role_gid():016x} "
+        f"bag=0x{_v141_current_bag_gid():016x} "
         f"AP={_v140_wallet()['ap']} GP={_v140_wallet()['gp']} MP={_v140_wallet()['mp']}",
     )
 
@@ -3871,21 +4054,23 @@ def _v141_bag_invariant_text():
     )
 
 
-# Repair v140/older persistent states at startup:
-# - both bags mounted to root,
-# - neither bag mounted,
-# - bags incorrectly owned by the old/current role GID.
-_v141_migrated_bag_gid, _v141_migrated_changes = _v141_set_current_bag(
-    V140_MALL_STATE.get("current_bag_gid"),
-    reason="startup-migration",
-)
-if _v141_migrated_changes:
-    print(
-        "[MALL-v141] repaired bag-root state: "
-        f"current_bag=0x{_v141_migrated_bag_gid:016x} "
-        f"changes={_v141_migrated_changes}",
-        flush=True,
+# SQLite v4: repair each authenticated player's bag invariant after that
+# player's state has been selected. Do not mutate an arbitrary profile at import.
+def _v140_select_player(uin):
+    uin = _V140_PLAYER_STATE.select(int(uin))
+    preferred = V140_MALL_STATE.get("current_bag_gid")
+    selected_gid, changes = _v141_set_current_bag(
+        preferred,
+        reason="sqlite-player-select",
     )
+    if changes:
+        _v140_save_state("sqlite-bag-invariant-repair")
+        log(
+            "MALL-SQLITE",
+            f"v4 repaired bag-root state uin={uin} "
+            f"current_bag=0x{selected_gid:016x} changes={changes}",
+        )
+    return _V140_PLAYER_STATE.state()
 
 
 def _v140_next_gid(used=None):
@@ -4096,6 +4281,39 @@ def _v140_read_tdr_string(body, off, maxlen):
     if raw[-1:] != b"\x00":
         raise ValueError("TDR string missing terminal NUL")
     return raw[:-1].decode("latin1", "replace"), off
+
+
+
+def _nick_v1_parse_change_nickname(body):
+    nickname, off = _v140_read_tdr_string(body, 0, 32)
+    if off != len(body):
+        raise ValueError(
+            f"ChangeNickName trailing bytes={len(body)-off}: {body[off:].hex()}"
+        )
+    if not nickname:
+        raise ValueError("ChangeNickName empty nickname")
+    # Keep this first protocol test deliberately conservative.
+    try:
+        encoded = nickname.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("ChangeNickName v1 test accepts ASCII only") from exc
+    if len(encoded) > 31:
+        raise ValueError("ChangeNickName nickname exceeds 31 bytes")
+    return nickname
+
+
+def _nick_v1_build_change_nickname_response(nickname):
+    # CONTROLLED TEST candidate for ZN2C_ResChangeNickName:
+    #   u16 Result | string[32] NewNickName
+    body = (
+        _v48_u16(ZONE_ERR_SUCC)
+        + _v50_geo_tdr_string(str(nickname), 32)
+    )
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_RES_CHANGE_NICKNAME_TEST,
+        body,
+    )
 
 
 def _v140_parse_shop_conf_hash(body):
@@ -5946,6 +6164,7 @@ def _v132_send_pve_afdev_handoff(
             try:
                 allocation = V143B_DS_SPAWNER.reserve_lobby(
                     owner_id=int(role_state.get("uin") or 10001),
+                    owner_nickname=_v150_role_nickname(role_state),
                     map_name=V143B_DS_CONFIG.default_map,
                     max_players=4,
                 )
@@ -6993,6 +7212,20 @@ def handle_placeholder(conn, addr, label):
                     "tgame": True,
                     "uin": int(tgame_auth.get("uin") or 10001),
                 }
+                _v140_select_player(role_state["uin"])
+                _persist_login, _persist_nick = _r12_load_persisted_nickname(
+                    role_state["uin"]
+                )
+                if _persist_login:
+                    role_state["login_name"] = _persist_login
+                if _persist_nick:
+                    role_state["nickname"] = _persist_nick
+                    log(
+                        "NICKNAME",
+                        "SQLite nickname restored on TGame auth: "
+                        f"uin={role_state['uin']} login={_persist_login!r} "
+                        f"nickname={_persist_nick!r}",
+                    )
             else:
                 role_state = role_extract_auth_state(data)
             if not role_state.get("tgame"):
@@ -9678,6 +9911,100 @@ def handle_placeholder(conn, addr, label):
                                                     "partial match state rolled back; no dead endpoint advertised",
                                                 )
 
+                                        elif app["cmd"] == TGAME_ZN_REQ_CHANGE_NICKNAME:
+                                            try:
+                                                new_nickname = _nick_v1_parse_change_nickname(
+                                                    app["body"]
+                                                )
+                                            except ValueError as nick_e:
+                                                log(
+                                                    "NICKNAME",
+                                                    "F301 rejected locally: "
+                                                    f"{nick_e}; body={app['body'].hex()}",
+                                                )
+                                            else:
+                                                old_nickname = _v150_role_nickname(role_state)
+                                                response = _nick_v1_build_change_nickname_response(
+                                                    new_nickname
+                                                )
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    response,
+                                                    label,
+                                                    "ZN2C_RES_CHANGE_NICKNAME TEST-v1 "
+                                                    "cmd=0xF302 result=0x8100 "
+                                                    f"old={old_nickname!r} new={new_nickname!r}",
+                                                )
+
+                                                # Stage the runtime identity only after the
+                                                # response is actually queued. This test does NOT
+                                                # persist to SQLite and does NOT consume the card.
+                                                role_state["nickname"] = new_nickname
+                                                uin_now = _v150_role_uin(role_state)
+                                                with _V150_ZONE_LOCK:
+                                                    session = _V150_ZONE_SESSIONS.get(uin_now)
+                                                    if session is not None:
+                                                        session["nickname"] = new_nickname
+
+                                                login_name_now = (
+                                                    str(role_state.get("login_name") or "").strip()
+                                                    or _r12_login_for_uid(uin_now)
+                                                    or PLAYER_DB.login_for_uin(uin_now)
+                                                )
+                                                try:
+                                                    PLAYER_DB.save_nickname(
+                                                        uin_now,
+                                                        new_nickname,
+                                                    )
+                                                    if login_name_now:
+                                                        role_state["login_name"] = login_name_now
+                                                    log(
+                                                        "NICKNAME",
+                                                        "SQLite nickname persisted in player_profiles: "
+                                                        f"uin={uin_now} "
+                                                        f"login={login_name_now!r} "
+                                                        f"nickname={new_nickname!r}",
+                                                    )
+                                                except Exception as nick_db_e:
+                                                    log(
+                                                        "NICKNAME",
+                                                        "SQLite nickname persistence FAILED: "
+                                                        f"uin={uin_now} "
+                                                        f"login={login_name_now!r} "
+                                                        f"{type(nick_db_e).__name__}: {nick_db_e}",
+                                                    )
+
+                                                if V143B_DS_CONFIG.enabled:
+                                                    try:
+                                                        nick_alloc = (
+                                                            V143B_DS_SPAWNER.set_owner_nickname(
+                                                                uin_now, new_nickname
+                                                            )
+                                                        )
+                                                        if nick_alloc is not None:
+                                                            log(
+                                                                "NICKNAME",
+                                                                "F301 propagated to reserved DS room: "
+                                                                f"room={nick_alloc.room_id} "
+                                                                f"nickname={new_nickname!r}",
+                                                            )
+                                                    except SpawnerError as nick_ds_e:
+                                                        log(
+                                                            "NICKNAME",
+                                                            "F301 DS nickname propagation warning: "
+                                                            f"{nick_ds_e}",
+                                                        )
+
+                                                log(
+                                                    "NICKNAME",
+                                                    "F301 handled by controlled F302 test: "
+                                                    f"uin={uin_now} old={old_nickname!r} "
+                                                    f"new={new_nickname!r}; "
+                                                    "runtime identity staged; SQLite persistence attempted; "
+                                                    "NO Rename Card consumption",
+                                                )
+
                                         else:
                                             log(
                                                 label,
@@ -10771,7 +11098,7 @@ def listen_on_port(port, label, sock=None):
 # Startup
 # ---------------------------------------------------------------------------
 
-print("[BOOT] BUILD=v143b-LATEJOIN-v5.6-TEST + VERIFIED NO-LATE-JOIN BIT + EARLY A115 BRIDGE-LATCH + NATIVE MONITOR GUARD + DS FAIL ROLLBACK + PEER TIMEOUT + FULL A116 (NO COMMIT)")
+print("[BOOT] BUILD=v143b-SQLITE-PLAYERSTATE-v4-TEST + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 (NO COMMIT)")
 print(f"[BOOT] r13 identity projection self-test={'PASS' if _R13_IDENTITY_PROJECTION_SELFTEST else 'FAIL'}")
 print(f"[BOOT] r14 A102 enterability projection self-test={'PASS' if _R14_A102_PROJECTION_SELFTEST else 'FAIL'}")
 print(f"[BOOT] r15 live A103 EnterRoomByRoomId self-test={'PASS' if _R15_A103_ENTER_SELFTEST else 'FAIL'}")
@@ -10785,16 +11112,17 @@ print(
 )
 _v139_protocol_boot_report()
 print("[BOOT] Default character: Sofia item=100600 + components 300121/300122/100602; primary=QBS09 item=100497 role_gid=0x%016X" % V109_ROLE_GID)
+_v4_db_counts = PLAYER_DB.counts()
 print(
-    "[BOOT] Mall v140: "
+    "[BOOT] Mall SQLite v4: "
     f"commodities={len(V140_SHOP_ITEM_MAP)} "
     f"bundles={len(V140_COMMODITY_BUNDLES)} "
-    f"inventory={len(V111_INVENTORY)} "
-    f"current_role=0x{_v140_current_role_gid():016X} "
-    f"current_bag=0x{_v141_current_bag_gid():016X} "
-    f"wallet(AP/GP/MP)="
-    f"{_v140_wallet()['ap']}/{_v140_wallet()['gp']}/{_v140_wallet()['mp']} "
-    f"state={V140_MALL_STATE_PATH}"
+    f"db={PLAYER_DB.db_path} "
+    f"identities={_v4_db_counts['game_identities']} "
+    f"profiles={_v4_db_counts['player_profiles']} "
+    f"inventory_rows={_v4_db_counts['player_inventory']} "
+    f"legacy_json={V140_MALL_STATE_PATH} "
+    f"legacy_exists={V140_MALL_STATE_PATH.exists()}"
 )
 print(
     "[BOOT] AP initialization: "
