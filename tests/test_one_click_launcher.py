@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,8 +51,9 @@ class OneClickLauncherTests(unittest.TestCase):
     def test_launcher_accepts_python_310_or_newer_instead_of_exact_312(self):
         s = self.text(SCRIPT)
         self.assertIn('function Test-SupportedPythonPath', s)
-        self.assertIn("sys.version_info >= (3,10)", s)
-        self.assertIn('nonstandard executable names such as python312.exe', s)
+        self.assertIn("sys.version_info >= (3,10) and sys.version_info < (4,0)", s)
+        self.assertIn('Get-ChildItem -LiteralPath $scripts -Filter "python*.exe"', s)
+        self.assertIn('Where-Object { $_.Name -notmatch "(?i)^pythonw" }', s)
         self.assertNotIn('function Test-Python312Path', s)
         self.assertNotIn('function Ensure-Python312', s)
 
@@ -118,7 +120,7 @@ class OneClickLauncherTests(unittest.TestCase):
         s = self.text(SCRIPT)
         self.assertIn('$managerPackageId = "9NQ7512CXL7T"', s)
         self.assertIn('& $manager install default', s)
-        self.assertIn('latest stable CPython 3', s)
+        self.assertIn('Installing the current stable Python 3 runtime...', s)
         self.assertNotIn('Python.Python.3.12', s)
 
     def test_manager_self_update_retries_python_runtime_install(self):
@@ -146,17 +148,13 @@ class OneClickLauncherTests(unittest.TestCase):
             'ForEach-Object { Write-Host ([string]$_) }',
             s,
         )
-        self.assertIn(
-            "Keep native winget output off PowerShell's success-output pipeline.",
+        self.assertRegex(
             s,
+            r'& \$winget\.Source install .*?2>&1\s*\|\s*ForEach-Object\s*\{\s*Write-Host',
         )
 
     def test_root_level_python_install_is_detected_before_winget(self):
         s = self.text(SCRIPT)
-        self.assertIn(
-            r'support simple root-level installs such as C:\Python313\python.exe',
-            s,
-        )
         self.assertIn(
             r'Get-ChildItem -LiteralPath ($systemDrive + "\") -Directory -Filter "Python*"',
             s,
@@ -185,20 +183,13 @@ class OneClickLauncherTests(unittest.TestCase):
             'Where-Object { $_.Name -notmatch "(?i)^pythonw" }',
             s,
         )
-        self.assertIn(
-            'for example python312.exe',
-            s,
-        )
 
     def test_existing_venv_is_persistent_across_zip_updates(self):
         s = self.text(SCRIPT)
-        self.assertIn(
-            '$venvDir = Join-Path $runtimeRoot "venv"',
+        self.assertRegex(s, r'\$venvDir\s*=\s*Join-Path\s+\$runtimeRoot\s+"venv"')
+        self.assertRegex(
             s,
-        )
-        self.assertIn(
-            '$legacyPersistentDir = Join-Path $runtimeRoot "venv-py312"',
-            s,
+            r'\$legacyPersistentDir\s*=\s*Join-Path\s+\$runtimeRoot\s+"venv-py312"',
         )
         self.assertIn(
             'Reusing legacy persistent runtime',
@@ -283,17 +274,13 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_path_is_initialized_before_console_helper(self):
         s = self.text(SCRIPT)
-        self.assertIn(
-            '$self = $MyInvocation.MyCommand.Path',
-            s,
-        )
-        self.assertIn(
-            '$consoleHelper = Join-Path $PSScriptRoot',
-            s,
-        )
+        self_match = re.search(r'\$self\s*=\s*\$MyInvocation\.MyCommand\.Path', s)
+        helper_match = re.search(r'\$consoleHelper\s*=\s*Join-Path\s+\$PSScriptRoot', s)
+        self.assertIsNotNone(self_match)
+        self.assertIsNotNone(helper_match)
         self.assertLess(
-            s.index('$self = $MyInvocation.MyCommand.Path'),
-            s.index('$consoleHelper = Join-Path $PSScriptRoot'),
+            self_match.start(),
+            helper_match.start(),
         )
 
     def test_console_windows_disable_quickedit_blocking(self):

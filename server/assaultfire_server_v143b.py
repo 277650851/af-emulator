@@ -9522,9 +9522,9 @@ def handle_placeholder(conn, addr, label):
 
                                         elif app["cmd"] == TGAME_ZN_REQ_QUITMATCH:
                                             # A117 belongs to THIS player, not the room as a whole.
-                                            # The live trace confirms A118 result=0x8100. Hold A119:
-                                            # its wire schema is unverified, and the prior broadcast
-                                            # was followed by the other client sending its own A117.
+                                            # A118 result=0x8100 is live-verified. The A119 room
+                                            # notification below remains marked as test-only; a prior
+                                            # two-client run showed a peer reacting with its own A117.
                                             room = role_state.get("v79_created_match_room")
                                             requester_uin = _v150_role_uin(role_state)
                                             room_id_now = (

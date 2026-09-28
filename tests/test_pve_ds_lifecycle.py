@@ -73,7 +73,11 @@ class PVERuntimeTests(unittest.TestCase):
         self.assertIn("game_dir_source={V143B_DS_CONFIG.game_dir_source}", server)
         self.assertIn("no resolved AFDEV map for ", spawner)
         self.assertNotIn("ZN2C_NTF_STARTMATCH legacy-non-PVE", server)
-        self.assertIn("legacy fixed 65008 A11A suppressed", server)
+        self.assertIn("stable-v143b duplicate PVE A11A suppressed", server)
+        self.assertIn(
+            "Do not send the stale fixed 65008 endpoint after allocation failure.",
+            server,
+        )
 
 if __name__ == "__main__":
     unittest.main()

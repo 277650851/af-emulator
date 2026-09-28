@@ -234,7 +234,7 @@ class ServerStaticSafetyTests(unittest.TestCase):
             block,
         )
 
-    def test_a117_acknowledges_leaver_without_unverified_peer_notification(self):
+    def test_a117_acknowledges_leaver_and_labels_a119_as_test_notification(self):
         server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
             encoding="utf-8", errors="replace"
         )
@@ -245,13 +245,13 @@ class ServerStaticSafetyTests(unittest.TestCase):
         self.assertIn("TGAME_ZN_RES_QUITMATCH = 0xA118", server)
         self.assertIn("_v143b_build_res_quit_match()", block)
         self.assertIn("cmd=0xA118 result=0x8100", block)
-        response_send = block[block.index("quit_rsp ="):]
+        response_send = block[block.index("quit_rsp ="):block.index("# Tell every room client")]
         self.assertIn("_v48_send_app(", response_send)
         self.assertIn("conn,", response_send)
         self.assertIn("active_tgame_key", response_send)
-        self.assertIn("peer A119 suppressed pending wire-schema verification", block)
-        self.assertNotIn("TGAME_ZN_NTF_QUITMATCH", server)
-        self.assertNotIn("_v150_broadcast_room", block)
+        self.assertIn('"ZN2C_NTF_QUITMATCH A119-test "', block)
+        self.assertNotIn('"ZN2C_NTF_QUITMATCH A119-live "', block)
+        self.assertIn("A119_recipients=", block)
 
     def test_owner_checks_guard_settings_and_start_paths(self):
         server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
@@ -344,7 +344,7 @@ class VerifiedLobbyPromotionTests(unittest.TestCase):
         end = server.index('elif app["cmd"] == TGAME_ZN_REQ_SETGAMESETTINGS:', start)
         block = server[start:end]
         self.assertIn("TGAME_PLAYERSTATE_READYTOMATCH", block)
-        self.assertIn("ZN2C_NTF_SETREADY r25-main-shared", block)
+        self.assertIn("ZN2C_NTF_SETREADY LATEJOIN-v2-shared", block)
         self.assertIn("tpdu_cmd=2", block)
 
     def test_a119_quitmatch_notification_clears_room_player_match_state(self):

@@ -116,7 +116,7 @@ body:
     id: extra
     attributes:
       label: Anything else that changed the result?
-      description: Examples: restarting both processes, changing APClient.dat, switching client copy, datetime helper, or different launch path.
+      description: "Examples: restarting both processes, changing APClient.dat, switching client copy, datetime helper, or different launch path."
 
   - type: checkboxes
     id: safety
