@@ -124,6 +124,10 @@ class PlayerDatabase:
 
                     CREATE INDEX IF NOT EXISTS idx_player_inventory_uin_item
                         ON player_inventory(uin, item_id);
+
+                    CREATE INDEX IF NOT EXISTS idx_player_profiles_nickname_nocase
+                        ON player_profiles(nickname COLLATE NOCASE)
+                        WHERE nickname IS NOT NULL AND nickname <> '';
                     """
                 )
                 conn.execute(
@@ -480,24 +484,113 @@ class PlayerDatabase:
         finally:
             conn.close()
 
-    def save_nickname(self, uin: int, nickname: str) -> str:
-        nickname = str(nickname or "").strip()
-        if not nickname or len(nickname) > 31 or "\x00" in nickname:
+    @staticmethod
+    def _normalize_nickname(nickname: str) -> str:
+        value = str(nickname or "").strip()
+        if not value or len(value) > 31 or "\x00" in value:
             raise PlayerDBError("invalid nickname")
+        return value
+
+    def nickname_available(
+        self,
+        nickname: str,
+        *,
+        exclude_uin: int | None = None,
+    ) -> bool:
+        try:
+            nickname = self._normalize_nickname(nickname)
+        except PlayerDBError:
+            return False
+
+        conn = self._connect()
+        try:
+            if exclude_uin is None:
+                row = conn.execute(
+                    """
+                    SELECT 1 FROM player_profiles
+                    WHERE nickname = ? COLLATE NOCASE
+                    LIMIT 1
+                    """,
+                    (nickname,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT 1 FROM player_profiles
+                    WHERE nickname = ? COLLATE NOCASE AND uin <> ?
+                    LIMIT 1
+                    """,
+                    (nickname, int(exclude_uin)),
+                ).fetchone()
+            return row is None
+        finally:
+            conn.close()
+
+    def claim_nickname(self, uin: int, nickname: str) -> str:
+        """Atomically claim a nickname for one player.
+
+        BEGIN IMMEDIATE serializes nickname writers before the availability
+        check, so two concurrent A002/F301 requests cannot both claim the same
+        case-insensitive nickname. Re-claiming the same nickname for the same
+        UIN is intentionally idempotent.
+        """
+        uin = int(uin)
+        nickname = self._normalize_nickname(nickname)
         now = _utc_now()
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT 1 FROM player_profiles WHERE uin = ?",
-                (int(uin),),
+
+            current = conn.execute(
+                "SELECT nickname FROM player_profiles WHERE uin = ?",
+                (uin,),
             ).fetchone()
-            if not row:
-                raise PlayerDBError(f"profile missing for uin={int(uin)}")
-            conn.execute(
-                "UPDATE player_profiles SET nickname=?, updated_at=? WHERE uin=?",
-                (nickname, now, int(uin)),
+            if not current:
+                raise PlayerDBError(f"profile missing for uin={uin}")
+
+            other = conn.execute(
+                """
+                SELECT uin FROM player_profiles
+                WHERE nickname = ? COLLATE NOCASE AND uin <> ?
+                LIMIT 1
+                """,
+                (nickname, uin),
+            ).fetchone()
+            if other:
+                raise PlayerDBError(
+                    f"nickname unavailable: {nickname!r} "
+                    f"already owned by uin={int(other['uin'])}"
+                )
+
+            current_value = (
+                str(current["nickname"]).strip()
+                if current["nickname"] is not None
+                else ""
             )
+            if current_value.casefold() != nickname.casefold():
+                conn.execute(
+                    """
+                    UPDATE player_profiles
+                    SET nickname=?, updated_at=?
+                    WHERE uin=?
+                    """,
+                    (nickname, now, uin),
+                )
+
+            # Keep the website/account profile mirror coherent when that table
+            # exists for this UIN. player_profiles remains the game authority.
+            has_profiles = conn.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type='table' AND name='profiles'
+                """
+            ).fetchone()
+            if has_profiles:
+                conn.execute(
+                    "UPDATE profiles SET nickname=? WHERE uin=?",
+                    (nickname, uin),
+                )
+
             conn.commit()
             return nickname
         except Exception:
@@ -505,6 +598,10 @@ class PlayerDatabase:
             raise
         finally:
             conn.close()
+
+    def save_nickname(self, uin: int, nickname: str) -> str:
+        """Compatibility wrapper; all nickname writes use atomic claiming."""
+        return self.claim_nickname(uin, nickname)
 
     def counts(self) -> dict[str, int]:
         conn = self._connect()

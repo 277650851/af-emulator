@@ -51,6 +51,12 @@ from assaultfire_auth import parse_client_dh_plaintext
 from assaultfire_boot import resolve_private_key_path, server_only_requested
 from local_ap_sync import LocalAPSync
 from player_db import PlayerDatabase, PlayerDBError
+from development_web import (
+    DevelopmentWebError,
+    DevelopmentWebProcess,
+    resolve_runtime_mode,
+    development_web_requested,
+)
 
 # v24: v20 success framing plus BOTH PublicData bitmap and PrivateData tail probes.
 QUIET_ROLE_HEX = True
@@ -58,6 +64,21 @@ DEBUG_AUTH_HEX = os.environ.get("AF_DEBUG_AUTH_HEX", "").strip().lower() in (
     "1", "true", "yes", "on"
 )
 SERVER_ONLY_MODE = server_only_requested(sys.argv[1:], os.environ)
+try:
+    RUNTIME_MODE = resolve_runtime_mode(sys.argv[1:], os.environ)
+except DevelopmentWebError as _runtime_mode_error:
+    print(f"[BOOT] invalid runtime mode: {_runtime_mode_error}", flush=True)
+    raise SystemExit(2)
+
+DEV_WEB_ENABLED = development_web_requested(
+    RUNTIME_MODE, sys.argv[1:], os.environ
+)
+
+# FIRST-RUN-ACCOUNT-v1 + FIRST-NICKNAME-v5 integration
+from first_run_account_setup import ensure_first_account
+ensure_first_account()
+# /FIRST-RUN-ACCOUNT-v1
+
 
 def _short_hex(b, n=48):
     b = bytes(b or b'')
@@ -366,6 +387,13 @@ def _v150_role_uin(role_state):
 
 
 def _v150_role_nickname(role_state):
+    # FIRST-NICKNAME-v12 controlled probe:
+    # A NULL DB nickname is intentionally kept as an empty wire nickname for
+    # the entire session.  v11 proved that startup's automatic A008 role-equip
+    # later calls this helper and otherwise injects the historical LocalPlayer
+    # fallback through a post-role A005.
+    if bool((role_state or {}).get("v12_force_blank_nickname", False)):
+        return ""
     uin = _v150_role_uin(role_state)
     explicit = str((role_state or {}).get("nickname") or "").strip()
     if explicit:
@@ -2816,6 +2844,13 @@ TGAME_GEO_RES_PINGLIST = 0x2001
 # Recovered from proto_c2geo.tdr / proto_c2zn.tdr macro tables.
 GEO_ERR_SUCC = 0x8B00
 ZONE_ERR_SUCC = 0x8100
+ZONE_LOGIN_NEWACCOUNT = 0x01A7
+
+# Stock PH GfxMovie_CreateRole::OnCreateRoleReturn result mapping.
+ZONE_FAIL_ILLEGAL_NICKNAME = 0x0101
+ZONE_FAIL_SERVER_BUSY = 0x0102
+ZONE_FAIL_NICKNAME_EXIST = 0x0103
+ZONE_FAIL_NOACCOUNTEXIST = 0x0104
 
 TGAME_ZN_MAGIC = 0x3243
 TGAME_ZN_REQ_LOGIN = 0xA000
@@ -2823,6 +2858,39 @@ TGAME_ZN_RES_LOGIN = 0xA001
 TGAME_ZN_REQ_CREATEACCOUNT = 0xA002
 TGAME_ZN_RES_CREATEACCOUNT = 0xA003
 TGAME_ZN_REQ_HEARTBEAT = 0xA004
+# Prior-recovered stock first-login nickname validation family.
+TGAME_ZN_REQ_CHECK_NICKNAME = 0xA144
+TGAME_ZN_RES_CHECK_NICKNAME = 0xA145
+
+# FIRST-NICKNAME-v22: stock post-CreateAccount role-selection completion.
+# Recovered/previously verified in v120:
+#   C2ZN_ReqChangeRole = 0xA146
+#   ZN2C_ResChangeRole = 0xA147
+TGAME_ZN_REQ_CHANGE_ROLE = 0xA146
+TGAME_ZN_RES_CHANGE_ROLE = 0xA147
+
+# FIRST-NICKNAME-v26:
+#   Fix same-session CreateRole completion ordering by deferring first-account
+#   A006 PlayerProps until after A147 ChangeLoginRole success.
+#
+# FIRST-NICKNAME-v24: stock post-role season-time startup gates.
+# v23 proved the client receives F125/F127 but immediately retries F124/F126.
+# UTGame callback metadata proves both completion delegates take ErrorCode, so
+# the response must expose the normal zone Result before the season fields.
+#   F124 C2ZN_ReqPLMatchSeasonTime -> F125 ZN2C_ResPLMatchSeasonTime
+#   F126 C2ZN_ReqCLMatchSeasonTime -> F127 ZN2C_ResCLMatchSeasonTime
+# Request: one padding byte. Response kept identical to verified v25.
+TGAME_ZN_REQ_PLMATCH_SEASON_TIME = 0xF124
+TGAME_ZN_RES_PLMATCH_SEASON_TIME = 0xF125
+TGAME_ZN_REQ_CLMATCH_SEASON_TIME = 0xF126
+TGAME_ZN_RES_CLMATCH_SEASON_TIME = 0xF127
+
+# FIRST-NICKNAME-v6: stock startup activity gate observed live immediately
+# after A001 NEWACCOUNT. Older PH captures verified C119 -> C11A and the
+# C11A payload as one big-endian u32 CurrOnlineTime value.
+TGAME_ZN_REQ_CURR_ONLINE_TIME = 0xC119
+TGAME_ZN_RES_CURR_ONLINE_TIME = 0xC11A
+
 TGAME_ZN_NTF_PLAYERINFO = 0xA005
 TGAME_ZN_NTF_PLAYERPROPS = 0xA006
 
@@ -3280,17 +3348,22 @@ def _v48_parse_zn_login(body):
     }
 
 
-def _v48_build_zn_login_response(seq):
+def _v48_build_zn_login_response(
+    seq, *, result=ZONE_ERR_SUCC, expose_wallet=True
+):
     # ZN2C_ResLogin:
     # u16 Result | u32 MainChannelId | u32 SubChannelId | double ServerTime |
     # i32 TGamePoint | i32 GoldPoint | i16 FreePropCount
+    wallet = _v140_wallet()
+    ap = int(wallet["ap"]) if expose_wallet else 0
+    gp = int(wallet["gp"]) if expose_wallet else 0
     body = (
-        _v48_u16(ZONE_ERR_SUCC)
+        _v48_u16(result)
         + _v48_u32(1)
         + _v48_u32(1)
         + _v48_f64(float(int(time.time())))
-        + _v48_i32(int(_v140_wallet()["ap"]))  # TGamePoint / PH AP
-        + _v48_i32(int(_v140_wallet()["gp"]))  # GoldPoint / GP
+        + _v48_i32(ap)  # TGamePoint / PH AP
+        + _v48_i32(gp)  # GoldPoint / GP
         + _v48_i16(0)
     )
     if len(body) != 28:
@@ -4198,6 +4271,74 @@ def _v140_login_prop_groups():
     return groups
 
 
+def _v13_login_prop_groups_no_roles():
+    """
+    FIRST-NICKNAME-v13 controlled no-role profile.
+
+    Publish the normal startup profile stream, but withhold character/role
+    roots and their component props. Persistent backend inventory is unchanged.
+    """
+    role_gids = {
+        int(p.get("gid", 0))
+        for p in V111_INVENTORY
+        if _v140_is_role_item(int(p.get("item_id", 0)))
+    }
+
+    def keep(p):
+        gid = int(p.get("gid", 0))
+        owner = int(p.get("owner_gid", 0))
+        loc = int(p.get("location", -1))
+        if gid in role_gids:
+            return False
+
+        # PH uses literal root-owner 1 for bags, which can numerically collide
+        # with starter role GID 1. Keep normal root/bag rows at loc 0x0C;
+        # omit non-bag descendants of role roots (character components).
+        if owner in role_gids and loc != V109_LOC_BAG:
+            return False
+        return True
+
+    visible = [p for p in V111_INVENTORY if keep(p)]
+    by_gid = {int(p["gid"]): p for p in visible}
+
+    known_groups = [
+        [V109_BAG1_GID, V109_BAG2_GID, V109_PRIMARY_GID],
+        [V127_PISTOL_GID, V127_MELEE_GID, V127_GRENADE_GID],
+    ]
+
+    groups = []
+    known = set()
+    for gids in known_groups:
+        rows = []
+        for gid in gids:
+            p = by_gid.get(int(gid))
+            if p is not None:
+                rows.append(p)
+                known.add(int(gid))
+        if rows:
+            groups.append(rows)
+
+    extras = [
+        p for p in visible
+        if int(p.get("gid", 0)) not in known
+    ]
+    for i in range(0, len(extras), 5):
+        groups.append(extras[i:i+5])
+
+    omitted = [
+        (int(p.get("gid", 0)), int(p.get("item_id", 0)))
+        for p in V111_INVENTORY
+        if not keep(p)
+    ]
+    log(
+        "ACCOUNT",
+        "FIRST-NICKNAME-v13 no-role A006 filter: "
+        f"role_gids={[f'0x{x:016x}' for x in sorted(role_gids)]} "
+        f"omitted={omitted} visible={len(visible)}",
+    )
+    return groups
+
+
 class _v140_ShopReject(Exception):
     def __init__(self, result, message):
         super().__init__(message)
@@ -4214,6 +4355,7 @@ V139_CURRENT_HANDLER_IDS = frozenset(
         TGAME_ZN_REQ_BUYCOMMODITY,
         TGAME_ZN_REQ_TP_BALANCE,
         TGAME_ZN_REQ_ITEM_OPERATION,
+        TGAME_ZN_REQ_CHANGE_ROLE,
     }
 )
 V139_PROTOCOL_ONLY[TGAME_ZN_REQ_SHOPCONFHASH] = (
@@ -4222,6 +4364,13 @@ V139_PROTOCOL_ONLY[TGAME_ZN_REQ_SHOPCONFHASH] = (
 V139_PROTOCOL_ONLY[TGAME_ZN_REQ_ITEM_OPERATION] = (
     "Protocol.ItemOperation", "CURRENT_BRANCH"
 )
+
+# v22: A146 is now an active current-branch handler.
+_v22_change_role_spec = V139_PROTOCOL_REGISTRY["by_cmd"].get(TGAME_ZN_REQ_CHANGE_ROLE)
+if _v22_change_role_spec is not None:
+    _v22_change_role_spec["status"] = "CURRENT_BRANCH"
+    _v22_change_role_spec["implemented"] = True
+    _v22_change_role_spec["source"] = "FIRST-NICKNAME-v22 post-A003 A146/A147 completion"
 
 for _cmd in (
     TGAME_ZN_REQ_UPDATECOMMODITYFILE,
@@ -4302,11 +4451,15 @@ def _nick_v1_parse_change_nickname(body):
     return nickname
 
 
-def _nick_v1_build_change_nickname_response(nickname):
-    # CONTROLLED TEST candidate for ZN2C_ResChangeNickName:
+def _nick_v1_build_change_nickname_response(
+    nickname,
+    *,
+    result=ZONE_ERR_SUCC,
+):
+    # ZN2C_ResChangeNickName candidate:
     #   u16 Result | string[32] NewNickName
     body = (
-        _v48_u16(ZONE_ERR_SUCC)
+        _v48_u16(int(result) & 0xFFFF)
         + _v50_geo_tdr_string(str(nickname), 32)
     )
     return _v62_build_server_app(
@@ -5027,16 +5180,132 @@ def _v48_build_zonehints(seq):
     )
 
 
+def _v6_build_curr_online_time_response(seq=0, seconds=0):
+    """ZN2C_ResCurrOnlineTime (0xC11A): one big-endian u32 seconds field.
+
+    Server application responses on this transport do not include the client's
+    app sequence prefix. ``seq`` is retained only for call-site/log symmetry.
+    """
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_RES_CURR_ONLINE_TIME,
+        _v48_u32(int(seconds) & 0xFFFFFFFF),
+    )
+
+
 def _v48_build_heartbeat_response(seq):
     return _v62_build_server_app(
         TGAME_ZN_MAGIC, TGAME_ZN_RES_HEARTBEAT, _v48_u8(0)
     )
 
 
-def _v48_build_createaccount_response(seq):
+def _v22_parse_change_login_role(body):
+    """C2ZN_ReqChangeRole (A146): two big-endian u16 role indexes."""
+    body = bytes(body)
+    if len(body) != 4:
+        raise ValueError(
+            f"ChangeLoginRole (A146) must be exactly 4B, got {len(body)}B: "
+            f"{body.hex()}"
+        )
+    return struct.unpack(">HH", body)
+
+
+def _v22_build_change_login_role_response():
+    """ZN2C_ResChangeRole (A147): u16 Result."""
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_RES_CHANGE_ROLE,
+        _v48_u16(ZONE_ERR_SUCC),
+    )
+
+
+def _v23_parse_season_time_request(body, name):
+    """F124/F126 requests are exactly one padding byte."""
+    body = bytes(body or b"")
+    if len(body) != 1:
+        raise ValueError(
+            f"{name} request must be exactly 1B, got {len(body)}B: {body.hex()}"
+        )
+    return body[0]
+
+
+def _v26_build_season_time_response(response_cmd):
+    """F125/F127 compatibility response kept identical to verified v25.
+
+    This candidate is for first-login nickname lifecycle regression testing.
+    Do not mix the separate season-time wire-format experiment into this fix.
+    """
+    body = _v48_u16(ZONE_ERR_SUCC) + (b"\x00" * 24)
+    if len(body) != 26:
+        raise AssertionError(
+            f"unexpected season-time response body len={len(body)}"
+        )
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        response_cmd,
+        body,
+    )
+
+
+def _v48_build_createaccount_response(seq, result=ZONE_ERR_SUCC):
     return _v62_build_server_app(
         TGAME_ZN_MAGIC, TGAME_ZN_RES_CREATEACCOUNT,
-        _v48_u16(ZONE_ERR_SUCC)
+        _v48_u16(result)
+    )
+
+
+def _v5_parse_first_nickname(body):
+    """Accept the two historical PH forms: TDR string or NUL C-string."""
+    body = bytes(body or b"")
+    if len(body) >= 5:
+        n = struct.unpack_from(">I", body, 0)[0]
+        if 1 <= n <= 32 and 4 + n <= len(body):
+            raw = body[4:4+n]
+            if raw.endswith(b"\x00"):
+                raw = raw[:-1]
+            return raw.decode("latin1", "strict")
+    end = body.find(b"\x00")
+    if end < 0:
+        if len(body) > 31:
+            raise ValueError("nickname missing NUL / exceeds 31 bytes")
+        raw = body
+    else:
+        raw = body[:end]
+    return raw.decode("latin1", "strict")
+
+
+def _v5_validate_first_nickname(nickname):
+    name = str(nickname or "")
+    try:
+        raw = name.encode("latin1", "strict")
+    except UnicodeEncodeError:
+        return False, "", "nickname is not encodable in PH single-byte field"
+    if not (1 <= len(raw) <= 31):
+        return False, "", f"nickname length must be 1..31 bytes (got {len(raw)})"
+    if name != name.strip():
+        return False, "", "nickname may not start or end with whitespace"
+    if any(b < 0x20 or b == 0x7F for b in raw):
+        return False, "", "nickname contains control characters"
+    return True, name, "ok"
+
+
+def _v26_nickname_claim_failure_result(exc: Exception) -> int:
+    """Map atomic nickname-claim failures to stock PH CreateRole results."""
+    if isinstance(exc, PlayerDBError):
+        message = str(exc).casefold()
+        if "nickname unavailable" in message:
+            return ZONE_FAIL_NICKNAME_EXIST
+        if "invalid nickname" in message:
+            return ZONE_FAIL_ILLEGAL_NICKNAME
+    return ZONE_FAIL_SERVER_BUSY
+
+
+def _v5_build_check_nickname_response(result=ZONE_ERR_SUCC):
+    # Prior-recovered A145 family: Result-only response.
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_RES_CHECK_NICKNAME,
+        _v48_u16(result),
     )
 
 
@@ -6128,8 +6397,6 @@ def _v132_send_pve_afdev_handoff(
     role_state,
     *,
     reason,
-    room=None,
-    start_settings=None,
     mode_id=None,
 ):
     """Send A11A once using this room's stable-v143b DS allocation.
@@ -6138,46 +6405,6 @@ def _v132_send_pve_afdev_handoff(
     lightweight UDP bridge, then advertises it immediately. TGame's first valid
     DS datagram to that bridge is what starts the v48 AFDEV loader.
     """
-    room_for_handoff = (
-        room
-        if isinstance(room, dict)
-        else role_state.get("v79_created_match_room") or {}
-    )
-    room_id = room_for_handoff.get("room_id") or role_state.get(
-        "v143b_ds_room_id"
-    )
-    use_client_map = os.environ.get("AF_DS_USE_CLIENT_MAP", "1").strip().lower() in (
-        "1", "true", "yes", "on"
-    )
-    map_override = None
-    if not use_client_map:
-        map_override = V143B_DS_CONFIG.default_map or None
-
-    requested_settings = None
-    if isinstance(start_settings, dict):
-        requested_settings = {
-            "mode_id": start_settings.get("mode_id"),
-            "match_map_id": start_settings.get("match_map_id"),
-            "sub_mode_id": start_settings.get("sub_mode_id"),
-            "room_flags": start_settings.get("room_flags"),
-            "map_name": map_override,
-        }
-    elif room_for_handoff.get("room_id") is not None:
-        room_map_name = (
-            str(room_for_handoff.get("map_string") or "").strip()
-            if use_client_map
-            else ""
-        )
-        requested_settings = {
-            "mode_id": room_for_handoff.get("mode_id"),
-            "match_map_id": room_for_handoff.get("map_id"),
-            "sub_mode_id": room_for_handoff.get("sub_mode_id"),
-            "room_flags": room_for_handoff.get("flags"),
-            "map_name": room_map_name or map_override,
-        }
-
-    if mode_id is None and isinstance(requested_settings, dict):
-        mode_id = requested_settings.get("mode_id")
     mode_now = _v132_room_mode(role_state, mode_id)
     if not TGAME_PVE_DIRECT_AFDEV or mode_now not in TGAME_AFDEV_MODE_IDS:
         return False
@@ -6197,50 +6424,11 @@ def _v132_send_pve_afdev_handoff(
     handoff_port = TGAME_AFDEV_PORT
     allocation = None
 
-    if (
-        isinstance(room_for_handoff, dict)
-        and room_for_handoff.get("room_id") is not None
-    ):
-        role_state["v79_created_match_room"] = room_for_handoff
-        role_state["v143b_ds_room_id"] = int(room_for_handoff["room_id"])
-
     if V143B_DS_CONFIG.enabled:
-        if isinstance(requested_settings, dict):
-            try:
-                allocation = V143B_DS_SPAWNER.prepare_lobby_for_match(
-                    owner_id=int(role_state.get("uin") or 10001),
-                    owner_nickname=_v150_role_nickname(role_state),
-                    room_id=(int(room_id) if room_id is not None else None),
-                    max_players=max(
-                        2,
-                        int(room_for_handoff.get("fighter_capacity") or 0),
-                    ),
-                    mode_id=int(requested_settings["mode_id"]),
-                    map_id=int(requested_settings["match_map_id"]),
-                    sub_mode_id=int(requested_settings["sub_mode_id"]),
-                    room_flags=int(requested_settings["room_flags"]),
-                    map_name=requested_settings.get("map_name"),
-                )
-                room_id = allocation.room_id
-                role_state["v143b_ds_room_id"] = int(room_id)
-                log(
-                    "DS-HANDOFF",
-                    f"match handoff prepared DS room={room_id} reason={reason} "
-                    f"mode=0x{allocation.mode_id:08x} "
-                    f"map=0x{allocation.map_id:04x} "
-                    f"map_name={allocation.map_name!r} "
-                    f"submode=0x{allocation.sub_mode_id:08x} "
-                    f"flags=0x{allocation.room_flags:08x}",
-                )
-            except (KeyError, TypeError, ValueError, SpawnerError) as exc:
-                log(
-                    "DS-HANDOFF",
-                    f"{reason} DS settings preparation failed "
-                    f"mode=0x{mode_now:08x}: {type(exc).__name__}: {exc}; "
-                    "no endpoint advertised",
-                )
-                return False
-        elif room_id is None:
+        room = role_state.get("v79_created_match_room") or {}
+        room_id = room.get("room_id") or role_state.get("v143b_ds_room_id")
+
+        if room_id is None:
             # Covers allocator/quick-start paths that skipped A10A.
             try:
                 allocation = V143B_DS_SPAWNER.reserve_lobby(
@@ -6532,9 +6720,8 @@ def _v72_parse_start_room_alloc(body):
       u8  MapCount
       u32 MapIds[MapCount]
 
-    The fixed MatchSettings layout used by the PH client captures includes
-    ModeId, MapId, SubModeId, and room Flags at known offsets. Keep the full
-    structure as well for diagnostics/future fields.
+    The 32-byte MatchSettings sub-structure is preserved raw for now.  The
+    first 4 bytes are ModeId and bytes 4..5 track MapId in our captures.
     """
     if len(body) < 42:
         raise ValueError(f"StartRoomAlloc body too short: {len(body)}B")
@@ -6551,17 +6738,11 @@ def _v72_parse_start_room_alloc(body):
     maps = [struct.unpack_from(">I", body, 42 + 4*i)[0] for i in range(map_count)]
     mode_id = struct.unpack_from(">I", match, 0)[0] if len(match) >= 4 else None
     match_map_id = struct.unpack_from(">H", match, 4)[0] if len(match) >= 6 else None
-    # These two packed fields are byte-aligned at offsets 11 and 15 in the
-    # captured 32-byte MatchSettings payload (they are not naturally aligned).
-    sub_mode_id = struct.unpack_from(">I", match, 11)[0] if len(match) >= 15 else None
-    room_flags = struct.unpack_from(">I", match, 15)[0] if len(match) >= 19 else None
     return {
         "uin": uin,
         "match": match,
         "mode_id": mode_id,
         "match_map_id": match_map_id,
-        "sub_mode_id": sub_mode_id,
-        "room_flags": room_flags,
         "hard_level": hard_level,
         "map_count": map_count,
         "maps": maps,
@@ -7679,36 +7860,76 @@ def handle_placeholder(conn, addr, label):
                                                 f"props=0x{seq_props:08x} "
                                                 f"hints=0x{seq_hints:08x}"
                                             )
+                                            uin_now = _v150_role_uin(role_state)
+                                            persisted_nickname = PLAYER_DB.load_nickname(
+                                                uin_now
+                                            )
+                                            awaiting_first_nickname = (
+                                                persisted_nickname is None
+                                            )
+                                            role_state[
+                                                "v5_awaiting_first_nickname"
+                                            ] = awaiting_first_nickname
+
+                                            # FIRST-NICKNAME-v20 controlled 0x0401 route test:
+                                            # v19 proved that GfxMovie_Loading/TGameAction_Login
+                                            # FName 0x12669(ErrorCode) routes ErrorCode 0x0401
+                                            # into the stock CreateRole helper (FName 0x12C14).
+                                            #
+                                            # IMPORTANT: only a DB row whose nickname is still
+                                            # NULL gets 0x0401. Existing accounts keep the proven
+                                            # normal 0x8100 startup path.
+                                            login_result = (
+                                                0x0401 if awaiting_first_nickname
+                                                else ZONE_ERR_SUCC
+                                            )
                                             login_rsp = _v48_build_zn_login_response(
-                                                seq_login
+                                                seq_login,
+                                                result=login_result,
+                                                expose_wallet=not awaiting_first_nickname,
                                             )
                                             _v48_send_app(
                                                 conn, active_tgame_key, login_rsp,
                                                 label,
-                                                "ZN2C_RES_LOGIN v143-wallet-login "
-                                                f"result=0x8100 main=1 sub=1 freeprops=0 "
-                                                f"AP={_v140_wallet()['ap']} "
-                                                f"GP={_v140_wallet()['gp']} "
-                                                f"MP={_v140_wallet()['mp']}"
+                                                "ZN2C_RES_LOGIN FIRST-NICKNAME-v20-FORCE-0401 "
+                                                f"result=0x{login_result:04x} "
+                                                f"uin={uin_now} "
+                                                f"nickname={persisted_nickname!r}"
                                             )
 
-                                            # IMPORTANT v69 change:
-                                            # Do NOT send PlayerInfo/PlayerProps/ZoneHints
-                                            # immediately after A001.  The A001-only v63
-                                            # capture proved the client naturally sends
-                                            # FF05 after it accepts login.  Treat FF05 as
-                                            # the client-side readiness milestone and only
-                                            # then publish the profile.
-                                            pending_zone_profile = {
-                                                "seq_pinfo": seq_pinfo,
-                                                "seq_props": seq_props,
-                                                "seq_hints": seq_hints,
-                                            }
-                                            log(
-                                                label,
-                                                "v71: profile notifications DEFERRED until "
-                                                "client FF05 readiness packet"
-                                            )
+                                            if awaiting_first_nickname:
+                                                # v20 is deliberately NOT the normal FF05/profile
+                                                # path. Do not publish A005/A006 even if an
+                                                # unexpected FF05 appears; this keeps the test
+                                                # isolated to A001.Result -> 129D5 -> 0x12669.
+                                                role_state["v12_force_blank_nickname"] = True
+                                                role_state["v13_no_role_login"] = True
+                                                role_state["v20_force_a001_0401"] = True
+                                                pending_zone_profile = None
+                                                log(
+                                                    "ACCOUNT",
+                                                    "FIRST-NICKNAME-v20 FORCE-A001-0401 armed: "
+                                                    f"uin={uin_now} result=0x0401 nickname=NULL; "
+                                                    "A005/A006 profile intentionally withheld; "
+                                                    "expected client route: 129D5 -> 0x12669(0x0401) "
+                                                    "-> 0x12C14 CreateRole helper",
+                                                )
+                                            else:
+                                                role_state.pop("v12_force_blank_nickname", None)
+                                                role_state.pop("v13_no_role_login", None)
+                                                # Existing accounts keep the proven normal path:
+                                                # wait for FF05, then publish the full profile.
+                                                pending_zone_profile = {
+                                                    "seq_pinfo": seq_pinfo,
+                                                    "seq_props": seq_props,
+                                                    "seq_hints": seq_hints,
+                                                    "first_nickname_probe": False,
+                                                }
+                                                log(
+                                                    label,
+                                                    "v71: profile notifications DEFERRED until "
+                                                    "client FF05 readiness packet"
+                                                )
 
                                         elif app["cmd"] == 0xFF05:
                                             ff05_value = (
@@ -7723,6 +7944,23 @@ def handle_placeholder(conn, addr, label):
                                             )
 
                                             if pending_zone_profile is not None:
+                                                first_nickname_profile = bool(
+                                                    pending_zone_profile.get(
+                                                        "first_nickname_probe", False
+                                                    )
+                                                )
+                                                profile_nickname = (
+                                                    "" if first_nickname_profile
+                                                    else _v150_role_nickname(role_state)
+                                                )
+                                                if first_nickname_profile:
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v11 FF05 reached; publishing "
+                                                        "complete normal profile with NickName='' "
+                                                        "instead of withholding A006/hints",
+                                                    )
+
                                                 # v121: natural stock self-heal test.
                                                 # Start with CurRoleGID=0 so the client is
                                                 # unambiguously in the "current role invalid"
@@ -7734,7 +7972,7 @@ def handle_placeholder(conn, addr, label):
                                                     pending_zone_profile["seq_pinfo"],
                                                     uin=_v150_role_uin(role_state),
                                                     cur_role_gid=0,
-                                                    nickname=_v150_role_nickname(role_state),
+                                                    nickname=profile_nickname,
                                                 )
                                                 _v48_send_app(
                                                     conn, active_tgame_key, pinfo,
@@ -7748,7 +7986,11 @@ def handle_placeholder(conn, addr, label):
                                                 # PropInfo[5] chunks.  This allows a character bought
                                                 # in Mall to survive restart and be available to the
                                                 # normal CurrentRole/PreviewRole logic.
-                                                login_groups = _v140_login_prop_groups()
+                                                login_groups = (
+                                                    _v13_login_prop_groups_no_roles()
+                                                    if first_nickname_profile
+                                                    else _v140_login_prop_groups()
+                                                )
                                                 for group_index, group in enumerate(login_groups):
                                                     is_last = group_index == len(login_groups) - 1
                                                     props_pkt = _v127_build_playerprops_chunk(
@@ -7781,18 +8023,26 @@ def handle_placeholder(conn, addr, label):
                                                 pinfo_after_props = _v48_build_playerinfo(
                                                     0,
                                                     uin=_v150_role_uin(role_state),
-                                                    cur_role_gid=_r13_wire_current_role_gid(
-                                                        _v150_role_uin(role_state)
+                                                    cur_role_gid=(
+                                                        0
+                                                        if first_nickname_profile
+                                                        else _r13_wire_current_role_gid(
+                                                            _v150_role_uin(role_state)
+                                                        )
                                                     ),
-                                                    nickname=_v150_role_nickname(role_state),
+                                                    nickname=profile_nickname,
                                                 )
                                                 _v48_send_app(
                                                     conn, active_tgame_key,
                                                     pinfo_after_props,
                                                     label,
                                                     "ZN2C_NTF_PLAYERINFO v121-after-props "
-                                                    f"CurRoleGID=0x{_v140_current_role_gid():016x} "
-                                                    "reason=current-role-resolve-after-A006"
+                                                    + (
+                                                        "CurRoleGID=0 FIRST-NICKNAME-v13-no-role "
+                                                        if first_nickname_profile
+                                                        else f"CurRoleGID=0x{_v140_current_role_gid():016x} "
+                                                    )
+                                                    + "reason=current-role-resolve-after-A006"
                                                 )
 
                                                 _v140_send_wallet_sync(
@@ -7814,6 +8064,13 @@ def handle_placeholder(conn, addr, label):
                                                 )
 
                                                 pending_zone_profile = None
+                                                if first_nickname_profile:
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v12 full sticky-empty-nickname profile "
+                                                        "published; startup may now complete; waiting "
+                                                        "for stock A144/A002 or lobby transition",
+                                                    )
                                                 log(
                                                     label,
                                                     "v71: deferred profile sequence sent "
@@ -8281,6 +8538,100 @@ def handle_placeholder(conn, addr, label):
                                                     f"item={int(_v140_role_subject.get('item_id',0))}"
                                                 )
 
+                                        elif app["cmd"] == TGAME_ZN_REQ_CHECK_NICKNAME:
+                                            nick = None
+                                            try:
+                                                nick = _v5_parse_first_nickname(
+                                                    app["body"]
+                                                )
+                                                ok, normalized_nick, reason = (
+                                                    _v5_validate_first_nickname(nick)
+                                                )
+                                            except Exception as nick_e:
+                                                ok = False
+                                                normalized_nick = ""
+                                                reason = f"parse:{nick_e}"
+
+                                            uin_now = _v150_role_uin(role_state)
+                                            available = False
+                                            if ok:
+                                                try:
+                                                    available = PLAYER_DB.nickname_available(
+                                                        normalized_nick,
+                                                        exclude_uin=uin_now,
+                                                    )
+                                                except Exception as nick_db_e:
+                                                    reason = (
+                                                        "db:"
+                                                        f"{type(nick_db_e).__name__}:"
+                                                        f"{nick_db_e}"
+                                                    )
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v26 A144 "
+                                                        "availability DB failure: "
+                                                        f"uin={uin_now} "
+                                                        f"{type(nick_db_e).__name__}: "
+                                                        f"{nick_db_e}",
+                                                    )
+                                            if str(reason).startswith("db:"):
+                                                result = ZONE_FAIL_SERVER_BUSY
+                                            elif not ok:
+                                                result = ZONE_FAIL_ILLEGAL_NICKNAME
+                                            elif available:
+                                                result = ZONE_ERR_SUCC
+                                            else:
+                                                result = ZONE_FAIL_NICKNAME_EXIST
+                                            log(
+                                                "ACCOUNT",
+                                                "FIRST-NICKNAME-v26f A144 CheckNickName "
+                                                f"uin={uin_now} nick={nick!r} "
+                                                f"valid={ok} available={available} "
+                                                f"reason={reason}",
+                                            )
+                                            rsp = _v5_build_check_nickname_response(
+                                                result
+                                            )
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                rsp,
+                                                label,
+                                                "ZN2C_RES_CHECKNICKNAME first-nickname-v26f "
+                                                f"cmd=0xA145 result=0x{result:04x} "
+                                                f"available={available}",
+                                            )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_CURR_ONLINE_TIME:
+                                            log(
+                                                label,
+                                                "C2ZN_REQ_CURRONLINETIME FIRST-NICKNAME-v6 "
+                                                "(0xC119) "
+                                                f"body={app['body'].hex()}"
+                                            )
+                                            rsp = _v6_build_curr_online_time_response(
+                                                (app["seq"] + 1) & 0xffffffff,
+                                                seconds=0,
+                                            )
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                rsp,
+                                                label,
+                                                "ZN2C_RES_CURRONLINETIME FIRST-NICKNAME-v6 "
+                                                "cmd=0xC11A CurrOnlineTime=0",
+                                            )
+                                            if role_state.get(
+                                                "v5_awaiting_first_nickname"
+                                            ):
+                                                log(
+                                                    "ACCOUNT",
+                                                    "FIRST-NICKNAME-v12 C119 observed; nickname "
+                                                    "still NULL; full empty-nickname profile was "
+                                                    "already published after FF05; waiting for "
+                                                    "next stock client request",
+                                                )
+
                                         elif app["cmd"] == TGAME_ZN_REQ_HEARTBEAT:
                                             hb_seq = (app["seq"] + 1) & 0xffffffff
                                             hb = _v48_build_heartbeat_response(
@@ -8293,22 +8644,504 @@ def handle_placeholder(conn, addr, label):
                                             )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_CREATEACCOUNT:
-                                            nick = _v48_parse_createaccount(
-                                                app["body"]
+                                            rsp_seq = (app["seq"] + 1) & 0xffffffff
+                                            uin_now = _v150_role_uin(role_state)
+                                            nick = None
+                                            try:
+                                                nick = _v5_parse_first_nickname(
+                                                    app["body"]
+                                                )
+                                                ok, normalized_nick, reason = (
+                                                    _v5_validate_first_nickname(nick)
+                                                )
+                                            except Exception as nick_e:
+                                                ok = False
+                                                normalized_nick = ""
+                                                reason = f"parse:{nick_e}"
+
+                                            try:
+                                                current_nickname = (
+                                                    PLAYER_DB.load_nickname(uin_now)
+                                                )
+                                            except Exception as nick_db_e:
+                                                current_nickname = None
+                                                ok = False
+                                                reason = (
+                                                    "db-load:"
+                                                    f"{type(nick_db_e).__name__}:"
+                                                    f"{nick_db_e}"
+                                                )
+
+                                            # FIRST-NICKNAME-v26:
+                                            # The stock CreateRole flow is valid while this
+                                            # login is explicitly awaiting A002, or when A002
+                                            # is a retransmit of the nickname already persisted
+                                            # for this same UIN.
+                                            forced_first_account = bool(
+                                                role_state.get(
+                                                    "v20_force_a001_0401"
+                                                )
+                                            )
+                                            remembered_awaiting = bool(
+                                                role_state.get(
+                                                    "v5_awaiting_first_nickname"
+                                                )
+                                            )
+                                            db_awaiting = current_nickname is None
+                                            awaiting = bool(
+                                                forced_first_account
+                                                or remembered_awaiting
+                                                or db_awaiting
+                                            )
+                                            same_nickname_retry = bool(
+                                                ok
+                                                and current_nickname
+                                                and str(current_nickname).casefold()
+                                                == normalized_nick.casefold()
+                                            )
+                                            eligible = bool(
+                                                ok
+                                                and (awaiting or same_nickname_retry)
+                                            )
+
+                                            log(
+                                                "ACCOUNT",
+                                                "FIRST-NICKNAME-v26 A002 CreateAccount "
+                                                f"uin={uin_now} nick={nick!r} "
+                                                f"awaiting={awaiting} "
+                                                f"forced0401={forced_first_account} "
+                                                f"remembered={remembered_awaiting} "
+                                                f"db_awaiting={db_awaiting} "
+                                                f"db_nickname={current_nickname!r} "
+                                                f"same_retry={same_nickname_retry} "
+                                                f"valid={ok} eligible={eligible} "
+                                                f"reason={reason}",
+                                            )
+
+                                            if not eligible:
+                                                reject_result = (
+                                                    ZONE_FAIL_ILLEGAL_NICKNAME
+                                                    if not ok
+                                                    else ZONE_FAIL_NOACCOUNTEXIST
+                                                )
+                                                fail_rsp = _v48_build_createaccount_response(
+                                                    rsp_seq,
+                                                    reject_result,
+                                                )
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    fail_rsp,
+                                                    label,
+                                                    "ZN2C_RES_CREATEACCOUNT first-nickname-v26f "
+                                                    f"result=0x{reject_result:04x} rejected",
+                                                )
+                                            elif same_nickname_retry:
+                                                # A002 can be retransmitted after the DB commit.
+                                                # Never rebuild/replay the complete first-account
+                                                # profile a second time. If this live CreateRole
+                                                # transaction is still awaiting completion, keep
+                                                # (or recover) only the pending A146/deferred-A006
+                                                # state needed to finish it.
+                                                if (
+                                                    forced_first_account
+                                                    or remembered_awaiting
+                                                    or role_state.get(
+                                                        "first_account_change_role_pending"
+                                                    )
+                                                ):
+                                                    role_state[
+                                                        "first_account_change_role_pending"
+                                                    ] = True
+                                                    role_state.setdefault(
+                                                        "first_nickname_v26_deferred_login_groups",
+                                                        _v140_login_prop_groups(),
+                                                    )
+
+                                                success_rsp = _v48_build_createaccount_response(
+                                                    rsp_seq,
+                                                    ZONE_ERR_SUCC,
+                                                )
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    success_rsp,
+                                                    label,
+                                                    "ZN2C_RES_CREATEACCOUNT first-nickname-v26 "
+                                                    "cmd=0xA003 result=0x8100 "
+                                                    "idempotent-same-nickname",
+                                                )
+                                                log(
+                                                    "ACCOUNT",
+                                                    "FIRST-NICKNAME-v26 A002 idempotent retry "
+                                                    f"uin={uin_now} "
+                                                    f"nickname={current_nickname!r}; "
+                                                    "no duplicate profile replay",
+                                                )
+                                            else:
+                                                try:
+                                                    # Atomic claim closes the A144->A002 race:
+                                                    # availability is re-checked under SQLite's
+                                                    # write lock before the nickname is committed.
+                                                    PLAYER_DB.claim_nickname(
+                                                        uin_now,
+                                                        normalized_nick,
+                                                    )
+                                                except Exception as db_e:
+                                                    claim_result = (
+                                                        _v26_nickname_claim_failure_result(db_e)
+                                                    )
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v26f DB claim failed: "
+                                                        f"{type(db_e).__name__}: {db_e}; "
+                                                        f"client_result=0x{claim_result:04x}",
+                                                    )
+                                                    fail_rsp = _v48_build_createaccount_response(
+                                                        rsp_seq,
+                                                        claim_result,
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        fail_rsp,
+                                                        label,
+                                                        "ZN2C_RES_CREATEACCOUNT first-nickname-v26f "
+                                                        f"result=0x{claim_result:04x} "
+                                                        "nickname-claim-failure",
+                                                    )
+                                                else:
+                                                    role_state.pop(
+                                                        "v12_force_blank_nickname", None
+                                                    )
+                                                    role_state.pop(
+                                                        "v13_no_role_login", None
+                                                    )
+                                                    role_state["nickname"] = normalized_nick
+                                                    role_state[
+                                                        "v5_awaiting_first_nickname"
+                                                    ] = False
+                                                    role_state.pop(
+                                                        "v20_force_a001_0401", None
+                                                    )
+                                                    role_state[
+                                                        "first_account_change_role_pending"
+                                                    ] = True
+                                                    with _V150_ZONE_LOCK:
+                                                        session = _V150_ZONE_SESSIONS.get(
+                                                            uin_now
+                                                        )
+                                                        if session is not None:
+                                                            session["nickname"] = normalized_nick
+
+                                                    success_rsp = _v48_build_createaccount_response(
+                                                        rsp_seq,
+                                                        ZONE_ERR_SUCC,
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        success_rsp,
+                                                        label,
+                                                        "ZN2C_RES_CREATEACCOUNT first-nickname-v21 "
+                                                        "cmd=0xA003 result=0x8100 "
+                                                        f"nickname={normalized_nick!r}",
+                                                    )
+
+                                                    # Publish the profile only after the stock
+                                                    # CreateAccount request succeeds.
+                                                    pinfo = _v48_build_playerinfo(
+                                                        0,
+                                                        uin=uin_now,
+                                                        cur_role_gid=0,
+                                                        nickname=normalized_nick,
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        pinfo,
+                                                        label,
+                                                        "ZN2C_NTF_PLAYERINFO first-nickname-v5 "
+                                                        "post-A003 CurRoleGID=0",
+                                                    )
+
+                                                    # FIRST-NICKNAME-v26:
+                                                    #
+                                                    # Proven live client ordering bug:
+                                                    #   OnCreateRoleReturn
+                                                    #   -> OnNotifyPropsInfo (FName 0x12A16)
+                                                    #      enters with CreateRole+0x228 bit0 == 0
+                                                    #      and therefore skips its 0x12C26 gate callee
+                                                    #   -> OnResChangeLoginRole (FName 0x12AD6)
+                                                    #      then sets CreateRole+0x228 bit0 == 1
+                                                    #
+                                                    # The previous first-account path sent A006
+                                                    # PlayerProps while still inside the A002/A003
+                                                    # handler, before the server could read the
+                                                    # already-queued A146 request.  That fires
+                                                    # OnNotifyPropsInfo too early and it is never
+                                                    # retriggered after A147.
+                                                    #
+                                                    # Defer ONLY the first-account A006 groups.
+                                                    # A146/A147 establishes the bit0 completion
+                                                    # latch first; the A146 handler publishes these
+                                                    # groups immediately afterward.
+                                                    login_groups = _v140_login_prop_groups()
+                                                    role_state[
+                                                        "first_nickname_v26_deferred_login_groups"
+                                                    ] = login_groups
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v26 deferred A006 PlayerProps "
+                                                        f"until after A147 groups={len(login_groups)}",
+                                                    )
+
+                                                    pinfo_after = _v48_build_playerinfo(
+                                                        0,
+                                                        uin=uin_now,
+                                                        cur_role_gid=_r13_wire_current_role_gid(
+                                                            uin_now
+                                                        ),
+                                                        nickname=normalized_nick,
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        pinfo_after,
+                                                        label,
+                                                        "ZN2C_NTF_PLAYERINFO first-nickname-v5 "
+                                                        "post-A003 role-selected-profile; props-deferred",
+                                                    )
+                                                    _v140_send_wallet_sync(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        label,
+                                                        reason=UPDATE_REASON_TP_BALANCE,
+                                                        prefix="first-account",
+                                                    )
+                                                    hints = _v48_build_zonehints(0)
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        hints,
+                                                        label,
+                                                        "ZN2C_NTF_ZONE_HINTS first-nickname-v5",
+                                                    )
+                                                    pending_zone_profile = None
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v21 COMPLETE "
+                                                        f"uin={uin_now} "
+                                                        f"nickname={normalized_nick!r}; "
+                                                        "SQLite persisted; profile published with A006 deferred",
+                                                    )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_CHANGE_ROLE:
+                                            # FIRST-NICKNAME-v26:
+                                            # This A146/A147 compatibility path is scoped only
+                                            # to a just-completed first-account A002. Existing
+                                            # accounts must not have arbitrary role changes
+                                            # acknowledged by this special handler.
+                                            # Stock client emits A146 immediately after a
+                                            # successful first-account A003.  v21 persisted
+                                            # the nickname correctly but left this request
+                                            # unhandled, so the CreateRole UI completion
+                                            # callback never received A147.
+                                            uin_now = _v150_role_uin(role_state)
+                                            try:
+                                                rebel_role_index, gsdu_role_index = (
+                                                    _v22_parse_change_login_role(
+                                                        app["body"]
+                                                    )
+                                                )
+                                            except Exception as role_e:
+                                                log(
+                                                    "ACCOUNT",
+                                                    "FIRST-NICKNAME-v22 A146 parse failed: "
+                                                    f"{type(role_e).__name__}: {role_e}",
+                                                )
+                                            else:
+                                                first_account_pending = bool(
+                                                    role_state.get(
+                                                        "first_account_change_role_pending"
+                                                    )
+                                                )
+                                                if not first_account_pending:
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v26b A146 ignored outside "
+                                                        "first-account completion scope: "
+                                                        f"uin={uin_now} "
+                                                        f"rebel_role_index={rebel_role_index} "
+                                                        f"gsdu_role_index={gsdu_role_index}",
+                                                    )
+                                                    continue
+
+                                                log(
+                                                    "ACCOUNT",
+                                                    "FIRST-NICKNAME-v26b A146 accepted inside "
+                                                    "first-account completion scope: "
+                                                    f"uin={uin_now} "
+                                                    f"rebel_role_index={rebel_role_index} "
+                                                    f"gsdu_role_index={gsdu_role_index}",
+                                                )
+
+                                                nickname_now = (
+                                                    role_state.get("nickname")
+                                                    or PLAYER_DB.load_nickname(uin_now)
+                                                    or ""
+                                                )
+                                                cur_role_gid = _r13_wire_current_role_gid(
+                                                    uin_now
+                                                )
+                                                log(
+                                                    "ACCOUNT",
+                                                    "FIRST-NICKNAME-v22 A146 ChangeLoginRole "
+                                                    f"uin={uin_now} "
+                                                    f"rebel_role_index={rebel_role_index} "
+                                                    f"gsdu_role_index={gsdu_role_index} "
+                                                    f"nickname={nickname_now!r} "
+                                                    f"cur_role_gid=0x{cur_role_gid:016x}",
+                                                )
+
+                                                rsp = _v22_build_change_login_role_response()
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    rsp,
+                                                    label,
+                                                    "ZN2C_RES_CHANGE_ROLE first-nickname-v22 "
+                                                    "cmd=0xA147 result=0x8100",
+                                                )
+
+                                                # FIRST-NICKNAME-v26:
+                                                # Preserve the proven A147 -> A005 completion
+                                                # sequence, then publish the A006 groups that were
+                                                # intentionally deferred from the A003 handler.
+                                                #
+                                                # TCP ordering guarantees the client processes
+                                                # A147 before these later notifications.  The live
+                                                # v6 trace proved OnResChangeLoginRole sets
+                                                # CreateRole+0x228 bit0, so the subsequent
+                                                # OnNotifyPropsInfo event can now pass its bit0
+                                                # gate and enter 0x12C26.
+                                                role_info = _v48_build_playerinfo(
+                                                    0,
+                                                    uin=uin_now,
+                                                    cur_role_gid=cur_role_gid,
+                                                    nickname=nickname_now,
+                                                )
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    role_info,
+                                                    label,
+                                                    "ZN2C_NTF_PLAYERINFO first-nickname-v26 "
+                                                    "post-A147 "
+                                                    f"CurRoleGID=0x{cur_role_gid:016x}",
+                                                )
+
+                                                deferred_groups = role_state.get(
+                                                    "first_nickname_v26_deferred_login_groups"
+                                                )
+                                                if not deferred_groups:
+                                                    # Recovery for a same-session retransmit or
+                                                    # partial state loss: rebuild the authoritative
+                                                    # groups but still keep them deferred until
+                                                    # after A147.
+                                                    deferred_groups = _v140_login_prop_groups()
+
+                                                if deferred_groups:
+                                                    for group_index, group in enumerate(
+                                                        deferred_groups
+                                                    ):
+                                                        is_last = (
+                                                            group_index
+                                                            == len(deferred_groups) - 1
+                                                        )
+                                                        props_pkt = _v127_build_playerprops_chunk(
+                                                            group,
+                                                            is_last,
+                                                            session_uin=uin_now,
+                                                        )
+                                                        _v48_send_app(
+                                                            conn,
+                                                            active_tgame_key,
+                                                            props_pkt,
+                                                            label,
+                                                            "ZN2C_NTF_PLAYERPROPS first-nickname-v26 "
+                                                            "deferred-post-A147 "
+                                                            f"chunk={group_index+1}/"
+                                                            f"{len(deferred_groups)} "
+                                                            f"is_last={int(is_last)} "
+                                                            f"prop_count={len(group)}",
+                                                        )
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v26 released deferred A006 "
+                                                        f"after A147 groups={len(deferred_groups)}",
+                                                    )
+                                                    role_state.pop(
+                                                        "first_nickname_v26_deferred_login_groups",
+                                                        None,
+                                                    )
+                                                    role_state.pop(
+                                                        "first_account_change_role_pending",
+                                                        None,
+                                                    )
+                                                else:
+                                                    log(
+                                                        "ACCOUNT",
+                                                        "FIRST-NICKNAME-v26 no deferred A006 groups "
+                                                        "present on A146; preserved A147/A005 behavior",
+                                                    )
+
+                                                log(
+                                                    "ACCOUNT",
+                                                    "FIRST-NICKNAME-v26 ROLE COMPLETE "
+                                                    f"uin={uin_now}; A147 + A005 + deferred-A006 sent",
+                                                )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_PLMATCH_SEASON_TIME:
+                                            padding = _v23_parse_season_time_request(
+                                                app["body"], "PLMatchSeasonTime"
                                             )
                                             log(
-                                                label,
-                                                f"C2ZN_REQ_CREATEACCOUNT nickname={nick!r}"
+                                                "ACCOUNT",
+                                                "FIRST-NICKNAME-v26 F124 PLMatchSeasonTime "
+                                                f"padding=0x{padding:02x}",
                                             )
-                                            rsp_seq = (app["seq"] + 1) & 0xffffffff
-                                            rsp = _v48_build_createaccount_response(
-                                                rsp_seq
+                                            rsp = _v26_build_season_time_response(
+                                                TGAME_ZN_RES_PLMATCH_SEASON_TIME
                                             )
                                             _v48_send_app(
-                                                conn, active_tgame_key, rsp,
+                                                conn,
+                                                active_tgame_key,
+                                                rsp,
                                                 label,
-                                                "ZN2C_RES_CREATEACCOUNT v72-roomalloc-accept "
-                                                "result=0x8100"
+                                                "ZN2C_RES_PLMATCHSEASONTIME first-nickname-v26b "
+                                                "cmd=0xF125 verified-v25 result-prefix compatibility",
+                                            )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_CLMATCH_SEASON_TIME:
+                                            padding = _v23_parse_season_time_request(
+                                                app["body"], "CLMatchSeasonTime"
+                                            )
+                                            log(
+                                                "ACCOUNT",
+                                                "FIRST-NICKNAME-v26 F126 CLMatchSeasonTime "
+                                                f"padding=0x{padding:02x}",
+                                            )
+                                            rsp = _v26_build_season_time_response(
+                                                TGAME_ZN_RES_CLMATCH_SEASON_TIME
+                                            )
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                rsp,
+                                                label,
+                                                "ZN2C_RES_CLMATCHSEASONTIME first-nickname-v26b "
+                                                "cmd=0xF127 verified-v25 result-prefix compatibility",
                                             )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_MATCHROOMLIST:
@@ -9271,7 +10104,6 @@ def handle_placeholder(conn, addr, label):
                                                 label,
                                                 role_state,
                                                 reason="A113 StartMatch accepted",
-                                                room=room_for_start,
                                             )
 
                                             if not pve_handoff:
@@ -9611,9 +10443,9 @@ def handle_placeholder(conn, addr, label):
 
                                         elif app["cmd"] == TGAME_ZN_REQ_QUITMATCH:
                                             # A117 belongs to THIS player, not the room as a whole.
-                                            # A118 result=0x8100 is live-verified. The A119 room
-                                            # notification below remains marked as test-only; a prior
-                                            # two-client run showed a peer reacting with its own A117.
+                                            # The live trace confirms A118 result=0x8100. Hold A119:
+                                            # its wire schema is unverified, and the prior broadcast
+                                            # was followed by the other client sending its own A117.
                                             room = role_state.get("v79_created_match_room")
                                             requester_uin = _v150_role_uin(role_state)
                                             room_id_now = (
@@ -9978,8 +10810,6 @@ def handle_placeholder(conn, addr, label):
                                                 label,
                                                 role_state,
                                                 reason="A3A0 StartRoomAlloc accepted",
-                                                room=allocation_room,
-                                                start_settings=ra,
                                                 mode_id=ra.get("mode_id"),
                                             )
                                             if not roomalloc_handoff:
@@ -10015,6 +10845,47 @@ def handle_placeholder(conn, addr, label):
                                                 )
                                             else:
                                                 old_nickname = _v150_role_nickname(role_state)
+                                                uin_now = _v150_role_uin(role_state)
+                                                login_name_now = (
+                                                    str(role_state.get("login_name") or "").strip()
+                                                    or _r12_login_for_uid(uin_now)
+                                                    or PLAYER_DB.login_for_uin(uin_now)
+                                                )
+
+                                                try:
+                                                    # Claim first. Never tell the stock client a
+                                                    # rename succeeded if persistence/uniqueness
+                                                    # failed underneath it.
+                                                    PLAYER_DB.claim_nickname(
+                                                        uin_now,
+                                                        new_nickname,
+                                                    )
+                                                except Exception as nick_db_e:
+                                                    log(
+                                                        "NICKNAME",
+                                                        "F301 nickname claim REJECTED: "
+                                                        f"uin={uin_now} "
+                                                        f"old={old_nickname!r} "
+                                                        f"new={new_nickname!r} "
+                                                        f"{type(nick_db_e).__name__}: {nick_db_e}",
+                                                    )
+                                                    fail_response = (
+                                                        _nick_v1_build_change_nickname_response(
+                                                            new_nickname,
+                                                            result=ZONE_FAIL_NOACCOUNTEXIST,
+                                                        )
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        fail_response,
+                                                        label,
+                                                        "ZN2C_RES_CHANGE_NICKNAME v26 "
+                                                        "cmd=0xF302 result=0x0104 "
+                                                        "nickname-claim-rejected",
+                                                    )
+                                                    continue
+
                                                 response = _nick_v1_build_change_nickname_response(
                                                     new_nickname
                                                 )
@@ -10023,48 +10894,26 @@ def handle_placeholder(conn, addr, label):
                                                     active_tgame_key,
                                                     response,
                                                     label,
-                                                    "ZN2C_RES_CHANGE_NICKNAME TEST-v1 "
+                                                    "ZN2C_RES_CHANGE_NICKNAME v26 "
                                                     "cmd=0xF302 result=0x8100 "
                                                     f"old={old_nickname!r} new={new_nickname!r}",
                                                 )
 
-                                                # Stage the runtime identity only after the
-                                                # response is actually queued. This test does NOT
-                                                # persist to SQLite and does NOT consume the card.
                                                 role_state["nickname"] = new_nickname
-                                                uin_now = _v150_role_uin(role_state)
                                                 with _V150_ZONE_LOCK:
                                                     session = _V150_ZONE_SESSIONS.get(uin_now)
                                                     if session is not None:
                                                         session["nickname"] = new_nickname
 
-                                                login_name_now = (
-                                                    str(role_state.get("login_name") or "").strip()
-                                                    or _r12_login_for_uid(uin_now)
-                                                    or PLAYER_DB.login_for_uin(uin_now)
+                                                if login_name_now:
+                                                    role_state["login_name"] = login_name_now
+                                                log(
+                                                    "NICKNAME",
+                                                    "SQLite nickname atomically persisted: "
+                                                    f"uin={uin_now} "
+                                                    f"login={login_name_now!r} "
+                                                    f"nickname={new_nickname!r}",
                                                 )
-                                                try:
-                                                    PLAYER_DB.save_nickname(
-                                                        uin_now,
-                                                        new_nickname,
-                                                    )
-                                                    if login_name_now:
-                                                        role_state["login_name"] = login_name_now
-                                                    log(
-                                                        "NICKNAME",
-                                                        "SQLite nickname persisted in player_profiles: "
-                                                        f"uin={uin_now} "
-                                                        f"login={login_name_now!r} "
-                                                        f"nickname={new_nickname!r}",
-                                                    )
-                                                except Exception as nick_db_e:
-                                                    log(
-                                                        "NICKNAME",
-                                                        "SQLite nickname persistence FAILED: "
-                                                        f"uin={uin_now} "
-                                                        f"login={login_name_now!r} "
-                                                        f"{type(nick_db_e).__name__}: {nick_db_e}",
-                                                    )
 
                                                 if V143B_DS_CONFIG.enabled:
                                                     try:
@@ -10089,10 +10938,10 @@ def handle_placeholder(conn, addr, label):
 
                                                 log(
                                                     "NICKNAME",
-                                                    "F301 handled by controlled F302 test: "
+                                                    "F301 handled with atomic nickname claim: "
                                                     f"uin={uin_now} old={old_nickname!r} "
                                                     f"new={new_nickname!r}; "
-                                                    "runtime identity staged; SQLite persistence attempted; "
+                                                    "runtime + SQLite identity committed; "
                                                     "NO Rename Card consumption",
                                                 )
 
@@ -11190,6 +12039,12 @@ def listen_on_port(port, label, sock=None):
 # ---------------------------------------------------------------------------
 
 print("[BOOT] BUILD=v143b-SQLITE-PLAYERSTATE-v4-TEST + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 (NO COMMIT)")
+print(
+    "[BOOT] First-login nickname v26g: VERIFIED same-session A003 -> "
+    "defer A006 -> A146/A147 -> A005 -> A006; "
+    "atomic nickname claim + idempotent A002; verified-v25 season compatibility"
+)
+print("[BOOT] First-login CreateRole gate: nickname=NULL -> stock CreateRole path; profile props are deferred until post-A147")
 print(f"[BOOT] r13 identity projection self-test={'PASS' if _R13_IDENTITY_PROJECTION_SELFTEST else 'FAIL'}")
 print(f"[BOOT] r14 A102 enterability projection self-test={'PASS' if _R14_A102_PROJECTION_SELFTEST else 'FAIL'}")
 print(f"[BOOT] r15 live A103 EnterRoomByRoomId self-test={'PASS' if _R15_A103_ENTER_SELFTEST else 'FAIL'}")
@@ -11219,6 +12074,15 @@ print(
     "[BOOT] AP initialization: "
     + ("disabled in server-only mode" if SERVER_ONLY_MODE else _V143V_LOCAL_AP_SYNC.describe())
 )
+print(
+    f"[BOOT] Runtime mode: {RUNTIME_MODE}; "
+    f"development website={'enabled' if DEV_WEB_ENABLED else 'disabled'}"
+)
+if RUNTIME_MODE == "production":
+    print(
+        "[BOOT] Production safety: registration/login/admin website will NOT start.",
+        flush=True,
+    )
 print(
     f"[BOOT] Stable-v143b DS spawner: enabled={V143B_DS_CONFIG.enabled} "
     f"max_instances={V143B_DS_CONFIG.max_instances} "
@@ -11281,6 +12145,30 @@ if __name__ == "__main__":
         f"file=DEBUG+ path={_SERVER_LOGGER.path}",
         level="DEBUG",
     )
+
+    _development_web = DevelopmentWebProcess(
+        repo_root=Path(__file__).resolve().parents[1],
+        db_path=PLAYER_DB.db_path,
+        argv=sys.argv[1:],
+        env=os.environ,
+    )
+    try:
+        _development_web.start()
+    except DevelopmentWebError as web_exc:
+        print(
+            f"[WEB] DEVELOPMENT STARTUP WARNING: {web_exc}",
+            flush=True,
+        )
+        print(
+            "[WEB] Backend startup will continue. Registration website "
+            "is unavailable until the port/app problem is fixed.",
+            flush=True,
+        )
+        log(
+            "WEB",
+            f"development website startup warning: "
+            f"{type(web_exc).__name__}: {web_exc}",
+        )
 
     # Mutable DS runtime state is created only after preflight succeeds.
     _v143b_init_spawner()
@@ -11357,6 +12245,18 @@ if __name__ == "__main__":
             "\n[MAIN] Shutting down.",
             flush=True
         )
+    finally:
+        try:
+            _development_web.stop()
+        except Exception as web_stop_exc:
+            print(
+                f"[WEB] shutdown warning: "
+                f"{type(web_stop_exc).__name__}: {web_stop_exc}",
+                flush=True,
+            )
         if not SERVER_ONLY_MODE:
             _V143V_LOCAL_AP_SYNC.stop()
-            update_launch_gate_status(ready=False, reason="server shutting down")
+            update_launch_gate_status(
+                ready=False,
+                reason="server shutting down",
+            )

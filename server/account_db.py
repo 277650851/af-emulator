@@ -22,7 +22,7 @@ DEFAULT_DB_PATH = Path(
     )
 )
 
-USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,24}$")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{5,24}$")
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 72
 PBKDF2_ITERATIONS = int(os.environ.get("AF_PASSWORD_ITERATIONS", "600000"))
@@ -53,7 +53,7 @@ def normalize_username(username: str) -> str:
     username = (username or "").strip()
     if not USERNAME_RE.fullmatch(username):
         raise InvalidUsername(
-            "Username must be 3-24 characters and use only letters, numbers, '.', '_' or '-'."
+            "Username must be 5-24 characters and use only letters, numbers, '.', '_' or '-'."
         )
     return username.casefold()
 
