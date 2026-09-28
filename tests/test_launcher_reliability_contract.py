@@ -21,14 +21,25 @@ class LauncherReliabilityContractTests(unittest.TestCase):
         self.assertNotIn("Administrator permission is required for the server runtime", source)
         self.assertNotIn("Administrator permission is required for the TGame launch helper", source)
 
-    def test_helper_arming_uses_log_marker_not_uac_wrapper_exit_code(self):
+    def test_helper_arming_fails_if_the_direct_child_exits_without_marker(self):
         source = SCRIPT.read_text(encoding="utf-8", errors="replace")
         start = source.index("function Wait-ForTclsHelperArmed")
         end = source.index("Initialize-LauncherConfig", start)
         wait_body = source[start:end]
         self.assertIn("TCLS ARMED", wait_body)
-        self.assertIn("$HelperProcess.ExitCode -ne 0", wait_body)
-        self.assertNotIn("if ($HelperProcess.HasExited) {", wait_body)
+        self.assertIn("if ($HelperProcess.HasExited) {", wait_body)
+        self.assertNotIn("$HelperProcess.ExitCode -ne 0", wait_body)
+        self.assertIn("$HelperProcess.ExitCode", wait_body)
+        self.assertIn("helper log is empty or was never written", wait_body)
+
+    def test_tgame_wait_fails_if_helper_exits_before_resume_marker(self):
+        source = SCRIPT.read_text(encoding="utf-8", errors="replace")
+        start = source.index("function Wait-ForTgameHelperComplete")
+        end = source.index("Initialize-LauncherConfig", start)
+        wait_body = source[start:end]
+        self.assertIn("AF-TGAME-RESUMED", wait_body)
+        self.assertIn("if ($HelperProcess.HasExited) {", wait_body)
+        self.assertNotIn("$HelperProcess.ExitCode -ne 0", wait_body)
 
     def test_launcher_waits_for_verified_patch_and_resume_before_success(self):
         source = SCRIPT.read_text(encoding="utf-8", errors="replace")

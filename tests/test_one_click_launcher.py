@@ -257,6 +257,13 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn("$env:AF_DS_PYTHON=", s)
         self.assertIn("patch_tcls_suspended_launch.py", s)
 
+    def test_launcher_waits_for_flushed_tcls_readiness_before_start(self):
+        s = self.text(SCRIPT)
+        self.assertIn('" -u " + (Quote-PS $helper)', s)
+        self.assertIn('Wait-ForTclsHelperArmed $helperLog $helperWindow 120', s)
+        self.assertIn('Remove-Item -LiteralPath $helperLog -Force', s)
+        self.assertIn('New-Item -ItemType File -Path $helperLog -Force', s)
+
     def test_elevated_command_keeps_env_variable_names_literal(self):
         s = self.text(SCRIPT)
         for name in (
@@ -371,7 +378,7 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn("function Wait-ForTclsHelperArmed", s)
         self.assertIn("Remove-Item -LiteralPath $helperLog", s)
         self.assertIn("TCLS ARMED", s)
-        self.assertIn("$HelperProcess.ExitCode -ne 0", s)
+        self.assertIn("if ($HelperProcess.HasExited) {", s)
         self.assertIn("Timed out after $TimeoutSeconds seconds waiting", s)
         self.assertIn("do not click START yet", s)
         self.assertIn(" -u ", s)

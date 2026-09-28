@@ -5,6 +5,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LaunchHelperStaticSafetyTests(unittest.TestCase):
+    def test_tcls_armed_signal_is_flushed_for_piped_launcher(self):
+        source = (ROOT / "tools" / "patches" / "patch_tcls_suspended_launch.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        self.assertIn('print("TCLS ARMED", flush=True)', source)
+
     def test_suspended_helper_requires_direct_child_and_rechecks_gate(self):
         source = (ROOT / "tools" / "patches" / "patch_tcls_suspended_launch.py").read_text(
             encoding="utf-8", errors="replace"

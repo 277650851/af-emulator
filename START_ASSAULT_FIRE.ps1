@@ -621,8 +621,13 @@ function Wait-ForTclsHelperArmed(
         if ($logText -match '(?m)^\s*TCLS ARMED\s*$') {
             return
         }
-        if ($HelperProcess.HasExited -and $HelperProcess.ExitCode -ne 0) {
-            throw "The launch helper exited with code $($HelperProcess.ExitCode) before reporting TCLS ARMED. See helper log: $LogPath"
+        if ($HelperProcess.HasExited) {
+            $tail = @()
+            if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+                $tail = @(Get-Content -LiteralPath $LogPath -Tail 12 -ErrorAction SilentlyContinue)
+            }
+            $detail = if ($tail.Count -gt 0) { $tail -join [Environment]::NewLine } else { "The helper log is empty or was never written." }
+            throw "The launch helper exited with code $($HelperProcess.ExitCode) before reporting TCLS ARMED. $detail Helper log: $LogPath"
         }
 
         Start-Sleep -Milliseconds 250
@@ -655,8 +660,10 @@ function Wait-ForTgameHelperComplete(
         if ($logText -match '(?m)^\s*\[AF-TGAME-RESUMED\]\s+PID=\d+\s*$') {
             return
         }
-        if ($HelperProcess.HasExited -and $HelperProcess.ExitCode -ne 0) {
-            throw "The launch helper exited with code $($HelperProcess.ExitCode) before confirming the TGame patch. See helper log: $LogPath"
+        if ($HelperProcess.HasExited) {
+            $tail = @(Get-Content -LiteralPath $LogPath -Tail 16 -ErrorAction SilentlyContinue)
+            $detail = if ($tail.Count -gt 0) { $tail -join [Environment]::NewLine } else { "The helper log is empty or was never written." }
+            throw "The launch helper exited with code $($HelperProcess.ExitCode) before confirming the TGame patch. $detail Helper log: $LogPath"
         }
 
         Start-Sleep -Milliseconds 250
@@ -699,6 +706,7 @@ try{
     if (Test-Path -LiteralPath $helperLog) {
         Remove-Item -LiteralPath $helperLog -Force -ErrorAction Stop
     }
+    New-Item -ItemType File -Path $helperLog -Force | Out-Null
     $helperCommand = (
         ". " + (Quote-PS $consoleHelper) + "; " +
         "Disable-AFConsoleBlockingSelection; " +

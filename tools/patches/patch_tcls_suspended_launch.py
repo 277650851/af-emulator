@@ -646,7 +646,9 @@ def main():
         tcls_armed = True
 
         print()
-        print("TCLS ARMED")
+        # The launcher watches the Tee-Object log for this readiness signal.
+        # Flush it immediately because stdout is a pipe in the one-click path.
+        print("TCLS ARMED", flush=True)
         print("  original :", TCLS_CREATE_FLAGS_EXPECTED.hex(" "))
         print("  temporary:", TCLS_CREATE_FLAGS_PATCH.hex(" "))
         print()
