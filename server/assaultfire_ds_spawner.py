@@ -167,6 +167,7 @@ class DSAllocation:
     instance_id: str
     room_id: int
     owner_id: int
+    owner_nickname: str = ""
     mode_id: int = 0x00002001
     map_id: int = 0x002F
     sub_mode_id: int = 0x00001001
@@ -267,19 +268,25 @@ class DedicatedServerSpawner:
         self._log("r10 lazy-latch mode: warm pool disabled; AFDEV=OFF until first valid bridge UDP packet")
 
     def reserve_lobby(
-        self, *, owner_id: int, map_name: Optional[str] = None, max_players: int = 4,
+        self, *, owner_id: int, owner_nickname: str = "",
+        map_name: Optional[str] = None, max_players: int = 4,
         mode_id: int = 0x00002001, map_id: int = 0x002F,
         sub_mode_id: int = 0x00001001, room_flags: int = 0x00003008,
     ) -> DSAllocation:
         owner_id = int(owner_id)
+        owner_nickname = str(owner_nickname or "").strip()[:31]
         now = time.time()
         with self._lock:
             existing_room = self._owner_to_room.get(owner_id)
             if existing_room is not None:
                 existing = self._allocations.get(existing_room)
                 if existing and existing.state != "RELEASED":
+                    if owner_nickname and owner_nickname != existing.owner_nickname:
+                        existing.owner_nickname = owner_nickname
+                        self._write_snapshot_locked()
                     self._log(
-                        f"idempotent reserve owner={owner_id} -> existing room={existing.room_id} "
+                        f"idempotent reserve owner={owner_id} nickname={existing.owner_nickname!r} "
+                        f"-> existing room={existing.room_id} "
                         f"slot={existing.slot} state={existing.state}"
                     )
                     return existing
@@ -317,6 +324,7 @@ class DedicatedServerSpawner:
                 instance_id=f"room-{room_id}-slot-{slot}",
                 room_id=room_id,
                 owner_id=owner_id,
+                owner_nickname=owner_nickname,
                 mode_id=normalized_mode,
                 map_id=normalized_map_id,
                 sub_mode_id=int(sub_mode_id) & 0xFFFFFFFF,
@@ -330,7 +338,7 @@ class DedicatedServerSpawner:
             self._last_create[owner_id] = now
             self._write_snapshot_locked()
             self._log(
-                f"reserved room={room_id} owner={owner_id} slot={slot} "
+                f"reserved room={room_id} owner={owner_id} nickname={allocation.owner_nickname!r} slot={slot} "
                 f"public={allocation.public_host}:{allocation.public_port} "
                 f"afdev={allocation.target_host}:{allocation.target_port} map={allocation.map_name!r} "
                 f"game={allocation.game_class!r} "
@@ -339,6 +347,23 @@ class DedicatedServerSpawner:
                 "AFDEV=OFF bridge=OFF"
             )
             return allocation
+
+    def set_owner_nickname(self, owner_id: int, nickname: str) -> Optional[DSAllocation]:
+        owner_id = int(owner_id)
+        nickname = str(nickname or "").strip()[:31]
+        with self._lock:
+            room_id = self._owner_to_room.get(owner_id)
+            if room_id is None:
+                return None
+            allocation = self._allocations.get(room_id)
+            if allocation is None or allocation.state == "RELEASED":
+                return None
+            allocation.owner_nickname = nickname
+            self._write_snapshot_locked()
+        self._log(
+            f"owner nickname updated room={room_id} owner={owner_id} nickname={nickname!r}"
+        )
+        return allocation
 
     def allocation_for_room(self, room_id: int) -> Optional[DSAllocation]:
         with self._lock:
@@ -523,6 +548,7 @@ class DedicatedServerSpawner:
                     instance_id=f"room-{room_id}-slot-{slot}-round-{old.round_generation + 1}-{int(time.time() * 1000)}",
                     room_id=room_id,
                     owner_id=old.owner_id,
+                    owner_nickname=old.owner_nickname,
                     mode_id=old.mode_id,
                     map_id=old.map_id,
                     sub_mode_id=old.sub_mode_id,
@@ -596,6 +622,18 @@ class DedicatedServerSpawner:
             child_env = os.environ.copy()
             child_env.setdefault("PYTHONUTF8", "1")
             child_env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
+            # AFDEV loader already has the verified r20 PRI.PlayerName writer.
+            # Feed it the authoritative owner nickname for this room instance.
+            child_env.pop("AF_PLAYER_NICKNAME", None)
+            if (
+                allocation.owner_nickname
+                and allocation.owner_nickname not in ("LocalPlayer", "Player1")
+            ):
+                child_env["AF_PLAYER_NICKNAME"] = allocation.owner_nickname
+                self._log(
+                    f"room={room_id} DS profile nickname -> "
+                    f"AF_PLAYER_NICKNAME={allocation.owner_nickname!r}"
+                )
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
             cmd = [
@@ -1118,6 +1156,7 @@ class DedicatedServerSpawner:
         return {
             "room_id": a.room_id,
             "owner_id": a.owner_id,
+            "owner_nickname": a.owner_nickname,
             "slot": a.slot,
             "public_host": a.public_host,
             "public_port": a.public_port,
