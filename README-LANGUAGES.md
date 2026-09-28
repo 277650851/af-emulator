@@ -19,4 +19,4 @@ Choose a language:
 | Français | [README-FR.md](README-FR.md) |
 | العربية | [README-AR.md](README-AR.md) |
 
-> The English README is the canonical technical reference. Commands, hashes, filenames, and compatibility requirements should remain identical in every translation.
+> The English README is the canonical, complete technical guide. The translated READMEs now describe the current one-click flow, supported version, safety checks, and help information in each language. Exact commands, hashes, and detailed manual instructions link back to the English guide so they stay consistent.
