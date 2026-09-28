@@ -725,6 +725,10 @@ def main():
         target_rva = datetime_patch.target_rva_for_image(game_path)
         print(f"[PATCH-SITE] verified file signature at RVA 0x{target_rva:08X}")
         datetime_patch.patch_process(game_pid, game_base, target_rva)
+        print(
+            f"[AF-DATETIME-PATCHED] PID={game_pid} RVA=0x{target_rva:08X}",
+            flush=True,
+        )
     except Exception:
         print()
         print(
@@ -742,6 +746,7 @@ def main():
     # Final fail-closed check immediately before the suspended child can run.
     launch_gate.require_launch_ready()
     resume_primary_thread(game_pid)
+    print(f"[AF-TGAME-RESUMED] PID={game_pid}", flush=True)
     print()
     print("DONE")
     print("  TCLS was restored.")

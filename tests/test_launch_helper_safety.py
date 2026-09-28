@@ -15,6 +15,13 @@ class LaunchHelperStaticSafetyTests(unittest.TestCase):
         self.assertIn("wait_for_module(hclient, TCLS_MODULE, 120.0)", source)
         self.assertIn("target_rva_for_image(game_path)", source)
         self.assertIn("patch_process(game_pid, game_base, target_rva)", source)
+        patch_call = source.index("datetime_patch.patch_process(game_pid, game_base, target_rva)")
+        patched_marker = source.index("[AF-DATETIME-PATCHED]")
+        resume_call = source.index("resume_primary_thread(game_pid)")
+        resumed_marker = source.index("[AF-TGAME-RESUMED]")
+        self.assertLess(patch_call, patched_marker)
+        self.assertLess(patched_marker, resume_call)
+        self.assertLess(resume_call, resumed_marker)
         self.assertGreaterEqual(source.count("require_launch_ready()"), 4)
 
     def test_datetime_helper_ignores_existing_tgame_and_checks_image_path(self):

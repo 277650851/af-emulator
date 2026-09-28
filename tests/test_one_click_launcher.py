@@ -71,7 +71,7 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-28-oneclick-v29', s)
+        self.assertIn('2026-09-28-oneclick-v30', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_asks_before_replacing_private_key(self):
@@ -96,20 +96,17 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('$helperExitCode = $LASTEXITCODE', s)
         self.assertIn('$ErrorActionPreference = $savedErrorActionPreference', s)
 
-    def test_launcher_does_not_elevate_entire_process(self):
+    def test_launcher_self_elevates_before_setup(self):
         s = self.text(SCRIPT)
-        self.assertIn(
-            "Stay in the user's normal PowerShell environment",
-            s,
+        self.assertIn("function Test-IsAdministrator", s)
+        self.assertIn("if (-not (Test-IsAdministrator))", s)
+        self.assertIn("Start-Process -FilePath $currentPowerShellExe -Verb RunAs", s)
+        self.assertLess(
+            s.index("Start-Process -FilePath $currentPowerShellExe -Verb RunAs"),
+            s.index("Initialize-LauncherConfig"),
         )
-        self.assertIn(
-            'Administrator permission only for the hosts-file repair',
-            s,
-        )
-        self.assertNotIn(
-            'Administrator access is required for the Windows hosts file and runtime launch patches.',
-            s,
-        )
+        for switch in ("SetupOnly", "SkipPythonInstall", "KeepServer"):
+            self.assertIn("if ($" + switch + ")", s)
 
     def test_python_launcher_default_runtime_is_accepted_when_supported(self):
         s = self.text(SCRIPT)
@@ -246,25 +243,19 @@ class OneClickLauncherTests(unittest.TestCase):
             s,
         )
 
-    def test_openprocess_runtime_components_are_elevated(self):
+    def test_runtime_components_inherit_the_launcher_admin_token(self):
         s = self.text(SCRIPT)
         self.assertIn(
-            'Administrator permission is required for the server runtime',
+            "The emulator server inherits this launcher's Administrator token.",
             s,
         )
         self.assertIn(
-            'Administrator permission is required for the TGame launch helper',
+            "The TGame launch helper inherits this launcher's Administrator token.",
             s,
         )
-        self.assertGreaterEqual(s.count('-Verb RunAs'), 3)
-        self.assertIn(
-            "$env:AF_DS_PYTHON=",
-            s,
-        )
-        self.assertIn(
-            "OpenProcess/WriteProcessMemory",
-            s,
-        )
+        self.assertEqual(s.count("-Verb RunAs"), 1)
+        self.assertIn("$env:AF_DS_PYTHON=", s)
+        self.assertIn("patch_tcls_suspended_launch.py", s)
 
     def test_elevated_command_keeps_env_variable_names_literal(self):
         s = self.text(SCRIPT)
@@ -380,7 +371,7 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn("function Wait-ForTclsHelperArmed", s)
         self.assertIn("Remove-Item -LiteralPath $helperLog", s)
         self.assertIn("TCLS ARMED", s)
-        self.assertIn("HelperProcess.HasExited", s)
+        self.assertIn("$HelperProcess.ExitCode -ne 0", s)
         self.assertIn("Timed out after $TimeoutSeconds seconds waiting", s)
         self.assertIn("do not click START yet", s)
         self.assertIn(" -u ", s)

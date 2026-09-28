@@ -26,10 +26,60 @@ param(
     [switch]$KeepServer
 )
 
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+$currentPowerShellExe = if ($PSVersionTable.PSEdition -eq "Core") {
+    Join-Path $PSHOME "pwsh.exe"
+} else {
+    Join-Path $PSHOME "powershell.exe"
+}
+if (-not (Test-Path -LiteralPath $currentPowerShellExe -PathType Leaf)) {
+    $currentPowerShellExe = (Get-Process -Id $PID).Path
+}
+if (-not $currentPowerShellExe -or -not (Test-Path -LiteralPath $currentPowerShellExe -PathType Leaf)) {
+    Write-Host "[AF-ONECLICK] ERROR: Could not locate the current PowerShell executable."
+    Read-Host "Press Enter to close"
+    exit 1
+}
+
+if (-not (Test-IsAdministrator)) {
+    $launcherPath = $MyInvocation.MyCommand.Path
+    if (-not $launcherPath) {
+        Write-Host "[AF-ONECLICK] ERROR: Could not determine the launcher script path."
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+    $launcherPath = (Resolve-Path -LiteralPath $launcherPath).Path
+    $elevatedArguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ('"' + $launcherPath + '"')
+    )
+    if ($SetupOnly) { $elevatedArguments += "-SetupOnly" }
+    if ($SkipPythonInstall) { $elevatedArguments += "-SkipPythonInstall" }
+    if ($KeepServer) { $elevatedArguments += "-KeepServer" }
+
+    Write-Host "[UAC] Requesting Administrator access for the one-click launcher..."
+    try {
+        Start-Process -FilePath $currentPowerShellExe -Verb RunAs -WorkingDirectory (Split-Path -Parent $launcherPath) -ArgumentList $elevatedArguments | Out-Null
+    } catch {
+        Write-Host "[AF-ONECLICK] ERROR: Administrator launch was cancelled or failed: $($_.Exception.Message)" -ForegroundColor Red
+        Read-Host "Press Enter to close"
+        exit 1
+    }
+    exit 0
+}
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-28-oneclick-v29"
+$LAUNCHER_REVISION = "2026-09-28-oneclick-v30"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -167,12 +217,6 @@ function Stop-WithMessage([string]$Message) {
     Write-Host "Nothing else will be launched. Fix the message above, then run this script again."
     Read-Host "Press Enter to close"
     exit 1
-}
-
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function Quote-PS([string]$Value) {
@@ -493,8 +537,9 @@ function Ensure-Hosts([string]$RepoRoot) {
     if (Test-AFHosts){Write-Host "[OK] Windows hosts mappings already point to 127.0.0.1." -ForegroundColor Green; return}
     $hostScript=Join-Path $RepoRoot "tools\setup\setup_assaultfire_hosts.ps1"; if(-not(Test-Path -LiteralPath $hostScript -PathType Leaf)){throw "Hosts setup helper is missing: $hostScript"}
     Write-Host "[SETUP] Repairing Assault Fire localhost mappings..."
-    if(Test-IsAdministrator){& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hostScript; if($LASTEXITCODE -ne 0){throw "Windows hosts setup helper failed with exit code $LASTEXITCODE."}}
-    else { Write-Host "[SETUP] Windows will ask for Administrator permission only for the hosts-file repair."; try{$hostProc=Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",('"'+$hostScript+'"'))}catch{throw "Administrator permission for the hosts-file repair was cancelled or failed: $($_.Exception.Message)"}; if($hostProc.ExitCode -ne 0){throw "Windows hosts setup helper failed with exit code $($hostProc.ExitCode)."}}
+    if(-not (Test-IsAdministrator)){throw "The launcher must be run as Administrator before repairing Windows hosts mappings."}
+    & $currentPowerShellExe -NoProfile -ExecutionPolicy Bypass -File $hostScript
+    if($LASTEXITCODE -ne 0){throw "Windows hosts setup helper failed with exit code $LASTEXITCODE."}
     ipconfig /flushdns | Out-Null; if(-not(Test-AFHosts)){throw "Windows hosts setup finished but the required 127.0.0.1 mappings did not verify."}; Write-Host "[OK] Hosts mappings verified." -ForegroundColor Green
 }
 
@@ -571,13 +616,13 @@ function Wait-ForTclsHelperArmed(
         }
 
         if ($logText -match '(?im)^\s*(?:\[SAFE STOP\]|ERROR:)') {
-            throw "The elevated launch helper reported an error before arming TCLS. See helper log: $LogPath"
+            throw "The launch helper reported an error before arming TCLS. See helper log: $LogPath"
         }
         if ($logText -match '(?m)^\s*TCLS ARMED\s*$') {
             return
         }
-        if ($HelperProcess.HasExited) {
-            throw "The elevated launch helper exited with code $($HelperProcess.ExitCode) before reporting TCLS ARMED. See helper log: $LogPath"
+        if ($HelperProcess.HasExited -and $HelperProcess.ExitCode -ne 0) {
+            throw "The launch helper exited with code $($HelperProcess.ExitCode) before reporting TCLS ARMED. See helper log: $LogPath"
         }
 
         Start-Sleep -Milliseconds 250
@@ -588,7 +633,41 @@ function Wait-ForTclsHelperArmed(
         $tail = @(Get-Content -LiteralPath $LogPath -Tail 12 -ErrorAction SilentlyContinue)
     }
     $detail = if ($tail.Count -gt 0) { $tail -join [Environment]::NewLine } else { "No helper output was written." }
-    throw "Timed out after $TimeoutSeconds seconds waiting for the elevated helper to report TCLS ARMED. $detail Helper log: $LogPath"
+    throw "Timed out after $TimeoutSeconds seconds waiting for the launch helper to report TCLS ARMED. $detail Helper log: $LogPath"
+}
+
+function Wait-ForTgameHelperComplete(
+    [string]$LogPath,
+    [System.Diagnostics.Process]$HelperProcess,
+    [int]$TimeoutSeconds = 60
+) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $logText = ""
+        if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+            $logText = Get-Content -LiteralPath $LogPath -Raw -ErrorAction SilentlyContinue
+        }
+
+        if ($logText -match '(?im)^\s*(?:\[SAFE STOP\]|ERROR:)') {
+            $tail = @(Get-Content -LiteralPath $LogPath -Tail 16 -ErrorAction SilentlyContinue)
+            throw "The launch helper failed before resuming TGame. $($tail -join [Environment]::NewLine) Helper log: $LogPath"
+        }
+        if ($logText -match '(?m)^\s*\[AF-TGAME-RESUMED\]\s+PID=\d+\s*$') {
+            return
+        }
+        if ($HelperProcess.HasExited -and $HelperProcess.ExitCode -ne 0) {
+            throw "The launch helper exited with code $($HelperProcess.ExitCode) before confirming the TGame patch. See helper log: $LogPath"
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    $tail = @()
+    if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+        $tail = @(Get-Content -LiteralPath $LogPath -Tail 16 -ErrorAction SilentlyContinue)
+    }
+    $detail = if ($tail.Count -gt 0) { $tail -join [Environment]::NewLine } else { "No helper output was written." }
+    throw "Timed out after $TimeoutSeconds seconds waiting for the datetime patch and TGame resume. $detail Helper log: $LogPath"
 }
 
 Initialize-LauncherConfig
@@ -607,12 +686,12 @@ try{
     Write-Step "Preparing the local RSA/APClient pair"; Ensure-Keys $repoRoot $gameRoot $venvPython
     Write-Step "Checking Windows hosts mappings"; Ensure-Hosts $repoRoot
     $env:AF_CLIENT_ROOT=$gameRoot; $env:AF_GAME_DIR=$win32; $env:AF_DS_SPAWNER_ENABLED="1"
-    Write-Host ""; Write-Host "[READY] First-time setup checks are complete." -ForegroundColor Green; Write-Host "[READY] PvE DS spawning is enabled."; Write-Host "[READY] Runtime components that use OpenProcess will be elevated automatically."; Write-Host "[READY] You no longer need to set AF_CLIENT_ROOT / AF_GAME_DIR manually."
+    Write-Host ""; Write-Host "[READY] First-time setup checks are complete." -ForegroundColor Green; Write-Host "[READY] PvE DS spawning is enabled."; Write-Host "[READY] This launcher and its runtime components are running as Administrator."; Write-Host "[READY] You no longer need to set AF_CLIENT_ROOT / AF_GAME_DIR manually."
     if($SetupOnly){Write-Host ""; Write-Host "-SetupOnly was selected, so the server/client will not be launched."; Read-Host "Press Enter to close"; exit 0}
     Write-Step "Starting the emulator server"; $statusPath=Join-Path $repoRoot "runtime\preflight_status.json"; Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
     $serverScript=Join-Path $repoRoot "server\assaultfire_server_v143b.py"; $serverCommand=(". "+(Quote-PS $consoleHelper)+"; "+"Disable-AFConsoleBlockingSelection; "+'$env:AF_CLIENT_ROOT='+(Quote-PS $gameRoot)+"; "+'$env:AF_GAME_DIR='+(Quote-PS $win32)+"; "+'$env:AF_DS_SPAWNER_ENABLED='+(Quote-PS "1")+"; "+'$env:AF_DS_PYTHON='+(Quote-PS $venvPython)+"; "+"Set-Location -LiteralPath "+(Quote-PS $repoRoot)+"; "+"Write-Host '[AF-ADMIN] Emulator server running elevated.' -ForegroundColor Green; "+"& "+(Quote-PS $venvPython)+" "+(Quote-PS $serverScript))
-    Write-Host "[UAC] Administrator permission is required for the server runtime because the AFDEV/OpenProcess path needs elevated process access." -ForegroundColor Yellow
-    try{$serverWindow=Start-Process -FilePath "powershell.exe" -Verb RunAs -WorkingDirectory $repoRoot -PassThru -ArgumentList @("-NoProfile","-NoExit","-ExecutionPolicy","Bypass","-Command",$serverCommand)}catch{throw "Administrator permission for the emulator server was cancelled or failed: $($_.Exception.Message)"}
+    Write-Host "[ADMIN] The emulator server inherits this launcher's Administrator token." -ForegroundColor Green
+    try{$serverWindow=Start-Process -FilePath $currentPowerShellExe -WorkingDirectory $repoRoot -PassThru -ArgumentList @("-NoProfile","-NoExit","-ExecutionPolicy","Bypass","-Command",$serverCommand)}catch{throw "Could not start the elevated emulator server: $($_.Exception.Message)"}
     Write-Host "[WAIT] Waiting for server preflight and listener gate..."; $status=Wait-ForLaunchGate $statusPath 45; Write-Host "[OK] Server launch gate is UNLOCKED. Server PID=$($status.server_pid)" -ForegroundColor Green
     Write-Step "Starting the automatic TGame launch helper"
     $helper = Join-Path $repoRoot "tools\patches\patch_tcls_suspended_launch.py"
@@ -631,13 +710,13 @@ try{
         " --timeout 900 2>&1 | Tee-Object -FilePath " + (Quote-PS $helperLog) + "; " +
         '$helperExitCode = $LASTEXITCODE; $ErrorActionPreference = $savedErrorActionPreference; exit $helperExitCode'
     )
-    Write-Host "[UAC] Administrator permission is required for the TGame launch helper (OpenProcess/WriteProcessMemory)." -ForegroundColor Yellow
+    Write-Host "[ADMIN] The TGame launch helper inherits this launcher's Administrator token." -ForegroundColor Green
     try {
-        $helperWindow = Start-Process -FilePath "powershell.exe" -Verb RunAs -WorkingDirectory $repoRoot -PassThru -ArgumentList @(
+        $helperWindow = Start-Process -FilePath $currentPowerShellExe -WorkingDirectory $repoRoot -PassThru -ArgumentList @(
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $helperCommand
         )
     } catch {
-        throw "Administrator permission for the TGame launch helper was cancelled or failed: $($_.Exception.Message)"
+        throw "Could not start the elevated TGame launch helper: $($_.Exception.Message)"
     }
 
     Write-Step "Launching Assault Fire client.exe for you"
@@ -660,7 +739,36 @@ try{
     Write-Host "The temporary suspended-launch and TGame datetime patches will be applied automatically."
     Write-Host ""
     Write-Host "[WAIT] Waiting for TGame.exe to appear (up to 15 minutes)..."
-    $deadline=(Get-Date).AddMinutes(15)
-    while((Get-Date)-lt $deadline){$game=Get-Process -Name "TGame" -ErrorAction SilentlyContinue|Select-Object -First 1; if($game){Write-Host ""; Write-Host "[WAIT] TGame.exe appeared as PID=$($game.Id). Waiting for the automatic launch helper to finish..."; $helperDeadline=(Get-Date).AddSeconds(30); while(-not $helperWindow.HasExited -and (Get-Date)-lt $helperDeadline){Start-Sleep -Milliseconds 250}; if($helperWindow.HasExited -and $helperWindow.ExitCode -ne 0){throw "The automatic launch helper failed with exit code $($helperWindow.ExitCode). TGame was not accepted as a successful launch. See helper log: $helperLog"}; if(-not $helperWindow.HasExited){Write-Host "[WARNING] TGame exists but the launch helper is still running after 30 seconds. Check the helper window before assuming the launch succeeded." -ForegroundColor Yellow}else{Write-Host "[SUCCESS] TGame launch helper completed successfully." -ForegroundColor Green}; Write-Host "[SUCCESS] TGame.exe launched. PID=$($game.Id)" -ForegroundColor Green; if($KeepServer){Write-Host "[SUCCESS] -KeepServer was selected; the emulator server will remain running."; Start-Sleep -Seconds 2; exit 0}; Write-Host "[SESSION] This one-click window will stay open while you play."; Write-Host "[SESSION] When TGame.exe closes, it will stop the emulator server automatically."; try{Wait-Process -Id $game.Id}catch{}; Write-Host ""; Write-Host "[CLEANUP] TGame.exe closed. Stopping the emulator server..."; try{if($status.server_pid){Stop-Process -Id ([int]$status.server_pid) -Force -ErrorAction SilentlyContinue}}catch{}; try{if($serverWindow -and -not $serverWindow.HasExited){Stop-Process -Id $serverWindow.Id -Force -ErrorAction SilentlyContinue}}catch{}; Write-Host "[CLEANUP] Done." -ForegroundColor Green; Read-Host "Press Enter to close"; exit 0}; if($helperWindow.HasExited -and $helperWindow.ExitCode -ne 0){throw "The automatic launch helper exited with code $($helperWindow.ExitCode). See helper log: $helperLog"}; Start-Sleep -Seconds 1}
+    $deadline = (Get-Date).AddMinutes(15)
+    while ((Get-Date) -lt $deadline) {
+        $game = Get-Process -Name "TGame" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($game) {
+            Write-Host ""
+            Write-Host "[WAIT] TGame.exe appeared as PID=$($game.Id). Waiting for the datetime patch and resume..."
+            Wait-ForTgameHelperComplete $helperLog $helperWindow 60
+            Write-Host "[SUCCESS] TGame datetime patch was applied and its primary thread resumed." -ForegroundColor Green
+            Write-Host "[SUCCESS] TGame.exe launched. PID=$($game.Id)" -ForegroundColor Green
+            if ($KeepServer) {
+                Write-Host "[SUCCESS] -KeepServer was selected; the emulator server will remain running."
+                Start-Sleep -Seconds 2
+                exit 0
+            }
+            Write-Host "[SESSION] This one-click window will stay open while you play."
+            Write-Host "[SESSION] When TGame.exe closes, it will stop the emulator server automatically."
+            try { Wait-Process -Id $game.Id } catch {}
+            Write-Host ""
+            Write-Host "[CLEANUP] TGame.exe closed. Stopping the emulator server..."
+            try { if ($status.server_pid) { Stop-Process -Id ([int]$status.server_pid) -Force -ErrorAction SilentlyContinue } } catch {}
+            try { if ($serverWindow -and -not $serverWindow.HasExited) { Stop-Process -Id $serverWindow.Id -Force -ErrorAction SilentlyContinue } } catch {}
+            Write-Host "[CLEANUP] Done." -ForegroundColor Green
+            Read-Host "Press Enter to close"
+            exit 0
+        }
+
+        if ($helperWindow.HasExited -and $helperWindow.ExitCode -ne 0) {
+            throw "The automatic launch helper exited with code $($helperWindow.ExitCode). See helper log: $helperLog"
+        }
+        Start-Sleep -Seconds 1
+    }
     throw "Timed out waiting for TGame.exe. The server is still running; check the launcher/helper window for the exact error."
 }catch{Stop-WithMessage $_.Exception.Message}
