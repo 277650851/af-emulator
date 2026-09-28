@@ -13,7 +13,7 @@ Projek tidak rasmi untuk memelihara **Assault Fire PH** dan meniru pelayan perma
 3. Pelancar menyemak versi dan konfigurasi, menyediakan kunci setempat, kemudian memulakan pelayan, pembantu pelancaran dan klien permainan.
 4. Log masuk ke klien. Apabila butang **START** muncul, klik untuk meneruskan.
 
-Dengan aliran satu klik biasa, anda tidak perlu memulakan pelayan atau alat patch secara manual. Skrip tidak memuat turun atau mengedarkan fail permainan; ia hanya menggunakan fail setempat anda. Jika versi tidak sepadan atau tandatangan `TGame.exe` atau `TCLS.dll` tidak dapat disahkan, berhenti dan jangan paksa patch. Sebelum permainan dimulakan, pelancar memasang patch tarikh/masa yang disahkan secara kekal pada `TGame.exe` selepas menyimpan sandaran sepadan bernama `TGame.exe.bak`. Jika tandatangan atau ruang kod selamat tidak dapat disahkan, fail tidak akan diubah.
+Dengan aliran satu klik biasa, anda tidak perlu memulakan pelayan atau alat patch secara manual. Skrip tidak memuat turun atau mengedarkan fail permainan; ia hanya menggunakan fail setempat anda. Jika versi tidak sepadan atau tandatangan `TGame.exe` atau `TCLS.dll` tidak dapat disahkan, berhenti dan jangan paksa patch. Sebelum permainan dimulakan, pelancar memasang patch tarikh/masa yang disahkan secara kekal pada `TGame.exe` selepas menyimpan sandaran sepadan bernama `TGame.exe.bak`. Jika tiada ruang kod selamat, pelancar menambah seksyen PE boleh laksana kecil `.afdt` hanya jika pengepala PE mempunyai slot seksyen kosong; jika tiada, fail tidak diubah.
 
 ## Persediaan manual dan pembangun
 

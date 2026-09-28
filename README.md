@@ -104,7 +104,7 @@ The launcher saves your normal **Y/N choices** in a local `launcher.config.json`
 
 The config is created automatically after your first saved choice. If you want to set the common defaults before the first run, copy `launcher.config.example.json` to `launcher.config.json` in the same folder. You can edit the Y/N values in that file. Delete `launcher.config.json` to answer the prompts again from scratch.
 
-For safety, the launcher still asks before replacing a mismatched `PRIVATE.PEM`. Before launch, it validates the TGame PE and exact datetime patch signature. If the known patch RVA has no file bytes, it searches executable sections and accepts only one exact match; an already-patched image must also have the complete known trampoline. A clean supported image is patched permanently only when a verified executable-section code cave is available, and only after an exact `TGame.exe.bak` backup has been saved. If validation, backup verification, or post-write checks fail, the game is not accepted for launch. The suspended-launch helper then checks the selected RVA and trampoline again in the loaded TGame process before resuming it. This verifies the patch site, not every byte of the executable, so use the same PH v1.0.0.24 game build. The launcher does not accept a file just because you confirm it. The config stores preferences, **not the contents of your private key**, and Git ignores the local config file.
+For safety, the launcher still asks before replacing a mismatched `PRIVATE.PEM`. Before launch, it validates the TGame PE and exact datetime patch signature. If the known patch RVA has no file bytes, it searches executable sections and accepts only one exact match; an already-patched image must also have the complete known trampoline. A clean supported image uses an aligned `0x00`/`0xCC` code cave in a mapped executable section when one is available. If no cave is available, the patcher adds a small `.afdt` executable section only when the PE headers contain an unused section-header slot. It saves an exact `TGame.exe.bak` before replacing the file. If validation, backup verification, or post-write checks fail, the game is not accepted for launch and the original file is left in place. The suspended-launch helper then checks the selected RVA and trampoline again in the loaded TGame process before resuming it. This verifies the patch site, not every byte of the executable, so use the same PH v1.0.0.24 game build. The launcher does not accept a file just because you confirm it. The config stores preferences, **not the contents of your private key**, and Git ignores the local config file.
 
 > [!IMPORTANT]
 > The one-click script does **not** download or redistribute Assault Fire files.
@@ -112,7 +112,8 @@ For safety, the launcher still asks before replacing a mismatched `PRIVATE.PEM`.
 > verified local `TGame.exe` and keeps the original as `TGame.exe.bak`. The local
 > `TGame_AFDEV.exe` copy is created from that verified patched file. If the
 > signature is at a different RVA, it must be the only matching executable-
-> section signature, and a safe code cave must be available before writing.
+> section signature. The patcher uses a safe code cave or adds a dedicated
+> executable section when the PE headers have an unused section-header slot.
 
 > [!CAUTION]
 > If the script cannot verify the `TGame.exe` patch-site signature or reports an

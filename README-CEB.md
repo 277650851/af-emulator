@@ -13,7 +13,7 @@ Kini usa ka dili opisyal nga proyekto para sa pagpreserbar sa **Assault Fire PH*
 3. Awtomatikong susihon sa launcher ang game version ug setup, mag-andam sa lokal nga key files, ug mopasugod sa server, launch helper, ug game client.
 4. Pag-login sa client. Kon makita na ang **START**, i-click kini aron mopadayon.
 
-Sa normal nga one-click nga paagi, dili na kinahanglan nimo nga sugdan nga mano-mano ang server o patch tools. Dili kini mo-download o moapod-apod sa game files; gamiton ra niini ang imong kaugalingong lokal nga files. Kon dili motakdo ang version o dili ma-verify ang signature sa `TGame.exe` o `TCLS.dll`, hunong ug ayaw pugsa ang patch. Sa dili pa modagan, permanente nga i-patch sa launcher ang `TGame.exe` kon mapamatud-an ang patch, human maghimo og eksaktong backup nga `TGame.exe.bak`. Dili niini usbon ang file kon dili makit-an ang luwas nga code cave.
+Sa normal nga one-click nga paagi, dili na kinahanglan nimo nga sugdan nga mano-mano ang server o patch tools. Dili kini mo-download o moapod-apod sa game files; gamiton ra niini ang imong kaugalingong lokal nga files. Kon dili motakdo ang version o dili ma-verify ang signature sa `TGame.exe` o `TCLS.dll`, hunong ug ayaw pugsa ang patch. Sa dili pa modagan, permanente nga i-patch sa launcher ang `TGame.exe` kon mapamatud-an ang patch, human maghimo og eksaktong backup nga `TGame.exe.bak`. Kon walay luwas nga code cave, magdugang kini og gamay nga executable PE section nga `.afdt` kon adunay bakanteng section-header slot; kon wala, dili usbon ang file.
 
 ## Manual nga setup ug developer
 

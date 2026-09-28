@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import struct
 import subprocess
 import sys
 import tempfile
@@ -75,7 +76,7 @@ class TGameBinaryTests(unittest.TestCase):
                 tgame_binary.classify_tgame_binary(path)["status"], "already-patched"
             )
 
-    def test_apply_refuses_without_code_cave_and_leaves_target_and_backup_untouched(self):
+    def test_apply_adds_executable_section_when_text_has_no_code_cave(self):
         with tempfile.TemporaryDirectory() as temp:
             path = write_tgame_fixture(Path(temp) / "TGame.exe", "unpatched")
             with tgame_binary.PE32Image(path) as image:
@@ -97,7 +98,66 @@ class TGameBinaryTests(unittest.TestCase):
 
             original = path.read_bytes()
             backup = Path(str(path) + ".bak")
-            with self.assertRaisesRegex(tgame_binary.TGameBinaryError, "no .* code cave"):
+            result = tgame_binary.apply_static_datetime_patch(path)
+
+            self.assertEqual(result["status"], "patched")
+            self.assertEqual(result["trampoline_storage"], "new-.afdt-section")
+            self.assertEqual(backup.read_bytes(), original)
+            trampoline_rva = int(result["trampoline_rva"], 0)
+            trampoline = tgame_binary.build_static_trampoline(
+                tgame_binary.TARGET_RVA, trampoline_rva
+            )
+            with tgame_binary.PE32Image(path) as image:
+                section = image.section_for_rva(
+                    trampoline_rva, len(trampoline), executable=True
+                )
+                self.assertEqual(section.name, ".afdt")
+                self.assertEqual(
+                    section.virtual_address % image.section_alignment, 0
+                )
+                self.assertEqual(section.raw_pointer % image.file_alignment, 0)
+                self.assertEqual(section.raw_size % image.file_alignment, 0)
+                self.assertGreaterEqual(
+                    image.size_of_image,
+                    section.virtual_address + section.raw_size,
+                )
+                self.assertEqual(
+                    image.read_rva(trampoline_rva, len(trampoline)), trampoline
+                )
+            self.assertEqual(
+                tgame_binary.classify_tgame_binary(path)["status"], "already-patched"
+            )
+
+    def test_apply_refuses_new_section_when_header_slot_is_occupied(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = write_tgame_fixture(Path(temp) / "TGame.exe", "unpatched")
+            with tgame_binary.PE32Image(path) as image:
+                section = image.section_for_rva(
+                    tgame_binary.TARGET_RVA,
+                    len(tgame_binary.EXPECTED_ORIGINAL),
+                    executable=True,
+                )
+                target_offset = image.rva_to_file_offset(
+                    tgame_binary.TARGET_RVA,
+                    len(tgame_binary.EXPECTED_ORIGINAL),
+                    executable=True,
+                )
+                next_section_header = (
+                    image.section_table_offset + len(image.sections) * 40
+                )
+            with path.open("r+b") as stream:
+                stream.seek(section.raw_pointer)
+                stream.write(b"\x90" * section.raw_size)
+                stream.seek(target_offset)
+                stream.write(tgame_binary.EXPECTED_ORIGINAL)
+                stream.seek(next_section_header)
+                stream.write(b"reserved header data".ljust(40, b"!"))
+
+            original = path.read_bytes()
+            backup = Path(str(path) + ".bak")
+            with self.assertRaisesRegex(
+                tgame_binary.TGameBinaryError, "section-header slot"
+            ):
                 tgame_binary.apply_static_datetime_patch(path)
 
             self.assertEqual(path.read_bytes(), original)

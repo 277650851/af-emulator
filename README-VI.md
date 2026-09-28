@@ -13,7 +13,7 @@ Dự án phi chính thức nhằm bảo tồn **Assault Fire PH** và mô phỏn
 3. Trình khởi chạy kiểm tra phiên bản và cấu hình, chuẩn bị khóa cục bộ, rồi khởi động máy chủ, công cụ hỗ trợ chạy game và client.
 4. Đăng nhập trong client. Khi nút **START** xuất hiện, hãy nhấp để tiếp tục.
 
-Với quy trình một lần bấm thông thường, bạn không cần tự chạy máy chủ hoặc công cụ vá. Script không tải xuống hay phân phối tệp game; nó chỉ dùng các tệp cục bộ của bạn. Nếu phiên bản không khớp hoặc không xác minh được chữ ký của `TGame.exe` hay `TCLS.dll`, hãy dừng lại và không ép áp dụng bản vá. Trước khi chạy game, trình khởi chạy áp dụng vĩnh viễn bản vá ngày giờ đã xác minh cho `TGame.exe` sau khi tạo bản sao lưu giống hệt từng byte tên `TGame.exe.bak`. Nếu không xác minh được chữ ký hoặc vùng mã an toàn, tệp sẽ không bị sửa đổi.
+Với quy trình một lần bấm thông thường, bạn không cần tự chạy máy chủ hoặc công cụ vá. Script không tải xuống hay phân phối tệp game; nó chỉ dùng các tệp cục bộ của bạn. Nếu phiên bản không khớp hoặc không xác minh được chữ ký của `TGame.exe` hay `TCLS.dll`, hãy dừng lại và không ép áp dụng bản vá. Trước khi chạy game, trình khởi chạy áp dụng vĩnh viễn bản vá ngày giờ đã xác minh cho `TGame.exe` sau khi tạo bản sao lưu giống hệt từng byte tên `TGame.exe.bak`. Nếu không có vùng mã an toàn, trình khởi chạy thêm một section PE thực thi nhỏ `.afdt` chỉ khi header còn slot section trống; nếu không, tệp sẽ không bị sửa đổi.
 
 ## Thiết lập thủ công và dành cho nhà phát triển
 

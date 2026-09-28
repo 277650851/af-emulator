@@ -13,7 +13,7 @@ Projeto não oficial de preservação do **Assault Fire PH** e emulação do ser
 3. O inicializador verifica a versão e a configuração, prepara as chaves locais e inicia o servidor, o auxiliar de inicialização e o cliente do jogo.
 4. Entre no cliente. Quando o botão **START** aparecer, clique nele para continuar.
 
-No fluxo normal de um clique, você não precisa iniciar manualmente o servidor nem as ferramentas de patch. O script não baixa nem redistribui arquivos do jogo; usa apenas os seus arquivos locais. Se a versão não corresponder ou não for possível verificar a assinatura de `TGame.exe` ou `TCLS.dll`, pare e não force o patch. Antes de iniciar o jogo, o inicializador aplica permanentemente o patch verificado de data e hora em `TGame.exe`, depois de salvar uma cópia idêntica chamada `TGame.exe.bak`. Se não puder verificar a assinatura ou encontrar uma área de código segura, o arquivo não será alterado.
+No fluxo normal de um clique, você não precisa iniciar manualmente o servidor nem as ferramentas de patch. O script não baixa nem redistribui arquivos do jogo; usa apenas os seus arquivos locais. Se a versão não corresponder ou não for possível verificar a assinatura de `TGame.exe` ou `TCLS.dll`, pare e não force o patch. Antes de iniciar o jogo, o inicializador aplica permanentemente o patch verificado de data e hora em `TGame.exe`, depois de salvar uma cópia idêntica chamada `TGame.exe.bak`. Se não houver uma área de código segura, ele adiciona uma pequena seção PE executável `.afdt` somente quando existir um espaço livre no cabeçalho; caso contrário, o arquivo não será alterado.
 
 ## Configuração manual e desenvolvimento
 

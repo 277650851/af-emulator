@@ -4,8 +4,9 @@
 The whole-file SHA-256 is the primary build check. If it differs, this module
 checks the PE32 image and the exact code at the datetime patch site. When the
 usual RVA has no file bytes, it accepts only one matching clean signature or a
-complete known trampoline in an executable section. Its optional permanent
-patch operation requires a verified code cave and an exact `.bak` backup.
+complete known trampoline in an executable section. Its permanent patch uses
+a verified executable code cave or adds a dedicated PE section, and requires
+an exact `.bak` backup.
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ PATCHED_ENTRY_SIZE = 8
 PE32_MAGIC = 0x010B
 IMAGE_FILE_MACHINE_I386 = 0x014C
 IMAGE_SCN_MEM_EXECUTE = 0x20000000
+IMAGE_SCN_MEM_READ = 0x40000000
+IMAGE_SCN_CNT_CODE = 0x00000020
 IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE = 0x0040
 
 
@@ -42,6 +45,10 @@ class TGameBinaryError(ValueError):
 
 class UnbackedRVAError(TGameBinaryError):
     """An RVA exists in a section's virtual image but has no bytes on disk."""
+
+
+class NoSafeCodeCaveError(TGameBinaryError):
+    """No mapped executable fill run is large enough for the trampoline."""
 
 
 @dataclass(frozen=True)
@@ -94,6 +101,7 @@ class PE32Image:
             raise TGameBinaryError("missing DOS MZ header")
 
         pe_offset = struct.unpack("<I", self.read_at(0x3C, 4))[0]
+        self.pe_offset = pe_offset
         coff = self.read_at(pe_offset, 24)
         if coff[:4] != b"PE\0\0":
             raise TGameBinaryError("missing PE signature")
@@ -115,16 +123,21 @@ class PE32Image:
             raise TGameBinaryError("PE optional header is too short")
 
         optional_offset = pe_offset + 24
+        self.optional_offset = optional_offset
         optional = self.read_at(optional_offset, optional_size)
         magic = struct.unpack_from("<H", optional, 0)[0]
         if magic != PE32_MAGIC:
             raise TGameBinaryError(f"expected PE32 optional header, found 0x{magic:04X}")
 
         self.image_base = struct.unpack_from("<I", optional, 28)[0]
+        self.section_alignment = struct.unpack_from("<I", optional, 32)[0]
+        self.file_alignment = struct.unpack_from("<I", optional, 36)[0]
+        self.size_of_image = struct.unpack_from("<I", optional, 56)[0]
         self.size_of_headers = struct.unpack_from("<I", optional, 60)[0]
         self.dll_characteristics = struct.unpack_from("<H", optional, 70)[0]
 
         section_offset = optional_offset + optional_size
+        self.section_table_offset = section_offset
         section_bytes = self.read_at(section_offset, section_count * 40)
         self.sections = []
         for index in range(section_count):
@@ -350,53 +363,59 @@ def matches_runtime_patch(
 
 
 def _find_code_cave(
-    image: PE32Image, section: Section, size: int, site_rva: int
+    image: PE32Image, size: int, site_rva: int
 ) -> tuple[int, int]:
-    """Find the closest aligned run of executable-section fill bytes."""
-    mapped_raw_size = min(
-        section.raw_size,
-        section.virtual_size if section.virtual_size else section.raw_size,
-    )
-    if mapped_raw_size < size:
-        raise TGameBinaryError("the patch site's executable section is too small for a trampoline")
-
-    data = image.read_at(section.raw_pointer, mapped_raw_size)
+    """Find the closest aligned run of mapped executable-section fill bytes."""
     candidates: list[tuple[int, int, int, int]] = []
-    run_start: int | None = None
-
-    def record_run(start: int, end: int) -> None:
-        start_rva = section.virtual_address + start
-        end_rva = section.virtual_address + end
-        cave_rva = (start_rva + 15) & ~15
-        entry_end = site_rva + PATCHED_ENTRY_SIZE
-        if cave_rva + size > end_rva:
-            return
-        if cave_rva < entry_end and cave_rva + size > site_rva:
-            return
-        available = end_rva - cave_rva
-        candidates.append(
-            (
-                abs(cave_rva - site_rva),
-                -available,
-                cave_rva,
-                section.raw_pointer + cave_rva - section.virtual_address,
-            )
+    for section in image.sections:
+        if not (section.characteristics & IMAGE_SCN_MEM_EXECUTE):
+            continue
+        mapped_raw_size = min(
+            section.raw_size,
+            section.virtual_size if section.virtual_size else section.raw_size,
         )
+        if mapped_raw_size < size:
+            continue
 
-    for offset, value in enumerate(data):
-        if value in (0x00, 0xCC):
-            if run_start is None:
-                run_start = offset
-        elif run_start is not None:
-            record_run(run_start, offset)
-            run_start = None
-    if run_start is not None:
-        record_run(run_start, len(data))
+        data = image.read_at(section.raw_pointer, mapped_raw_size)
+        run_start: int | None = None
+
+        def record_run(start: int, end: int) -> None:
+            start_rva = section.virtual_address + start
+            end_rva = section.virtual_address + end
+            cave_rva = (start_rva + 15) & ~15
+            entry_end = site_rva + PATCHED_ENTRY_SIZE
+            displacement = cave_rva - (site_rva + 5)
+            if cave_rva + size > end_rva:
+                return
+            if cave_rva < entry_end and cave_rva + size > site_rva:
+                return
+            if not -(2**31) <= displacement < 2**31:
+                return
+            available = end_rva - cave_rva
+            candidates.append(
+                (
+                    abs(cave_rva - site_rva),
+                    -available,
+                    cave_rva,
+                    section.raw_pointer + cave_rva - section.virtual_address,
+                )
+            )
+
+        for offset, value in enumerate(data):
+            if value in (0x00, 0xCC):
+                if run_start is None:
+                    run_start = offset
+            elif run_start is not None:
+                record_run(run_start, offset)
+                run_start = None
+        if run_start is not None:
+            record_run(run_start, len(data))
 
     if not candidates:
-        raise TGameBinaryError(
+        raise NoSafeCodeCaveError(
             f"no {size}-byte executable code cave made of 0x00/0xCC fill "
-            f"was found in section {section.name!r}"
+            "was found in any mapped executable section"
         )
     candidates.sort()
     if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
@@ -405,6 +424,130 @@ def _find_code_cave(
             "refusing an ambiguous permanent patch"
         )
     return candidates[0][2], candidates[0][3]
+
+
+def _align_up(value: int, alignment: int) -> int:
+    if alignment <= 0 or alignment & (alignment - 1):
+        raise TGameBinaryError(f"invalid PE alignment value: 0x{alignment:X}")
+    return (value + alignment - 1) & ~(alignment - 1)
+
+
+def _append_trampoline_section(
+    original_data: bytes, image: PE32Image, site_rva: int, trampoline_size: int
+) -> tuple[bytearray, int, bytes]:
+    """Append a mapped executable section for the trampoline when caves are absent."""
+    if len(image.sections) >= 96:
+        raise TGameBinaryError("cannot add the datetime section: PE section limit reached")
+    if image.file_alignment <= 0 or image.section_alignment <= 0:
+        raise TGameBinaryError(
+            "cannot add the datetime section: PE file/section alignments are invalid"
+        )
+    if (
+        image.file_alignment & (image.file_alignment - 1)
+        or image.section_alignment & (image.section_alignment - 1)
+        or image.file_alignment > image.section_alignment
+        or (
+            image.section_alignment < 0x1000
+            and image.file_alignment != image.section_alignment
+        )
+        or (
+            image.section_alignment >= 0x1000
+            and not 0x200 <= image.file_alignment <= 0x10000
+        )
+    ):
+        raise TGameBinaryError(
+            "cannot add the datetime section: PE file/section alignments are invalid"
+        )
+    if any(section.name == ".afdt" for section in image.sections):
+        raise TGameBinaryError(
+            "cannot add the datetime section: a section named '.afdt' already exists"
+        )
+
+    section_header_offset = image.section_table_offset + len(image.sections) * 40
+    section_header_end = section_header_offset + 40
+    raw_section_starts = [
+        section.raw_pointer for section in image.sections if section.raw_pointer
+    ]
+    first_raw_offset = min(raw_section_starts, default=image.file_size)
+    if (
+        section_header_end > image.size_of_headers
+        or section_header_end > first_raw_offset
+        or section_header_end > image.file_size
+    ):
+        raise TGameBinaryError(
+            "cannot add the datetime section: no free 40-byte section-header slot"
+        )
+    if any(original_data[section_header_offset:section_header_end]):
+        raise TGameBinaryError(
+            "cannot add the datetime section: section-header slot is not unused"
+        )
+
+    virtual_end = max(
+        section.virtual_address + max(section.virtual_size, section.raw_size)
+        for section in image.sections
+    )
+    new_rva = _align_up(virtual_end, image.section_alignment)
+    raw_size = _align_up(trampoline_size, image.file_alignment)
+    raw_pointer = _align_up(len(original_data), image.file_alignment)
+    entry_displacement = new_rva - (site_rva + 5)
+    if not -(2**31) <= entry_displacement < 2**31:
+        raise TGameBinaryError(
+            "cannot add the datetime section: trampoline is outside the x86 entry-jump range"
+        )
+    if max(new_rva + trampoline_size, raw_pointer + raw_size) > 0xFFFFFFFF:
+        raise TGameBinaryError(
+            "cannot add the datetime section: PE32 address range exceeded"
+        )
+
+    trampoline = build_static_trampoline(site_rva, new_rva)
+    if len(trampoline) != trampoline_size:
+        raise TGameBinaryError("datetime trampoline size changed during section creation")
+
+    section_characteristics = (
+        IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ
+    )
+    section_header = struct.pack(
+        "<8sIIIIIIHHI",
+        b".afdt\0\0\0",
+        trampoline_size,
+        new_rva,
+        raw_size,
+        raw_pointer,
+        0,
+        0,
+        0,
+        0,
+        section_characteristics,
+    )
+
+    patched_data = bytearray(original_data)
+    patched_data[section_header_offset:section_header_end] = section_header
+    if raw_pointer > len(patched_data):
+        patched_data.extend(b"\0" * (raw_pointer - len(patched_data)))
+    patched_data.extend(trampoline)
+    patched_data.extend(b"\xCC" * (raw_size - len(trampoline)))
+
+    struct.pack_into("<H", patched_data, image.pe_offset + 6, len(image.sections) + 1)
+    optional = image.optional_offset
+    old_size_of_code = struct.unpack_from("<I", patched_data, optional + 4)[0]
+    if old_size_of_code + raw_size > 0xFFFFFFFF:
+        raise TGameBinaryError(
+            "cannot add the datetime section: PE32 code size overflow"
+        )
+    struct.pack_into("<I", patched_data, optional + 4, old_size_of_code + raw_size)
+    new_size_of_image = max(
+        image.size_of_image,
+        _align_up(
+            new_rva + max(trampoline_size, raw_size), image.section_alignment
+        ),
+    )
+    if new_size_of_image > 0xFFFFFFFF:
+        raise TGameBinaryError(
+            "cannot add the datetime section: PE32 image size overflow"
+        )
+    struct.pack_into("<I", patched_data, optional + 56, new_size_of_image)
+    struct.pack_into("<I", patched_data, optional + 64, 0)  # Clear stale PE checksum.
+    return patched_data, new_rva, trampoline
 
 
 def _sha256(data: bytes) -> str:
@@ -463,10 +606,11 @@ def apply_static_datetime_patch(
 ) -> dict[str, str]:
     """Permanently patch a verified TGame file, preserving a byte-exact backup.
 
-    Only a unique, file-backed clean patch site and a nearby aligned run of
-    executable-section 0x00/0xCC fill are accepted. The replacement is built
-    beside the target, validated as a complete patched PE, and atomically
-    installed after the original backup has been verified.
+    Only a unique, file-backed clean patch site is accepted. The trampoline
+    uses a nearby aligned executable-section 0x00/0xCC fill run when available;
+    otherwise a dedicated executable PE section is added only when the headers
+    have an unused slot. The replacement is validated and atomically installed
+    after the original backup has been verified.
     """
     target = Path(path)
     backup = Path(backup_path) if backup_path else Path(str(target) + ".bak")
@@ -497,6 +641,7 @@ def apply_static_datetime_patch(
     if _sha256(original_data) != original_digest:
         raise TGameBinaryError("TGame.exe changed while it was being inspected")
 
+    trampoline_storage = "existing-code-cave"
     with PE32Image(target) as image:
         site_offset = image.rva_to_file_offset(
             site_rva, len(EXPECTED_ORIGINAL), executable=True
@@ -505,34 +650,46 @@ def apply_static_datetime_patch(
             raise TGameBinaryError(
                 "TGame patch-site bytes changed after signature validation; file was not modified"
             )
-        site_section = image.section_for_rva(
-            site_rva, len(EXPECTED_ORIGINAL), executable=True
-        )
+        image.section_for_rva(site_rva, len(EXPECTED_ORIGINAL), executable=True)
         stub_length = (
             len(_build_datetime_prefix()) + len(EXPECTED_ORIGINAL) + 5
         )
-        trampoline_rva, trampoline_offset = _find_code_cave(
-            image, site_section, stub_length, site_rva
-        )
+        try:
+            trampoline_rva, trampoline_offset = _find_code_cave(
+                image, stub_length, site_rva
+            )
+        except NoSafeCodeCaveError:
+            patched_data, trampoline_rva, trampoline = _append_trampoline_section(
+                original_data, image, site_rva, stub_length
+            )
+            trampoline_storage = "new-.afdt-section"
+        else:
+            cave_before = original_data[
+                trampoline_offset : trampoline_offset + stub_length
+            ]
+            if len(cave_before) != stub_length:
+                raise TGameBinaryError("selected code cave extends beyond the TGame file")
+            if any(value not in (0x00, 0xCC) for value in cave_before):
+                raise TGameBinaryError(
+                    "selected code cave changed or contains non-fill bytes"
+                )
+            trampoline = build_static_trampoline(site_rva, trampoline_rva)
+            patched_data = bytearray(original_data)
+            patched_data[
+                trampoline_offset : trampoline_offset + len(trampoline)
+            ] = trampoline
+
         entry_displacement = trampoline_rva - (site_rva + 5)
         if not -(2**31) <= entry_displacement < 2**31:
-            raise TGameBinaryError("code cave is outside the x86 entry-jump range")
+            raise TGameBinaryError(
+                "datetime trampoline is outside the x86 entry-jump range"
+            )
         entry_patch = (
             b"\xE9"
             + struct.pack("<i", entry_displacement)
             + PATCHED_ENTRY_SUFFIX
         )
-        trampoline = build_static_trampoline(site_rva, trampoline_rva)
-
-    cave_before = original_data[trampoline_offset : trampoline_offset + len(trampoline)]
-    if len(cave_before) != len(trampoline):
-        raise TGameBinaryError("selected code cave extends beyond the TGame file")
-    if any(value not in (0x00, 0xCC) for value in cave_before):
-        raise TGameBinaryError("selected code cave changed or contains non-fill bytes")
-
-    patched_data = bytearray(original_data)
     patched_data[site_offset : site_offset + len(entry_patch)] = entry_patch
-    patched_data[trampoline_offset : trampoline_offset + len(trampoline)] = trampoline
 
     temporary = _write_sibling_temp(target, bytes(patched_data), target)
     try:
@@ -583,6 +740,7 @@ def apply_static_datetime_patch(
             "patched_sha256": _file_sha256(target),
             "target_rva": f"0x{site_rva:08X}",
             "trampoline_rva": f"0x{trampoline_rva:08X}",
+            "trampoline_storage": trampoline_storage,
             "message": "Permanent TGame datetime patch applied and verified.",
         }
     finally:

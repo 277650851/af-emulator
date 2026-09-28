@@ -52,7 +52,11 @@ def write_tgame_fixture(path: Path, state: str = "unpatched", *, dynamic_base: b
 
     optional = bytearray(0xE0)
     struct.pack_into("<H", optional, 0, 0x010B)
+    struct.pack_into("<I", optional, 4, raw_size)  # SizeOfCode
     struct.pack_into("<I", optional, 28, IMAGE_BASE)
+    struct.pack_into("<I", optional, 32, 0x1000)  # SectionAlignment
+    struct.pack_into("<I", optional, 36, 0x200)  # FileAlignment
+    struct.pack_into("<I", optional, 56, SECTION_RVA + virtual_size)  # SizeOfImage
     struct.pack_into("<I", optional, 60, 0x200)
     dll_characteristics = 0x0040 if dynamic_base else 0
     struct.pack_into("<H", optional, 70, dll_characteristics)

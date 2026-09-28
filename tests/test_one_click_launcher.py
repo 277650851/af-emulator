@@ -73,7 +73,7 @@ class OneClickLauncherTests(unittest.TestCase):
 
     def test_launcher_prints_revision_for_stale_zip_diagnosis(self):
         s = self.text(SCRIPT)
-        self.assertIn('2026-09-28-oneclick-v33', s)
+        self.assertIn('2026-09-28-oneclick-v34', s)
         self.assertIn('Launcher revision: $LAUNCHER_REVISION', s)
 
     def test_launcher_asks_before_replacing_private_key(self):
@@ -359,6 +359,8 @@ class OneClickLauncherTests(unittest.TestCase):
         self.assertIn('START_ASSAULT_FIRE.ps1', s)
         self.assertIn('TGame_AFDEV.exe', s)
         self.assertIn('TGame.exe.bak', s)
+        self.assertIn('.afdt', s)
+        self.assertIn('section-header slot', s)
         self.assertNotIn('The original `TGame.exe` is not changed on disk.', s)
 
     def test_localized_readmes_disclose_permanent_tgame_patch_and_backup(self):
@@ -367,6 +369,7 @@ class OneClickLauncherTests(unittest.TestCase):
                 continue
             with self.subTest(readme=path.name):
                 self.assertIn("TGame.exe.bak", self.text(path))
+                self.assertIn(".afdt", self.text(path))
 
 
     def test_launcher_waits_for_tcls_armed_before_prompting_for_start(self):
