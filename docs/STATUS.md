@@ -55,7 +55,7 @@ Experimental or unverified work is excluded from `main` until it is reproducibly
 | First-time account creation | 🔴 | Experimental v95+ work is intentionally excluded because it is not considered stable. |
 | First-login nickname UI | 🔴 | Not part of v143b and not yet reproducibly verified for the public baseline. |
 | New-account starter inventory/profile lifecycle | 🔴 | Depends on the experimental account-creation work and is intentionally excluded. |
-| Real multi-account login lifecycle | 🟡 | Concurrent local stock clients now receive distinct process-local UINs and identity-safe wire GIDs for multiplayer validation. Persistent real-account login/inventory isolation still belongs to the SQLite account work. |
+| Real multi-account login lifecycle | 🟡 | Native AP login now verifies the registered account's password token and uses its SQLite UIN. Full multi-account game-session and inventory isolation still needs end-to-end validation. |
 | Real two-client friends/private chat | 🔴 | Not included in v143b; later work still needs proper stock-client validation before promotion. |
 | Full clan UI/detail/member rendering | 🔴 | Nested ClanDetailedInfo/MemberInfo wire layouts are not fully verified. |
 | Survival enemy/round backend lifecycle | 🔴 | Not implemented as a complete public stable backend. |

@@ -491,6 +491,32 @@ class PlayerDatabase:
             raise PlayerDBError("invalid nickname")
         return value
 
+    @staticmethod
+    def _nickname_owner_uin(
+        conn: sqlite3.Connection,
+        nickname: str,
+        *,
+        exclude_uin: int | None = None,
+    ) -> int | None:
+        """Find a casefold-equivalent nickname using Python Unicode rules.
+
+        SQLite's built-in NOCASE collation only folds ASCII. PH accepts
+        single-byte accented nicknames, so uniqueness must use the same
+        casefold comparison as the server's nickname flow.
+        """
+        key = nickname.casefold()
+        rows = conn.execute(
+            """SELECT uin, nickname FROM player_profiles
+               WHERE nickname IS NOT NULL AND nickname <> ''"""
+        )
+        for row in rows:
+            uin = int(row["uin"])
+            if exclude_uin is not None and uin == int(exclude_uin):
+                continue
+            if str(row["nickname"]).casefold() == key:
+                return uin
+        return None
+
     def nickname_available(
         self,
         nickname: str,
@@ -504,35 +530,29 @@ class PlayerDatabase:
 
         conn = self._connect()
         try:
-            if exclude_uin is None:
-                row = conn.execute(
-                    """
-                    SELECT 1 FROM player_profiles
-                    WHERE nickname = ? COLLATE NOCASE
-                    LIMIT 1
-                    """,
-                    (nickname,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    """
-                    SELECT 1 FROM player_profiles
-                    WHERE nickname = ? COLLATE NOCASE AND uin <> ?
-                    LIMIT 1
-                    """,
-                    (nickname, int(exclude_uin)),
-                ).fetchone()
-            return row is None
+            return self._nickname_owner_uin(
+                conn,
+                nickname,
+                exclude_uin=exclude_uin,
+            ) is None
         finally:
             conn.close()
 
-    def claim_nickname(self, uin: int, nickname: str) -> str:
+    def claim_nickname(
+        self,
+        uin: int,
+        nickname: str,
+        *,
+        require_unclaimed: bool = False,
+    ) -> str:
         """Atomically claim a nickname for one player.
 
         BEGIN IMMEDIATE serializes nickname writers before the availability
         check, so two concurrent A002/F301 requests cannot both claim the same
         case-insensitive nickname. Re-claiming the same nickname for the same
-        UIN is intentionally idempotent.
+        UIN is intentionally idempotent. First-login callers can require that
+        the existing profile is still blank, preventing stale sessions from
+        overwriting a nickname claimed by another session for the same UIN.
         """
         uin = int(uin)
         nickname = self._normalize_nickname(nickname)
@@ -548,18 +568,15 @@ class PlayerDatabase:
             if not current:
                 raise PlayerDBError(f"profile missing for uin={uin}")
 
-            other = conn.execute(
-                """
-                SELECT uin FROM player_profiles
-                WHERE nickname = ? COLLATE NOCASE AND uin <> ?
-                LIMIT 1
-                """,
-                (nickname, uin),
-            ).fetchone()
-            if other:
+            other_uin = self._nickname_owner_uin(
+                conn,
+                nickname,
+                exclude_uin=uin,
+            )
+            if other_uin is not None:
                 raise PlayerDBError(
                     f"nickname unavailable: {nickname!r} "
-                    f"already owned by uin={int(other['uin'])}"
+                    f"already owned by uin={other_uin}"
                 )
 
             current_value = (
@@ -567,7 +584,16 @@ class PlayerDatabase:
                 if current["nickname"] is not None
                 else ""
             )
-            if current_value.casefold() != nickname.casefold():
+            if (
+                require_unclaimed
+                and current_value
+                and current_value.casefold() != nickname.casefold()
+            ):
+                raise PlayerDBError(
+                    f"first nickname already claimed for uin={uin}"
+                )
+
+            if current_value != nickname:
                 conn.execute(
                     """
                     UPDATE player_profiles

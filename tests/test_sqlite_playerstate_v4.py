@@ -129,11 +129,15 @@ with tempfile.TemporaryDirectory() as td:
 source = SERVER.read_text(encoding="utf-8")
 assert "BUILD=v143b-SQLITE-PLAYERSTATE-v4-TEST" in source
 assert "PLAYER_DB = PlayerDatabase()" in source
-assert "auth_uid = _r12_uid_for_login(_auth_pid, auth_login_name)" in source
+assert "auth_login_name, auth_account = authenticate_ap_verify_body(" in source
+assert "if auth_account is None:" in source
+assert "error_code=1" in source
+assert 'auth_uid = int(auth_account["uin"])' in source
+assert "resolved_uid = _r12_uid_for_login(_auth_pid, auth_login_name)" in source
 assert "_v140_select_player(role_state[\"uin\"])" in source
 assert "_V140_PLAYER_STATE.save(reason)" in source
 assert "os.replace(tmp, V140_MALL_STATE_PATH)" not in source
-assert "PLAYER_DB.save_nickname(" in source
+assert "PLAYER_DB.claim_nickname(" in source
 assert "legacy JSON import" in source
 
 print("SQLITE PLAYERSTATE v4 TEST: PASS")

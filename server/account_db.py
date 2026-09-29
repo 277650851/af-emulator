@@ -22,7 +22,8 @@ DEFAULT_DB_PATH = Path(
     )
 )
 
-USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{5,24}$")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,24}$")
+AP_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 72
 PBKDF2_ITERATIONS = int(os.environ.get("AF_PASSWORD_ITERATIONS", "600000"))
@@ -53,7 +54,7 @@ def normalize_username(username: str) -> str:
     username = (username or "").strip()
     if not USERNAME_RE.fullmatch(username):
         raise InvalidUsername(
-            "Username must be 5-24 characters and use only letters, numbers, '.', '_' or '-'."
+            "Username must be 3-24 characters and use only letters, numbers, '.', '_' or '-'."
         )
     return username.casefold()
 
@@ -88,6 +89,19 @@ def _hash_password(
     return digest, salt, iterations
 
 
+def _hash_ap_password_token(
+    password: str,
+    *,
+    iterations: int | None = None,
+) -> tuple[bytes, bytes, int]:
+    """Hash the legacy PH AP token without storing its raw MD5 value."""
+    token = hashlib.md5(password.encode("utf-8")).hexdigest()
+    return _hash_password(
+        token,
+        iterations=PBKDF2_ITERATIONS if iterations is None else iterations,
+    )
+
+
 def connect(db_path: str | os.PathLike[str] | None = None) -> sqlite3.Connection:
     path = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +132,9 @@ def init_db(db_path: str | os.PathLike[str] | None = None) -> Path:
                 password_hash BLOB NOT NULL,
                 password_salt BLOB NOT NULL,
                 password_iterations INTEGER NOT NULL,
+                ap_token_hash BLOB,
+                ap_token_salt BLOB,
+                ap_token_iterations INTEGER,
                 status TEXT NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active', 'disabled')),
                 created_at TEXT NOT NULL,
@@ -135,6 +152,19 @@ def init_db(db_path: str | os.PathLike[str] | None = None) -> Path:
                 ON accounts(status);
             """
         )
+        # These nullable columns also migrate account databases created before
+        # native PH AP password verification was enabled. A successful website
+        # login backfills the verifier for an existing account.
+        account_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(accounts)")
+        }
+        for column, sql_type in (
+            ("ap_token_hash", "BLOB"),
+            ("ap_token_salt", "BLOB"),
+            ("ap_token_iterations", "INTEGER"),
+        ):
+            if column not in account_columns:
+                conn.execute(f"ALTER TABLE accounts ADD COLUMN {column} {sql_type}")
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '1')"
         )
@@ -196,7 +226,14 @@ def create_account(
 ) -> dict[str, Any]:
     username = (username or "").strip()
     username_norm = normalize_username(username)
-    digest, salt, iterations = _hash_password(password)
+    digest, salt, iterations = _hash_password(
+        password,
+        iterations=PBKDF2_ITERATIONS,
+    )
+    ap_digest, ap_salt, ap_iterations = _hash_ap_password_token(
+        password,
+        iterations=PBKDF2_ITERATIONS,
+    )
     created_at = _utc_now()
 
     init_db(db_path)
@@ -218,9 +255,10 @@ def create_account(
             INSERT INTO accounts(
                 uin, username, username_norm,
                 password_hash, password_salt, password_iterations,
+                ap_token_hash, ap_token_salt, ap_token_iterations,
                 status, created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, 'active', ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
             """,
             (
                 uin,
@@ -229,6 +267,9 @@ def create_account(
                 digest,
                 salt,
                 iterations,
+                ap_digest,
+                ap_salt,
+                ap_iterations,
                 created_at,
             ),
         )
@@ -305,7 +346,8 @@ def verify_account(
             """
             SELECT id, uin, username, username_norm, status, created_at,
                    last_login_at, password_hash, password_salt,
-                   password_iterations
+                   password_iterations, ap_token_hash, ap_token_salt,
+                   ap_token_iterations
             FROM accounts
             WHERE username_norm = ?
             """,
@@ -326,13 +368,122 @@ def verify_account(
 
         if update_last_login:
             last_login_at = _utc_now()
+            if (
+                row["ap_token_hash"] is None
+                or row["ap_token_salt"] is None
+                or row["ap_token_iterations"] is None
+            ):
+                ap_digest, ap_salt, ap_iterations = _hash_ap_password_token(
+                    password
+                )
+                conn.execute(
+                    """UPDATE accounts
+                       SET last_login_at = ?, ap_token_hash = ?,
+                           ap_token_salt = ?, ap_token_iterations = ?
+                       WHERE id = ?""",
+                    (
+                        last_login_at,
+                        ap_digest,
+                        ap_salt,
+                        ap_iterations,
+                        row["id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    "UPDATE accounts SET last_login_at = ? WHERE id = ?",
+                    (last_login_at, row["id"]),
+                )
+            conn.commit()
+        else:
+            last_login_at = row["last_login_at"]
+
+        return {
+            "id": row["id"],
+            "uin": row["uin"],
+            "username": row["username"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "last_login_at": last_login_at,
+        }
+    finally:
+        conn.close()
+
+
+def verify_ap_credential(
+    username: str,
+    credential_token: str,
+    *,
+    db_path: str | os.PathLike[str] | None = None,
+    update_last_login: bool = True,
+) -> dict[str, Any] | None:
+    """Verify the 32-hex MD5 token sent by PH's native AP login request.
+
+    The game protocol does not send the plaintext password. Account creation
+    therefore stores a salted PBKDF2 verifier of the protocol token separately
+    from the website password verifier.
+    """
+    try:
+        username_norm = normalize_username(username)
+    except AccountError:
+        return None
+
+    token = str(credential_token or "").strip().lower()
+    if not AP_TOKEN_RE.fullmatch(token):
+        return None
+
+    init_db(db_path)
+    conn = connect(db_path)
+    try:
+        if _table_exists(conn, "account_bans"):
+            row = conn.execute(
+                """
+                SELECT a.id, a.uin, a.username, a.status, a.created_at,
+                       a.last_login_at, a.ap_token_hash, a.ap_token_salt,
+                       a.ap_token_iterations
+                FROM accounts a
+                LEFT JOIN account_bans b ON b.uin = a.uin
+                WHERE a.username_norm = ? AND b.uin IS NULL
+                """,
+                (username_norm,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT id, uin, username, status, created_at, last_login_at,
+                       ap_token_hash, ap_token_salt, ap_token_iterations
+                FROM accounts
+                WHERE username_norm = ?
+                """,
+                (username_norm,),
+            ).fetchone()
+
+        if (
+            not row
+            or row["status"] != "active"
+            or row["ap_token_hash"] is None
+            or row["ap_token_salt"] is None
+            or row["ap_token_iterations"] is None
+        ):
+            return None
+
+        candidate = hashlib.pbkdf2_hmac(
+            "sha256",
+            token.encode("ascii"),
+            bytes(row["ap_token_salt"]),
+            int(row["ap_token_iterations"]),
+        )
+        if not hmac.compare_digest(candidate, bytes(row["ap_token_hash"])):
+            return None
+
+        last_login_at = row["last_login_at"]
+        if update_last_login:
+            last_login_at = _utc_now()
             conn.execute(
                 "UPDATE accounts SET last_login_at = ? WHERE id = ?",
                 (last_login_at, row["id"]),
             )
             conn.commit()
-        else:
-            last_login_at = row["last_login_at"]
 
         return {
             "id": row["id"],

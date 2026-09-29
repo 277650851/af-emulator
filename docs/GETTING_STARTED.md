@@ -532,14 +532,24 @@ The hosts entries send VERSION/AUTH/DIR traffic to the emulator on your PC.
 
 For the public **v143b** baseline, test an existing/local profile path. Do not use the unfinished new-account/nickname flow as your first test.
 
+Game AUTH now checks the username and password token against the `accounts`
+table in the same SQLite file used by account registration. Set `AF_ACCOUNT_DB`
+to that shared database path when the registration site and game server run
+from separate checkouts. When an older account successfully logs in to the
+website, the server derives and stores its native AP verifier so that the same
+password works for game login.
+
 ### First things to check
 
 | Check | Expected |
 |---|---|
 | VERSION reaches local server | ✅ |
 | Login AUTH handshake reaches local server | ✅ |
+| Registered account + correct password | ✅ |
+| Registered account + incorrect password | Rejected |
+| Unknown username | Rejected |
 | Server list/DIR loads | ✅ |
-| Existing local profile reaches zone/login path | ✅ baseline target |
+| Existing registered profile reaches zone/login path | ✅ baseline target |
 | Basic profile/property state | ✅ baseline target |
 | First-ever account creation | ❌ not supported in public v143b |
 | PvE dedicated-server/gameplay handoff + room-selected map | ✅ integrated on main |

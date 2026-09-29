@@ -106,19 +106,30 @@ def _port_open(host: str, port: int, timeout: float = 0.3) -> bool:
         return False
 
 
-def _health_ok(url: str, timeout: float = 0.8) -> bool:
-    """Identify the Assault Fire dev website, not merely any HTTP 200."""
+def _health_ok(
+    url: str,
+    expected_database_path: str | os.PathLike[str],
+    timeout: float = 0.8,
+) -> bool:
+    """Identify this checkout's dev website and account database."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             if response.status != 200:
                 return False
             raw = response.read(4096)
         payload = json.loads(raw.decode("utf-8"))
-        return bool(
-            isinstance(payload, dict)
-            and payload.get("ok") is True
-            and payload.get("mode", "development") == "development"
-        )
+        if (
+            not isinstance(payload, dict)
+            or payload.get("ok") is not True
+            or payload.get("mode") != "development"
+        ):
+            return False
+        reported_database = payload.get("database_path")
+        if not isinstance(reported_database, str) or not reported_database:
+            return False
+        return Path(reported_database).resolve() == Path(
+            expected_database_path
+        ).resolve()
     except (
         OSError,
         UnicodeDecodeError,
@@ -150,37 +161,43 @@ class DevelopmentWebProcess:
         self.process: subprocess.Popen | None = None
         self.reused_existing = False
 
-        # Development website is loopback-only by design.
+        # Development website is loopback-only by design. Ignore web-only
+        # settings when production or --no-web has disabled this subsystem.
         self.host = "127.0.0.1"
-        try:
-            self.preferred_port = int(self.env.get("AF_WEB_PORT", "8080"))
-        except ValueError as exc:
-            raise DevelopmentWebError(
-                "AF_WEB_PORT must be an integer."
-            ) from exc
-        if not (1 <= self.preferred_port <= 65535):
-            raise DevelopmentWebError(
-                "AF_WEB_PORT must be between 1 and 65535."
-            )
-        self.port = self.preferred_port
+        if self.enabled:
+            try:
+                self.preferred_port = int(self.env.get("AF_WEB_PORT", "8080"))
+            except ValueError as exc:
+                raise DevelopmentWebError(
+                    "AF_WEB_PORT must be an integer."
+                ) from exc
+            if not (1 <= self.preferred_port <= 65535):
+                raise DevelopmentWebError(
+                    "AF_WEB_PORT must be between 1 and 65535."
+                )
 
-        try:
-            self.port_fallback_span = int(
-                self.env.get("AF_WEB_PORT_FALLBACK_SPAN", "20")
+            try:
+                self.port_fallback_span = int(
+                    self.env.get("AF_WEB_PORT_FALLBACK_SPAN", "20")
+                )
+            except ValueError as exc:
+                raise DevelopmentWebError(
+                    "AF_WEB_PORT_FALLBACK_SPAN must be an integer."
+                ) from exc
+            self.port_fallback_span = max(
+                0, min(self.port_fallback_span, 100)
             )
-        except ValueError as exc:
-            raise DevelopmentWebError(
-                "AF_WEB_PORT_FALLBACK_SPAN must be an integer."
-            ) from exc
-        self.port_fallback_span = max(
-            0, min(self.port_fallback_span, 100)
-        )
-        self.strict_port = (
-            str(self.env.get("AF_WEB_STRICT_PORT") or "")
-            .strip()
-            .lower()
-            in _TRUE
-        )
+            self.strict_port = (
+                str(self.env.get("AF_WEB_STRICT_PORT") or "")
+                .strip()
+                .lower()
+                in _TRUE
+            )
+        else:
+            self.preferred_port = 8080
+            self.port_fallback_span = 20
+            self.strict_port = False
+        self.port = self.preferred_port
 
         explicit_app = str(self.env.get("AF_WEB_APP") or "").strip()
         self.app_path = (
@@ -219,7 +236,7 @@ class DevelopmentWebProcess:
         preferred = int(self.preferred_port)
         health_url = f"http://{self.host}:{preferred}/healthz"
 
-        if _health_ok(health_url):
+        if _health_ok(health_url, self.db_path):
             self.port = preferred
             return ("reuse", preferred)
 
@@ -239,7 +256,7 @@ class DevelopmentWebProcess:
             candidate_health = (
                 f"http://{self.host}:{candidate}/healthz"
             )
-            if _health_ok(candidate_health):
+            if _health_ok(candidate_health, self.db_path):
                 self.port = candidate
                 return ("reuse", candidate)
             if not _port_open(self.host, candidate):
@@ -321,7 +338,7 @@ class DevelopmentWebProcess:
                     f"Development website exited during startup "
                     f"(exit code {code})."
                 )
-            if _health_ok(health_url):
+            if _health_ok(health_url, self.db_path):
                 print(
                     f"[WEB] Development account website ready.",
                     flush=True,

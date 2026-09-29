@@ -263,10 +263,10 @@ def register():
 {_form_token()}
 <label>Username</label><br>
 <input name="username" value="{_esc(username)}" autocomplete="username"
-       minlength="5" maxlength="24" pattern="[A-Za-z0-9._-]+"
-       title="5-24 characters: letters, numbers, dot, underscore or hyphen"
+       minlength="3" maxlength="24" pattern="[A-Za-z0-9._-]+"
+       title="3-24 characters: letters, numbers, dot, underscore or hyphen"
        required><br>
-<small>Username: 5-24 characters. Use letters, numbers, ., _ or -.</small><br>
+<small>Username: 3-24 characters. Use letters, numbers, ., _ or -.</small><br>
 <label>Password</label><br>
 <input type="password" name="password" autocomplete="new-password"
        minlength="8" maxlength="72" required><br>
@@ -333,8 +333,8 @@ def login():
 {_form_token()}
 <label>Username</label><br>
 <input name="username" value="{_esc(username)}" autocomplete="username"
-       minlength="5" maxlength="24" pattern="[A-Za-z0-9._-]+"
-       title="5-24 characters: letters, numbers, dot, underscore or hyphen"
+       minlength="3" maxlength="24" pattern="[A-Za-z0-9._-]+"
+       title="3-24 characters: letters, numbers, dot, underscore or hyphen"
        required><br>
 <label>Password</label><br>
 <input type="password" name="password" autocomplete="current-password" required><br>
@@ -437,6 +437,7 @@ def healthz():
             "ok": True,
             "mode": "development",
             "database": DB_PATH.name,
+            "database_path": str(DB_PATH),
             "accounts": account_db.account_count(db_path=DB_PATH),
         }
     )

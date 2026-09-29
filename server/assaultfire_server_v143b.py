@@ -57,6 +57,10 @@ from development_web import (
     resolve_runtime_mode,
     development_web_requested,
 )
+from assaultfire_ap_auth import (
+    authenticate_ap_verify_body,
+    build_ap_result_plaintext,
+)
 
 # v24: v20 success framing plus BOTH PublicData bitmap and PrivateData tail probes.
 QUIET_ROLE_HEX = True
@@ -73,12 +77,6 @@ except DevelopmentWebError as _runtime_mode_error:
 DEV_WEB_ENABLED = development_web_requested(
     RUNTIME_MODE, sys.argv[1:], os.environ
 )
-
-# FIRST-RUN-ACCOUNT-v1 + FIRST-NICKNAME-v5 integration
-from first_run_account_setup import ensure_first_account
-ensure_first_account()
-# /FIRST-RUN-ACCOUNT-v1
-
 
 def _short_hex(b, n=48):
     b = bytes(b or b'')
@@ -991,68 +989,6 @@ def _r12_load_persisted_nickname(uid):
     return login_name, nickname
 
 
-def _r12_parse_ap_login_name(body):
-    """Best-effort display-only decode of the first AP_CMD_VERIFY TDR string."""
-    try:
-        body = bytes(body or b"")
-        if len(body) < 7:
-            return None
-        off = 2
-        n = struct.unpack_from(">I", body, off)[0]
-        off += 4
-        if n < 1 or n > 129 or off + n > len(body):
-            return None
-        raw = body[off:off + n]
-        if raw[-1:] != b"\x00":
-            return None
-        return raw[:-1].decode("latin1", "replace")
-    except Exception:
-        return None
-
-
-def build_ap_result_plaintext(seqno, uid=10001):
-    error_code = 0
-    oas_error_code = 0
-
-    # TCLS requires at least one byte and requires the
-    # last byte to be NUL.
-    error_message = b"\x00"
-
-    # r12: caller supplies the process-local identity.
-    uid = int(uid) & 0xFFFFFFFF
-    timestamp = int(time.time()) & 0xFFFFFFFF
-
-    # Opaque ticket. Later, when the client presents this
-    # to the next service, our private server can simply
-    # recognize/accept the same bytes.
-    ticket = b"LOCAL_TICKET_001"
-
-    body = (
-        error_code.to_bytes(4, "big") +
-        oas_error_code.to_bytes(4, "big") +
-
-        len(error_message).to_bytes(4, "big") +
-        error_message +
-
-        uid.to_bytes(4, "big") +
-        timestamp.to_bytes(4, "big") +
-
-        len(ticket).to_bytes(2, "big") +
-        ticket
-    )
-
-    header = (
-        len(body).to_bytes(2, "big") +
-        (1).to_bytes(2, "big") +
-        seqno.to_bytes(4, "big") +
-        (4).to_bytes(2, "big")
-    )
-
-    plaintext = header + body
-
-    return plaintext
-
-
 # ---------------------------------------------------------------------------
 # Initial AUTH handshake
 # ---------------------------------------------------------------------------
@@ -1493,9 +1429,18 @@ def handle_auth(conn, addr):
         if hdr["cmd"] != 3:
             log(
                 "AUTH",
-                "WARNING: expected client "
-                f"cmd=3, got cmd={hdr['cmd']}"
+                "LOGIN REJECTED: expected AP cmd=3, "
+                f"got cmd={hdr['cmd']}"
             )
+            result_plain = build_ap_result_plaintext(
+                hdr["seqno"],
+                uid=0,
+                ticket=b"",
+                error_code=1,
+                error_message=b"Invalid AP request.\x00",
+            )
+            conn.sendall(build_ap_frame(aes_key, result_plain))
+            return
 
         # ---------------------------------------------------------------
         # 4. Send AP_CMD_RESULT / cmd 4 success
@@ -1510,10 +1455,56 @@ def handle_auth(conn, addr):
             _auth_pid, _auth_process_name = None, None
             log("AUTH", f"r12 peer identity lookup failed: {_auth_peer_e}")
 
-        auth_login_name = _r12_parse_ap_login_name(hdr.get("body"))
-        auth_uid = _r12_uid_for_login(_auth_pid, auth_login_name)
-        if auth_login_name:
-            _r12_remember_login_for_uid(auth_uid, auth_login_name)
+        auth_login_name = ""
+        auth_account = None
+        try:
+            auth_login_name, auth_account = authenticate_ap_verify_body(
+                hdr.get("body"),
+                db_path=PLAYER_DB.db_path,
+            )
+        except Exception as _auth_error:
+            log(
+                "AUTH",
+                "AP credential parse/verify error: "
+                f"{type(_auth_error).__name__}: {_auth_error}",
+            )
+
+        if auth_account is None:
+            log(
+                "AUTH",
+                f"LOGIN REJECTED login={auth_login_name!r} "
+                f"OWNER={_auth_process_name or '<unresolved>'} "
+                f"PID={_auth_pid}",
+            )
+            result_plain = build_ap_result_plaintext(
+                hdr["seqno"],
+                uid=0,
+                ticket=b"",
+                error_code=1,
+                error_message=b"Invalid account, password, or account state.\x00",
+            )
+            conn.sendall(build_ap_frame(aes_key, result_plain))
+            return
+
+        auth_uid = int(auth_account["uin"])
+        resolved_uid = _r12_uid_for_login(_auth_pid, auth_login_name)
+        if resolved_uid != auth_uid:
+            log(
+                "AUTH",
+                f"LOGIN REJECTED login={auth_login_name!r}: account UIN "
+                f"{auth_uid} does not match stored game identity {resolved_uid}",
+            )
+            result_plain = build_ap_result_plaintext(
+                hdr["seqno"],
+                uid=0,
+                ticket=b"",
+                error_code=1,
+                error_message=b"Account identity is inconsistent.\x00",
+            )
+            conn.sendall(build_ap_frame(aes_key, result_plain))
+            return
+
+        _r12_remember_login_for_uid(auth_uid, auth_login_name)
         log(
             "AUTH",
             "SQLite stable identity: "
@@ -6397,6 +6388,8 @@ def _v132_send_pve_afdev_handoff(
     role_state,
     *,
     reason,
+    room=None,
+    start_settings=None,
     mode_id=None,
 ):
     """Send A11A once using this room's stable-v143b DS allocation.
@@ -6405,6 +6398,44 @@ def _v132_send_pve_afdev_handoff(
     lightweight UDP bridge, then advertises it immediately. TGame's first valid
     DS datagram to that bridge is what starts the v48 AFDEV loader.
     """
+    room_for_handoff = (
+        room
+        if isinstance(room, dict)
+        else role_state.get("v79_created_match_room") or {}
+    )
+    room_id = room_for_handoff.get("room_id") or role_state.get(
+        "v143b_ds_room_id"
+    )
+    use_client_map = os.environ.get("AF_DS_USE_CLIENT_MAP", "1").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    map_override = None if use_client_map else V143B_DS_CONFIG.default_map or None
+
+    requested_settings = None
+    if isinstance(start_settings, dict):
+        requested_settings = {
+            "mode_id": start_settings.get("mode_id"),
+            "match_map_id": start_settings.get("match_map_id"),
+            "sub_mode_id": start_settings.get("sub_mode_id"),
+            "room_flags": start_settings.get("room_flags"),
+            "map_name": map_override,
+        }
+    elif room_for_handoff.get("room_id") is not None:
+        room_map_name = (
+            str(room_for_handoff.get("map_string") or "").strip()
+            if use_client_map
+            else ""
+        )
+        requested_settings = {
+            "mode_id": room_for_handoff.get("mode_id"),
+            "match_map_id": room_for_handoff.get("map_id"),
+            "sub_mode_id": room_for_handoff.get("sub_mode_id"),
+            "room_flags": room_for_handoff.get("flags"),
+            "map_name": room_map_name or map_override,
+        }
+
+    if mode_id is None and isinstance(requested_settings, dict):
+        mode_id = requested_settings.get("mode_id")
     mode_now = _v132_room_mode(role_state, mode_id)
     if not TGAME_PVE_DIRECT_AFDEV or mode_now not in TGAME_AFDEV_MODE_IDS:
         return False
@@ -6424,11 +6455,50 @@ def _v132_send_pve_afdev_handoff(
     handoff_port = TGAME_AFDEV_PORT
     allocation = None
 
-    if V143B_DS_CONFIG.enabled:
-        room = role_state.get("v79_created_match_room") or {}
-        room_id = room.get("room_id") or role_state.get("v143b_ds_room_id")
+    if (
+        isinstance(room_for_handoff, dict)
+        and room_for_handoff.get("room_id") is not None
+    ):
+        role_state["v79_created_match_room"] = room_for_handoff
+        role_state["v143b_ds_room_id"] = int(room_for_handoff["room_id"])
 
-        if room_id is None:
+    if V143B_DS_CONFIG.enabled:
+        if isinstance(requested_settings, dict):
+            try:
+                allocation = V143B_DS_SPAWNER.prepare_lobby_for_match(
+                    owner_id=int(role_state.get("uin") or 10001),
+                    owner_nickname=_v150_role_nickname(role_state),
+                    room_id=(int(room_id) if room_id is not None else None),
+                    max_players=max(
+                        2,
+                        int(room_for_handoff.get("fighter_capacity") or 0),
+                    ),
+                    mode_id=int(requested_settings["mode_id"]),
+                    map_id=int(requested_settings["match_map_id"]),
+                    sub_mode_id=int(requested_settings["sub_mode_id"]),
+                    room_flags=int(requested_settings["room_flags"]),
+                    map_name=requested_settings.get("map_name"),
+                )
+                room_id = allocation.room_id
+                role_state["v143b_ds_room_id"] = int(room_id)
+                log(
+                    "DS-HANDOFF",
+                    f"match handoff prepared DS room={room_id} reason={reason} "
+                    f"mode=0x{allocation.mode_id:08x} "
+                    f"map=0x{allocation.map_id:04x} "
+                    f"map_name={allocation.map_name!r} "
+                    f"submode=0x{allocation.sub_mode_id:08x} "
+                    f"flags=0x{allocation.room_flags:08x}",
+                )
+            except (KeyError, TypeError, ValueError, SpawnerError) as exc:
+                log(
+                    "DS-HANDOFF",
+                    f"{reason} DS settings preparation failed "
+                    f"mode=0x{mode_now:08x}: {type(exc).__name__}: {exc}; "
+                    "no endpoint advertised",
+                )
+                return False
+        elif room_id is None:
             # Covers allocator/quick-start paths that skipped A10A.
             try:
                 allocation = V143B_DS_SPAWNER.reserve_lobby(
@@ -6720,8 +6790,9 @@ def _v72_parse_start_room_alloc(body):
       u8  MapCount
       u32 MapIds[MapCount]
 
-    The 32-byte MatchSettings sub-structure is preserved raw for now.  The
-    first 4 bytes are ModeId and bytes 4..5 track MapId in our captures.
+    The fixed MatchSettings layout used by the PH client captures includes
+    ModeId, MapId, SubModeId, and room Flags at known offsets. Keep the full
+    structure as well for diagnostics/future fields.
     """
     if len(body) < 42:
         raise ValueError(f"StartRoomAlloc body too short: {len(body)}B")
@@ -6738,11 +6809,16 @@ def _v72_parse_start_room_alloc(body):
     maps = [struct.unpack_from(">I", body, 42 + 4*i)[0] for i in range(map_count)]
     mode_id = struct.unpack_from(">I", match, 0)[0] if len(match) >= 4 else None
     match_map_id = struct.unpack_from(">H", match, 4)[0] if len(match) >= 6 else None
+    # Captured PH MatchSettings packs these fields at byte offsets 11 and 15.
+    sub_mode_id = struct.unpack_from(">I", match, 11)[0] if len(match) >= 15 else None
+    room_flags = struct.unpack_from(">I", match, 15)[0] if len(match) >= 19 else None
     return {
         "uin": uin,
         "match": match,
         "mode_id": mode_id,
         "match_map_id": match_map_id,
+        "sub_mode_id": sub_mode_id,
+        "room_flags": room_flags,
         "hard_level": hard_level,
         "map_count": map_count,
         "maps": maps,
@@ -8688,21 +8764,14 @@ def handle_placeholder(conn, addr, label):
                                                 )
                                             )
                                             db_awaiting = current_nickname is None
-                                            awaiting = bool(
-                                                forced_first_account
-                                                or remembered_awaiting
-                                                or db_awaiting
-                                            )
                                             same_nickname_retry = bool(
                                                 ok
                                                 and current_nickname
                                                 and str(current_nickname).casefold()
                                                 == normalized_nick.casefold()
                                             )
-                                            eligible = bool(
-                                                ok
-                                                and (awaiting or same_nickname_retry)
-                                            )
+                                            eligible = bool(ok and (db_awaiting or same_nickname_retry))
+                                            awaiting = db_awaiting
 
                                             log(
                                                 "ACCOUNT",
@@ -8786,6 +8855,7 @@ def handle_placeholder(conn, addr, label):
                                                     PLAYER_DB.claim_nickname(
                                                         uin_now,
                                                         normalized_nick,
+                                                        require_unclaimed=True,
                                                     )
                                                 except Exception as db_e:
                                                     claim_result = (
@@ -10104,6 +10174,7 @@ def handle_placeholder(conn, addr, label):
                                                 label,
                                                 role_state,
                                                 reason="A113 StartMatch accepted",
+                                                room=room_for_start,
                                             )
 
                                             if not pve_handoff:
@@ -10810,6 +10881,8 @@ def handle_placeholder(conn, addr, label):
                                                 label,
                                                 role_state,
                                                 reason="A3A0 StartRoomAlloc accepted",
+                                                room=allocation_room,
+                                                start_settings=ra,
                                                 mode_id=ra.get("mode_id"),
                                             )
                                             if not roomalloc_handoff:
@@ -12146,13 +12219,14 @@ if __name__ == "__main__":
         level="DEBUG",
     )
 
-    _development_web = DevelopmentWebProcess(
-        repo_root=Path(__file__).resolve().parents[1],
-        db_path=PLAYER_DB.db_path,
-        argv=sys.argv[1:],
-        env=os.environ,
-    )
+    _development_web = None
     try:
+        _development_web = DevelopmentWebProcess(
+            repo_root=Path(__file__).resolve().parents[1],
+            db_path=PLAYER_DB.db_path,
+            argv=sys.argv[1:],
+            env=os.environ,
+        )
         _development_web.start()
     except DevelopmentWebError as web_exc:
         print(
@@ -12203,6 +12277,8 @@ if __name__ == "__main__":
     except Exception as bind_exc:
         reason = f"listener bind failed: {type(bind_exc).__name__}: {bind_exc}"
         log("MAIN", reason)
+        if _development_web is not None:
+            _development_web.stop()
         if not SERVER_ONLY_MODE:
             update_launch_gate_status(ready=False, reason=reason)
         raise SystemExit(3)
@@ -12221,6 +12297,8 @@ if __name__ == "__main__":
                 sock.close()
             except Exception:
                 pass
+        if _development_web is not None:
+            _development_web.stop()
         raise SystemExit(4)
 
     for label, kind, port, sock in listener_sockets:
@@ -12246,14 +12324,15 @@ if __name__ == "__main__":
             flush=True
         )
     finally:
-        try:
-            _development_web.stop()
-        except Exception as web_stop_exc:
-            print(
-                f"[WEB] shutdown warning: "
-                f"{type(web_stop_exc).__name__}: {web_stop_exc}",
-                flush=True,
-            )
+        if _development_web is not None:
+            try:
+                _development_web.stop()
+            except Exception as web_stop_exc:
+                print(
+                    f"[WEB] shutdown warning: "
+                    f"{type(web_stop_exc).__name__}: {web_stop_exc}",
+                    flush=True,
+                )
         if not SERVER_ONLY_MODE:
             _V143V_LOCAL_AP_SYNC.stop()
             update_launch_gate_status(

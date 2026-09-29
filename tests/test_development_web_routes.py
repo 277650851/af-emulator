@@ -20,12 +20,26 @@ with tempfile.TemporaryDirectory() as td:
 
     assert client.get("/register").status_code == 200
     assert client.get("/login").status_code == 200
-    assert client.get("/healthz").status_code == 200
+    health = client.get("/healthz")
+    assert health.status_code == 200
+    assert health.json["database_path"] == str(mod.DB_PATH)
     assert client.get("/admin").status_code == 404
 
     with client.session_transaction() as sess:
         sess["_csrf"] = "token"
-    short = client.post(
+    too_short = client.post(
+        "/register",
+        data={
+            "csrf_token": "token",
+            "username": "ab",
+            "password": "password1",
+            "confirm_password": "password1",
+        },
+    )
+    assert too_short.status_code == 200
+    assert b"3-24 characters" in too_short.data
+
+    legacy_length = client.post(
         "/register",
         data={
             "csrf_token": "token",
@@ -34,7 +48,7 @@ with tempfile.TemporaryDirectory() as td:
             "confirm_password": "password1",
         },
     )
-    assert short.status_code == 200
-    assert b"5-24 characters" in short.data
+    assert legacy_length.status_code == 200
+    assert b"Registration complete" in legacy_length.data
 
 print("DEVELOPMENT WEB ROUTE TEST: PASS")

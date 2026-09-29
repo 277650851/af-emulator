@@ -40,8 +40,27 @@ with tempfile.TemporaryDirectory() as td:
     except mod.PlayerDBError:
         pass
 
+    db.claim_nickname(u1, "Éclair")
+    assert db.nickname_available("éclair") is False
+    try:
+        db.claim_nickname(u2, "éclair")
+        raise AssertionError("case-fold-equivalent Unicode nickname succeeded")
+    except mod.PlayerDBError:
+        pass
+    assert db.claim_nickname(u1, "éCLAIR") == "éCLAIR"
+    assert db.load_nickname(u1) == "éCLAIR"
+
     db.claim_nickname(u1, "AlphaOwn")
     db.claim_nickname(u2, "BravoOwn")
+    u3 = db.resolve_identity("charlie01")
+    db.ensure_player_state(u3, starter_state())
+    db.claim_nickname(u3, "FirstSessionNick", require_unclaimed=True)
+    try:
+        db.claim_nickname(u3, "StaleSessionNick", require_unclaimed=True)
+        raise AssertionError("stale first-login session overwrote nickname")
+    except mod.PlayerDBError:
+        pass
+    assert db.claim_nickname(u3, "RenamedLater") == "RenamedLater"
     barrier = threading.Barrier(2)
     results = []
     lock = threading.Lock()
@@ -67,6 +86,10 @@ assert "first_nickname_v26_deferred_login_groups" in source
 assert "first_account_change_role_pending" in source
 assert "idempotent-same-nickname" in source
 assert "ZONE_FAIL_NICKNAME_EXIST = 0x0103" in source
+a002 = source[source.index('elif app["cmd"] == TGAME_ZN_REQ_CREATEACCOUNT'):]
+assert "eligible = bool(ok and (db_awaiting or same_nickname_retry))" in a002
+claim = a002[a002.index("PLAYER_DB.claim_nickname("):]
+assert "require_unclaimed=True" in claim[:400]
 assert "unsupported first-account role pair" not in source
 assert "result=0x0104 nickname-claim-failure" not in source
 
