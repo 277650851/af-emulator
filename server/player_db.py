@@ -120,6 +120,8 @@ class PlayerDatabase:
                         avail_hours INTEGER NOT NULL,
                         validity INTEGER NOT NULL,
                         gain_type INTEGER NOT NULL,
+                        obtained_at INTEGER NOT NULL DEFAULT 0,
+                        expires_at INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY (uin, gid)
                     );
 
@@ -131,8 +133,27 @@ class PlayerDatabase:
                         WHERE nickname IS NOT NULL AND nickname <> '';
                     """
                 )
+                # Upgrade existing player_inventory tables in place. Older
+                # rows have unknown purchase dates and remain non-expiring.
+                inventory_columns = {
+                    str(row["name"])
+                    for row in conn.execute(
+                        "PRAGMA table_info(player_inventory)"
+                    ).fetchall()
+                }
+                if "obtained_at" not in inventory_columns:
+                    conn.execute(
+                        "ALTER TABLE player_inventory "
+                        "ADD COLUMN obtained_at INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "expires_at" not in inventory_columns:
+                    conn.execute(
+                        "ALTER TABLE player_inventory "
+                        "ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0"
+                    )
                 conn.execute(
-                    "INSERT OR IGNORE INTO meta(key, value) VALUES('player_state_schema_version', '1')"
+                    "INSERT OR REPLACE INTO meta(key, value) "
+                    "VALUES('player_state_schema_version', '2')"
                 )
                 conn.commit()
             finally:
@@ -342,17 +363,20 @@ class PlayerDatabase:
                     int(p.get("location", 0)),
                     max(0, int(p.get("durability", 0))),
                     max(0, int(p.get("durability_max", 0))),
-                    max(0, int(p.get("avail_hours", 0))),
-                    max(0, int(p.get("validity", 0))),
+                    int(p.get("avail_hours", 0)),
+                    int(p.get("validity", 0)),
                     max(0, int(p.get("gain_type", 1))),
+                    max(0, int(p.get("obtained_at", 0) or 0)),
+                    max(0, int(p.get("expires_at", 0) or 0)),
                 )
             )
         conn.executemany(
             """
             INSERT INTO player_inventory(
                 uin, gid, item_id, owner_gid, location, durability,
-                durability_max, avail_hours, validity, gain_type
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                durability_max, avail_hours, validity, gain_type,
+                obtained_at, expires_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -377,7 +401,8 @@ class PlayerDatabase:
             inv = conn.execute(
                 """
                 SELECT gid, item_id, owner_gid, location, durability,
-                       durability_max, avail_hours, validity, gain_type
+                       durability_max, avail_hours, validity, gain_type,
+                       obtained_at, expires_at
                 FROM player_inventory WHERE uin = ? ORDER BY gid
                 """,
                 (uin,),
@@ -400,6 +425,8 @@ class PlayerDatabase:
                         "avail_hours": int(r["avail_hours"]),
                         "validity": int(r["validity"]),
                         "gain_type": int(r["gain_type"]),
+                        "obtained_at": int(r["obtained_at"]),
+                        "expires_at": int(r["expires_at"]),
                     }
                     for r in inv
                 ],
