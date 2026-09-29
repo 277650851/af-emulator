@@ -5953,8 +5953,15 @@ def _r20_map_pve_camp_seat(old_seat, requested_camp, fighter_capacity):
     fighter_capacity = int(fighter_capacity)
     if requested_camp not in (0, 1):
         raise ValueError(f"invalid camp {requested_camp}")
-    if fighter_capacity < 2 or fighter_capacity % 2:
-        raise ValueError(f"invalid fighter_capacity {fighter_capacity}")
+    if (
+        fighter_capacity < 2
+        or fighter_capacity > 16
+        or fighter_capacity % 2
+    ):
+        raise ValueError(
+            f"unsupported With32 fighter_capacity {fighter_capacity}; "
+            "expected an even value from 2 through 16"
+        )
     if old_seat < 0 or old_seat >= R20_UI_SEAT_SLOTS:
         raise ValueError(f"old seat out of 32-seat UI range: {old_seat}")
     row = old_seat % R20_CAMP_SPAN
@@ -5967,10 +5974,20 @@ def _r20_map_pve_camp_seat(old_seat, requested_camp, fighter_capacity):
 
 
 def _r20_sparse_seat_mapping_selftest():
+    # 4-player layout: 0/1 <-> 16/17.
     assert _r20_map_pve_camp_seat(0, 0, 4) == 16
     assert _r20_map_pve_camp_seat(1, 0, 4) == 17
     assert _r20_map_pve_camp_seat(16, 1, 4) == 0
     assert _r20_map_pve_camp_seat(17, 1, 4) == 1
+
+    # 6-player layout: 0/1/2 <-> 16/17/18.
+    assert _r20_map_pve_camp_seat(0, 0, 6) == 16
+    assert _r20_map_pve_camp_seat(2, 0, 6) == 18
+    assert _r20_map_pve_camp_seat(18, 1, 6) == 2
+
+    # 16-player layout: 0..7 <-> 16..23.
+    assert _r20_map_pve_camp_seat(7, 0, 16) == 23
+    assert _r20_map_pve_camp_seat(23, 1, 16) == 7
     return True
 
 
@@ -9735,14 +9752,25 @@ def handle_placeholder(conn, addr, label):
                                                 room.get("fighter_capacity", 0)
                                             )
 
-                                            is_pve_survival = (
-                                                mode_id == 0x00002001
-                                                and fighter_capacity >= 2
+                                            # ChangeCamp is a room/camp operation, not a
+                                            # Survival-only operation. The PH room UI uses
+                                            # the same With32 sparse seat halves for
+                                            # compatible <=16-player rooms.
+                                            #
+                                            # FighterCapacity is the total player-count cap;
+                                            # an N-player room exposes N/2 rows per side.
+                                            # Odd/oversized layouts remain ACK-only until
+                                            # their stock mapping is proven.
+                                            uses_with32_sparse_camps = (
+                                                2 <= fighter_capacity <= 16
                                                 and fighter_capacity % 2 == 0
                                             )
 
-                                            if is_pve_survival and requested_camp in (0, 1):
-                                                # r20: verified stock PH With32 sparse-seat layout.
+                                            if (
+                                                uses_with32_sparse_camps
+                                                and requested_camp in (0, 1)
+                                            ):
+                                                # r20 generalized: mode-agnostic With32 path.
                                                 try:
                                                     new_seat = _r20_map_pve_camp_seat(
                                                         old_seat,
@@ -9838,16 +9866,16 @@ def handle_placeholder(conn, addr, label):
                                                     )
 
                                             else:
-                                                # Unknown/non-PVE camp semantics: ACK only.
-                                                # Do not mutate a valid room until we have a
-                                                # live trace for that mode.
+                                                # Unsupported camp/layout semantics: ACK only.
+                                                # Do not mutate odd-sized, >16-player, or
+                                                # non-0/1 camp layouts without stock evidence.
                                                 log(
                                                     label,
                                                     "C2ZN_REQ_CHANGEMATCHROOMCAMP v94: "
                                                     f"camp=0x{requested_camp:02x} "
                                                     f"mode=0x{mode_id:08x} "
                                                     f"fighters={fighter_capacity}; "
-                                                    "non-Survival/unsupported camp -> ACK only"
+                                                    "unsupported With32 layout/camp -> ACK only"
                                                 )
                                                 rsp = _v88_build_res_change_match_room_camp()
                                                 _v48_send_app(
@@ -9857,7 +9885,7 @@ def handle_placeholder(conn, addr, label):
                                                     label,
                                                     "ZN2C_RES_CHANGEMATCHROOMCAMP v94 "
                                                     "cmd=0xA10E result=0x8100 "
-                                                    "unsupported-camp-no-A10F"
+                                                    "unsupported-layout-or-camp-no-A10F"
                                                 )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_SETMATCHROOMREADY:
@@ -12123,7 +12151,11 @@ print(f"[BOOT] r13 identity projection self-test={'PASS' if _R13_IDENTITY_PROJEC
 print(f"[BOOT] r14 A102 enterability projection self-test={'PASS' if _R14_A102_PROJECTION_SELFTEST else 'FAIL'}")
 print(f"[BOOT] r15 live A103 EnterRoomByRoomId self-test={'PASS' if _R15_A103_ENTER_SELFTEST else 'FAIL'}")
 print(f"[BOOT] r17 A102 FIRST|LAST self-test={'PASS' if _R17_A102_PREFIX_SELFTEST else 'FAIL'} pageflags=0x{R17_A102_PAGEFLAGS_SINGLE:04x}")
-print(f"[BOOT] r20 With32 seat mapping self-test={'PASS' if _R20_SPARSE_SEAT_MAPPING_SELFTEST else 'FAIL'} left=0/1 right=16/17")
+print(
+    f"[BOOT] r20 With32 seat mapping self-test="
+    f"{'PASS' if _R20_SPARSE_SEAT_MAPPING_SELFTEST else 'FAIL'} "
+    "mode-agnostic even-capacity=2..16 left=0..7 right=16..23"
+)
 print(
     "[BOOT] No Late Join: VERIFIED stock PH semantics "
     f"allow-late bit=0x{TGAME_LATE_JOIN_ALLOWED_FLAG:08X}; "
