@@ -86,10 +86,34 @@ The script handles the annoying parts for you:
 - starts the runtime launch helper automatically;
 - launches `TCLS\client.exe` automatically.
 
-After that, the only normal player interaction is:
+### Create a local account the first time you play
+
+When you run the launcher, it starts the development account website on your
+PC and opens the registration page in your browser. Register there the first
+time you use this local server. The usual address is:
 
 ```text
-log in
+http://127.0.0.1:8080/register
+```
+
+If port `8080` is already in use, the server selects another local port and
+prints the exact **Registration** address in its window. `127.0.0.1` means
+`localhost`: this page is reachable only from the same PC running the emulator.
+
+Choose a username with 3–24 letters, numbers, dots, underscores, or hyphens,
+and a password with 8–72 characters. Then use that same username and password
+to log in through the Assault Fire launcher. Register only once for this local
+server database. On later launches, close the registration page and use your
+existing credentials. Keep the emulator server window open while you play.
+
+If the browser did not open automatically, copy the `[WEB] Registration` URL
+from the server window into your browser. The local website is part of the
+development setup; it is not a public registration service.
+
+After your account is registered, the normal player interaction is:
+
+```text
+log in with your registered username and password
 ↓
 wait for the START button
 ↓
@@ -1170,7 +1194,9 @@ The public stable baseline is **v143b**.
 
 Working/integrated areas include VERSION, AUTH, DIR, ROLE, ZONE, existing/local profile login, shared rooms, dynamic room work, PvE dedicated-server allocation/lifecycle, stock-selected PvE map/settings propagation, lazy AFDEV startup, inventory/shop/profile preservation work, and the current local AP synchronization path.
 
-Some features are still incomplete or still being validated, including first-time nickname/account creation and parts of the social/progression systems.
+Local username/password registration is available through the development
+website described above. First-time in-game nickname creation and parts of the
+social/progression systems are still incomplete or being validated.
 
 > [!IMPORTANT]
 > AP initialization currently uses a temporary local-only workaround on PH v1.0.0.24.

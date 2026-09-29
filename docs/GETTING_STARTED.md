@@ -2,7 +2,9 @@
 
 This guide is written for people who just want to get the **stable public v143b emulator** running without knowing the Assault Fire protocol first.
 
-> Current limitation: use an **existing/local test profile path**. The unfinished first-time/new-account creation flow is intentionally not part of the stable public build.
+Local username/password registration is available through the development
+website at `127.0.0.1` (localhost). First-time in-game nickname/profile
+creation is a separate client flow and is still being validated.
 
 ## The short version
 
@@ -15,13 +17,18 @@ You will do the basic backend setup, then verify the client launch handoff:
 4. Verify/patch TCLS raw-PEM APClient.dat compatibility
 5. Redirect the old Assault Fire PH hostnames to 127.0.0.1
 6. Start the v143b server and require preflight PASS / launch gate UNLOCKED (a brief LOCKED state while listeners bind is normal)
-7. Launch client.exe / TCLS and log in until START is available
-8. Choose ONE compatibility path (both are blocked if preflight did not pass):
+7. On first use, register an account at the local page opened by the server; use the same username and password in the Assault Fire launcher
+8. Launch client.exe / TCLS and log in until START is available
+9. Choose ONE compatibility path (both are blocked if preflight did not pass):
    - normal launch: patch_tgame_datetime.py
    - suspended launch: patch_tcls_suspended_launch.py
-9. Click START
-10. Confirm TGame reaches ROLE and ZONE
+10. Click START
+11. Confirm TGame reaches ROLE and ZONE
 ```
+
+The account page normally uses `http://127.0.0.1:8080/register`. If port 8080
+is busy, use the actual `[WEB] Registration` URL printed in the server window.
+It is available only on the same PC running the local emulator.
 
 Before your first test, also read **[Vital Launch Requirements](LAUNCH_REQUIREMENTS.md)**. It explains the TCLS → TGame shared-memory handoff and the build-specific launch patch that is easy to miss.
 
@@ -530,7 +537,9 @@ Start the client using the same local client setup you normally use.
 
 The hosts entries send VERSION/AUTH/DIR traffic to the emulator on your PC.
 
-For the public **v143b** baseline, test an existing/local profile path. Do not use the unfinished new-account/nickname flow as your first test.
+For the public **v143b** baseline, register the account credentials on the
+local website first. For initial client testing, use an existing/local profile
+path; first-game nickname/profile setup remains under validation.
 
 Game AUTH now checks the username and password token against the `accounts`
 table in the same SQLite file used by account registration. Set `AF_ACCOUNT_DB`
@@ -551,7 +560,8 @@ password works for game login.
 | Server list/DIR loads | ✅ |
 | Existing registered profile reaches zone/login path | ✅ baseline target |
 | Basic profile/property state | ✅ baseline target |
-| First-ever account creation | ❌ not supported in public v143b |
+| Local username/password account registration | ✅ through the development website |
+| First-game nickname/profile initialization | ❌ not yet supported as a stable public v143b flow |
 | PvE dedicated-server/gameplay handoff + room-selected map | ✅ integrated on main |
 
 See [STATUS.md](STATUS.md) for the detailed working/partial/broken matrix.

@@ -24,6 +24,7 @@ Experimental or unverified work is excluded from `main` until it is reproducibly
 | DIR/server discovery | ✅ | Local directory response and server endpoint discovery are implemented. |
 | ROLE/ZONE connection foundation | ✅ | The public v143b baseline can bring the existing local profile through the established login path. |
 | Existing local player/profile state | ✅ | v143b has a known local player/profile path and persisted player state. |
+| Local username/password registration | ✅ | The development website creates accounts in the shared SQLite database used by game AUTH; the one-click launcher opens it on loopback. |
 | PlayerInfo / property delivery | ✅ | Stable player information and property/inventory messages used by v143b are implemented. |
 | Shop foundation | ✅ | Stable shop/balance/purchase work from the pre-v95 branch is present. |
 | Clan ID persistence | ✅ | v143b persists clan membership/ClanID and reflects it in PlayerInfo. |
@@ -52,7 +53,7 @@ Experimental or unverified work is excluded from `main` until it is reproducibly
 
 | Area | Status | Why |
 |---|---:|---|
-| First-time account creation | 🔴 | Experimental v95+ work is intentionally excluded because it is not considered stable. |
+| First-game nickname/profile initialization | 🔴 | Website account registration works, but the separate stock-client first-login nickname/profile flow is not yet considered stable. |
 | First-login nickname UI | 🔴 | Not part of v143b and not yet reproducibly verified for the public baseline. |
 | New-account starter inventory/profile lifecycle | 🔴 | Depends on the experimental account-creation work and is intentionally excluded. |
 | Real multi-account login lifecycle | 🟡 | Native AP login now verifies the registered account's password token and uses its SQLite UIN. Full multi-account game-session and inventory isolation still needs end-to-end validation. |

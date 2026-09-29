@@ -97,7 +97,9 @@ See [Issue #4](https://github.com/armangido/af-emulator/issues/4), [Vital Setup 
 
 Use the public **v143b stable baseline**.
 
-Unverified first-login/new-account work is intentionally not part of `main` yet.
+Local username/password registration is available at the development site's
+loopback address. The separate first-game nickname/profile flow is still being
+validated.
 
 See [Project Status](STATUS.md).
 
@@ -216,11 +218,11 @@ You need your own lawfully obtained client files.
 
 ## Can I create a brand-new account in the public build?
 
-Not reliably.
-
-The first-time nickname/new-account flow is experimental and intentionally excluded from the stable public v143b baseline.
-
-Use the existing/local profile path when testing `main`.
+Yes. Register a username and password on the local development website opened
+by the one-click launcher (normally `http://127.0.0.1:8080/register`). That
+account is used for game AUTH. The separate first-game nickname/profile flow
+is still experimental, so use an existing/local profile path when testing the
+stable v143b baseline.
 
 ---
 

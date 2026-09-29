@@ -80,7 +80,7 @@ if (-not (Test-IsAdministrator)) {
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
-$LAUNCHER_REVISION = "2026-09-28-oneclick-v34"
+$LAUNCHER_REVISION = "2026-09-29-oneclick-v35-local-registration"
 $EXPECTED_TGAME_SHA256 = "B4273F2658CA94EEBC559A997FDFCD02D51E77CE75B892250C1DB7FB80C70B51"
 $TCLS_ORIGINAL_SHA256 = "13EAD403452E0F25CF00658369BF4BF5FF34ED1B16027F7833FB27D398386CD1"
 $TCLS_PATCHED_SHA256  = "3FF351E0ADB594D7544E28DB2E966A6D6EB548E9DF70DAAF4DAF58F2EE438D56"
@@ -732,10 +732,13 @@ try{
     Write-Host ""; Write-Host "[READY] First-time setup checks are complete." -ForegroundColor Green; Write-Host "[READY] PvE DS spawning is enabled."; Write-Host "[READY] This launcher and its runtime components are running as Administrator."; Write-Host "[READY] You no longer need to set AF_CLIENT_ROOT / AF_GAME_DIR manually."
     if($SetupOnly){Write-Host ""; Write-Host "-SetupOnly was selected, so the server/client will not be launched."; Read-Host "Press Enter to close"; exit 0}
     Write-Step "Starting the emulator server"; $statusPath=Join-Path $repoRoot "runtime\preflight_status.json"; Remove-Item -LiteralPath $statusPath -Force -ErrorAction SilentlyContinue
-    $serverScript=Join-Path $repoRoot "server\assaultfire_server_v143b.py"; $serverCommand=(". "+(Quote-PS $consoleHelper)+"; "+"Disable-AFConsoleBlockingSelection; "+'$env:AF_CLIENT_ROOT='+(Quote-PS $gameRoot)+"; "+'$env:AF_GAME_DIR='+(Quote-PS $win32)+"; "+'$env:AF_DS_SPAWNER_ENABLED='+(Quote-PS "1")+"; "+'$env:AF_DS_PYTHON='+(Quote-PS $venvPython)+"; "+"Set-Location -LiteralPath "+(Quote-PS $repoRoot)+"; "+"Write-Host '[AF-ADMIN] Emulator server running elevated.' -ForegroundColor Green; "+"& "+(Quote-PS $venvPython)+" "+(Quote-PS $serverScript))
+    $serverScript=Join-Path $repoRoot "server\assaultfire_server_v143b.py"; $serverCommand=(". "+(Quote-PS $consoleHelper)+"; "+"Disable-AFConsoleBlockingSelection; "+'$env:AF_CLIENT_ROOT='+(Quote-PS $gameRoot)+"; "+'$env:AF_GAME_DIR='+(Quote-PS $win32)+"; "+'$env:AF_DS_SPAWNER_ENABLED='+(Quote-PS "1")+"; "+'$env:AF_DS_PYTHON='+(Quote-PS $venvPython)+"; "+'$env:AF_RUNTIME_MODE='+(Quote-PS "development")+"; "+'$env:AF_DEV_WEB='+(Quote-PS "1")+"; "+'$env:AF_WEB_OPEN_BROWSER='+(Quote-PS "1")+"; "+"Set-Location -LiteralPath "+(Quote-PS $repoRoot)+"; "+"Write-Host '[AF-ADMIN] Emulator server running elevated.' -ForegroundColor Green; "+"& "+(Quote-PS $venvPython)+" "+(Quote-PS $serverScript))
     Write-Host "[ADMIN] The emulator server inherits this launcher's Administrator token." -ForegroundColor Green
     try{$serverWindow=Start-Process -FilePath $currentPowerShellExe -WorkingDirectory $repoRoot -PassThru -ArgumentList @("-NoProfile","-NoExit","-ExecutionPolicy","Bypass","-Command",$serverCommand)}catch{throw "Could not start the elevated emulator server: $($_.Exception.Message)"}
     Write-Host "[WAIT] Waiting for server preflight and listener gate..."; $status=Wait-ForLaunchGate $statusPath 45; Write-Host "[OK] Server launch gate is UNLOCKED. Server PID=$($status.server_pid)" -ForegroundColor Green
+    Write-Host "[ACCOUNT] First-time players must register on the local account page before signing in." -ForegroundColor Yellow
+    Write-Host "[ACCOUNT] The page should open automatically. If not, copy the [WEB] Registration URL from the server window (usually http://127.0.0.1:8080/register)."
+    Write-Host "[ACCOUNT] Use the same username and password in the Assault Fire launcher. Register only once for this server database."
     Write-Step "Starting the automatic TGame launch helper"
     $helper = Join-Path $repoRoot "tools\patches\patch_tcls_suspended_launch.py"
     $helperLog = Join-Path $gameRoot "af_tgame_launch_helper.log"
@@ -790,8 +793,9 @@ try{
     Write-Host "The Assault Fire launcher was opened automatically."
     Write-Host ""
     Write-Host "What you do now:" -ForegroundColor Green
-    Write-Host "  1. Log in normally in the Assault Fire launcher."
-    Write-Host "  2. When the START button appears, click START."
+    Write-Host "  1. First time only: register on the local account page opened in your browser."
+    Write-Host "  2. Log in in the Assault Fire launcher with that same username and password."
+    Write-Host "  3. When the START button appears, click START."
     Write-Host ""
     Write-Host "You do NOT need to run the server, patcher, hosts helper, or client.exe manually anymore."
     Write-Host "The TGame datetime patch is permanent and backed up as TGame.exe.bak; launch suspension is temporary."
