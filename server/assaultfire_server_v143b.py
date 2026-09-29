@@ -50,7 +50,7 @@ from assaultfire_logging import build_logger
 from assaultfire_auth import parse_client_dh_plaintext
 from assaultfire_boot import resolve_private_key_path, server_only_requested
 from local_ap_sync import LocalAPSync
-from player_db import PlayerDatabase, PlayerDBError
+from player_db import DEFAULT_DB_PATH as PLAYER_DB_PATH, PlayerDatabase, PlayerDBError
 from development_web import (
     DevelopmentWebError,
     DevelopmentWebProcess,
@@ -369,11 +369,12 @@ def _v143b_init_spawner():
 # r10 already made the DS/bridge process lifecycle multiplayer-safe.  The
 # missing piece was the stock ZONE room layer: each connection still kept its
 # own creator-only room dict, so another client could not see/join it.  r11
-# restores a process-wide ephemeral room registry and live ZONE session map.
-#
-# Account/progression data is deliberately NOT moved here.  Match rooms are
-# ephemeral and disappear when the final room member leaves.
-V150_ROOM_REGISTRY = RoomRegistry()
+# restores a process-wide room registry and live ZONE session map. Room
+# records are SQLite-backed; live sockets and dedicated-server processes remain
+# runtime-only and stale room records are cleared after startup preflight.
+# Account/progression data remains in PlayerDatabase. Match rooms still
+# disappear when their final member leaves.
+V150_ROOM_REGISTRY = RoomRegistry(db_path=PLAYER_DB_PATH)
 
 _V150_ZONE_LOCK = threading.RLock()
 _V150_ZONE_SESSIONS = {}  # uin -> {conn,key,label,role_state,nickname}
@@ -12300,6 +12301,40 @@ if __name__ == "__main__":
         if _development_web is not None:
             _development_web.stop()
         raise SystemExit(4)
+
+    # Connections and DS processes cannot be resumed after a server restart.
+    # Clear their persisted lobby snapshots only after this process has passed
+    # preflight, bound every listener, and passed the launch-gate check.
+    try:
+        stale_room_count = V150_ROOM_REGISTRY.clear_all()
+    except Exception as lobby_db_exc:
+        reason = (
+            "lobby database initialization failed: "
+            f"{type(lobby_db_exc).__name__}: {lobby_db_exc}"
+        )
+        log("ROOM", reason)
+        for _label, _kind, _port, sock in listener_sockets:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        if _development_web is not None:
+            try:
+                _development_web.stop()
+            except Exception:
+                pass
+        if not SERVER_ONLY_MODE:
+            try:
+                _V143V_LOCAL_AP_SYNC.stop()
+            except Exception:
+                pass
+            update_launch_gate_status(ready=False, reason=reason)
+        raise SystemExit(5)
+    log(
+        "ROOM",
+        f"SQLite lobby state ready db={V150_ROOM_REGISTRY.db_path}; "
+        f"cleared stale rooms={stale_room_count}",
+    )
 
     for label, kind, port, sock in listener_sockets:
         target = listen_on_port if kind == "tcp" else listen_on_udp_port

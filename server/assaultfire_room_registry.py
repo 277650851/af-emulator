@@ -1,13 +1,68 @@
-"""Thread-safe ephemeral match-room registry for the stable v143b backend.
+"""SQLite-backed thread-safe match-room registry for the stable v143b backend.
 
-The game protocol keeps room state in memory; account/progression data belongs
-elsewhere. This module intentionally has no network or persistence side effects.
+Room membership and settings are stored in the account database. Network
+connections, online sessions, and dedicated-server processes remain transient.
 """
 from __future__ import annotations
 
+import base64
 import copy
+import functools
+import json
+import os
+import sqlite3
 import threading
 import time
+from pathlib import Path
+
+
+_BYTES_MARKER = "__af_lobby_bytes_v1__"
+
+
+def _json_default(value):
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {_BYTES_MARKER: base64.b64encode(bytes(value)).decode("ascii")}
+    raise TypeError(f"unsupported lobby value: {type(value).__name__}")
+
+
+def _json_object_hook(value):
+    if set(value) == {_BYTES_MARKER}:
+        try:
+            return base64.b64decode(value[_BYTES_MARKER], validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("invalid byte value in persisted lobby state") from exc
+    return value
+
+
+def _database_operation(*, write=False):
+    """Reload under a SQLite transaction so separate instances share state."""
+    def decorate(method):
+        @functools.wraps(method)
+        def wrapped(self, *args, **kwargs):
+            with self._lock:
+                connection = self._connection
+                connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+                try:
+                    self._load_state_locked()
+                    previous_rooms = copy.deepcopy(self._rooms) if write else None
+                    result = method(self, *args, **kwargs)
+                    if write:
+                        self._save_state_locked(previous_rooms)
+                    connection.commit()
+                    return result
+                except BaseException:
+                    if connection.in_transaction:
+                        connection.rollback()
+                    self._rooms = {}
+                    self._player_room = {}
+                    try:
+                        self._load_state_locked()
+                    except Exception:
+                        self._rooms = {}
+                        self._player_room = {}
+                    raise
+        return wrapped
+    return decorate
 
 PLAYER_STATE_UNREADY = 8
 PLAYER_STATE_READY = 9
@@ -19,10 +74,122 @@ class RoomRegistryError(ValueError):
 
 
 class RoomRegistry:
-    def __init__(self):
+    def __init__(self, db_path: str | os.PathLike[str] | None = None):
         self._lock = threading.RLock()
         self._rooms: dict[int, dict] = {}
         self._player_room: dict[int, int] = {}
+        self.db_path = str(db_path) if db_path is not None else ":memory:"
+        if self.db_path != ":memory:" and not self.db_path.startswith("file:"):
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(
+            self.db_path,
+            timeout=5.0,
+            check_same_thread=False,
+            uri=self.db_path.startswith("file:"),
+        )
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA foreign_keys = ON")
+        self._connection.execute("PRAGMA busy_timeout = 5000")
+        if self.db_path != ":memory:":
+            self._connection.execute("PRAGMA journal_mode = WAL")
+        self._init_schema()
+
+    def _init_schema(self):
+        self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS af_lobby_rooms (
+                room_id INTEGER PRIMARY KEY,
+                room_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS af_lobby_members (
+                room_id INTEGER NOT NULL
+                    REFERENCES af_lobby_rooms(room_id) ON DELETE CASCADE,
+                uin INTEGER NOT NULL UNIQUE,
+                seat_index INTEGER NOT NULL,
+                member_json TEXT NOT NULL,
+                PRIMARY KEY (room_id, uin),
+                UNIQUE (room_id, seat_index)
+            );
+            """
+        )
+        self._connection.commit()
+
+    def _load_state_locked(self):
+        self._rooms = {}
+        self._player_room = {}
+        for row in self._connection.execute(
+            "SELECT room_id, room_json FROM af_lobby_rooms ORDER BY room_id"
+        ):
+            room_id = int(row["room_id"])
+            room = json.loads(row["room_json"], object_hook=_json_object_hook)
+            room["room_id"] = room_id
+            room["members"] = {}
+            self._rooms[room_id] = room
+
+        for row in self._connection.execute(
+            """SELECT room_id, uin, seat_index, member_json
+               FROM af_lobby_members ORDER BY room_id, uin"""
+        ):
+            room_id, uin = int(row["room_id"]), int(row["uin"])
+            room = self._rooms.get(room_id)
+            if room is None:
+                raise RoomRegistryError(f"lobby-member-room-missing:{room_id}")
+            member = json.loads(row["member_json"], object_hook=_json_object_hook)
+            if int(member.get("seat_index", -1)) != int(row["seat_index"]):
+                raise RoomRegistryError(f"lobby-member-seat-mismatch:{room_id}:{uin}")
+            room["members"][uin] = member
+            self._player_room[uin] = room_id
+
+    def _save_state_locked(self, previous_rooms):
+        connection = self._connection
+        for room_id in previous_rooms.keys() - self._rooms.keys():
+            connection.execute(
+                "DELETE FROM af_lobby_rooms WHERE room_id = ?",
+                (int(room_id),),
+            )
+        for room_id, room in self._rooms.items():
+            if previous_rooms.get(room_id) == room:
+                continue
+            room_data = {key: value for key, value in room.items() if key != "members"}
+            room_json = json.dumps(
+                room_data,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=_json_default,
+            )
+            connection.execute(
+                """INSERT INTO af_lobby_rooms(room_id, room_json) VALUES(?, ?)
+                   ON CONFLICT(room_id) DO UPDATE SET room_json=excluded.room_json""",
+                (int(room_id), room_json),
+            )
+            connection.execute(
+                "DELETE FROM af_lobby_members WHERE room_id = ?",
+                (int(room_id),),
+            )
+            for uin, member in room.get("members", {}).items():
+                member_json = json.dumps(
+                    member,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=_json_default,
+                )
+                connection.execute(
+                    """INSERT INTO af_lobby_members(
+                           room_id, uin, seat_index, member_json
+                       ) VALUES(?, ?, ?, ?)""",
+                    (
+                        int(room_id),
+                        int(uin),
+                        int(member["seat_index"]),
+                        member_json,
+                    ),
+                )
+
+    def close(self):
+        """Close this registry's SQLite connection."""
+        with self._lock:
+            self._connection.close()
 
     @staticmethod
     def _member(uin: int, nickname: str, seat_index: int, *, owner=False, observer=False) -> dict:
@@ -89,15 +256,18 @@ class RoomRegistry:
                 return seat
         return None
 
+    @_database_operation()
     def get_room(self, room_id: int) -> dict | None:
         with self._lock:
             return self._snapshot(self._rooms.get(int(room_id)))
 
+    @_database_operation()
     def room_for_player(self, uin: int) -> dict | None:
         with self._lock:
             room_id = self._player_room.get(int(uin))
             return self._snapshot(self._rooms.get(room_id)) if room_id is not None else None
 
+    @_database_operation()
     def require_owner(self, room_id: int, uin: int) -> dict:
         room_id, uin = int(room_id), int(uin)
         with self._lock:
@@ -112,6 +282,7 @@ class RoomRegistry:
                 )
             return self._snapshot(room)
 
+    @_database_operation()
     def list_rooms(self, include_started: bool = False) -> list[dict]:
         with self._lock:
             rooms = [
@@ -122,6 +293,7 @@ class RoomRegistry:
         rooms.sort(key=lambda r: (int(r.get("display_id", 0)), int(r["room_id"])))
         return rooms
 
+    @_database_operation(write=True)
     def create_room(self, room_data: dict, *, owner_uin: int, owner_name: str) -> dict:
         owner_uin = int(owner_uin)
         room_id = int(room_data["room_id"])
@@ -149,6 +321,7 @@ class RoomRegistry:
             self._player_room[owner_uin] = room_id
             return self._snapshot(room)
 
+    @_database_operation(write=True)
     def join_room(self, *, uin: int, nickname: str, room_id: int, password="", observer=False):
         uin, room_id = int(uin), int(room_id)
         observer = bool(observer)
@@ -181,6 +354,7 @@ class RoomRegistry:
             self._player_room[uin] = room_id
             return self._snapshot(room), copy.deepcopy(member), existing
 
+    @_database_operation(write=True)
     def rollback_join(self, uin: int, room_id: int) -> bool:
         """Undo only a newly inserted non-owner join after downstream failure."""
         uin, room_id = int(uin), int(room_id)
@@ -200,6 +374,7 @@ class RoomRegistry:
             self._player_room.pop(uin, None)
             return True
 
+    @_database_operation(write=True)
     def leave_room(self, uin: int) -> dict | None:
         uin = int(uin)
         with self._lock:
@@ -239,6 +414,7 @@ class RoomRegistry:
                 "room": snapshot,
             }
 
+    @_database_operation(write=True)
     def set_ready(self, uin: int, ready: bool) -> dict:
         uin = int(uin)
         with self._lock:
@@ -251,6 +427,7 @@ class RoomRegistry:
             member["state"] = PLAYER_STATE_READY if ready else PLAYER_STATE_UNREADY
             return self._snapshot(room)
 
+    @_database_operation(write=True)
     def set_player_state(self, uin: int, state: int, *, ready=None) -> dict:
         """Set one member's authoritative MatchRoomPlayerInfo.State."""
         uin = int(uin)
@@ -265,6 +442,7 @@ class RoomRegistry:
                 member["ready"] = bool(ready)
             return self._snapshot(room)
 
+    @_database_operation(write=True)
     def reset_round_state(self, room_id: int) -> dict:
         """Return a surviving logical room to the stock pre-round state.
 
@@ -283,6 +461,7 @@ class RoomRegistry:
                 member["state"] = PLAYER_STATE_UNREADY
             return self._snapshot(room)
 
+    @_database_operation(write=True)
     def move_member(self, uin: int, new_seat: int, camp: int):
         uin, new_seat = int(uin), int(new_seat)
         with self._lock:
@@ -307,6 +486,7 @@ class RoomRegistry:
             member["camp"] = int(camp) & 0xFF
             return self._snapshot(room), copy.deepcopy(member), old_seat
 
+    @_database_operation(write=True)
     def set_started(self, room_id: int, started: bool) -> dict:
         with self._lock:
             room = self._rooms.get(int(room_id))
@@ -315,6 +495,7 @@ class RoomRegistry:
             room["started"] = bool(started)
             return self._snapshot(room)
 
+    @_database_operation(write=True)
     def update_settings(
         self,
         room_id: int,
@@ -355,3 +536,24 @@ class RoomRegistry:
             if no_late_join is not None:
                 room["no_late_join"] = bool(no_late_join)
             return self._snapshot(room)
+
+    def clear_all(self) -> int:
+        """Remove persisted live rooms before a fresh server session starts."""
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                room_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) AS count FROM af_lobby_rooms"
+                    ).fetchone()["count"]
+                )
+                connection.execute("DELETE FROM af_lobby_rooms")
+                connection.commit()
+                self._rooms.clear()
+                self._player_room.clear()
+                return room_count
+            except BaseException:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise

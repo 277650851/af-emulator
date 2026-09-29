@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import threading
 import tempfile
 import unittest
 
@@ -131,6 +132,142 @@ class RoomRegistryConsistencyTests(unittest.TestCase):
         self.assertIsNotNone(registry.room_for_player(10000))
         self.assertIsNotNone(registry.room_for_player(20000))
 
+    def test_database_backing_is_shared_across_registry_instances(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "accounts.sqlite3"
+            first = RoomRegistry(db_path=db_path)
+            created = self.make_room(first)
+            first.join_room(
+                uin=20000,
+                nickname="P20000",
+                room_id=1,
+                password="",
+                observer=False,
+            )
+            first.join_room(
+                uin=30000,
+                nickname="P30000",
+                room_id=1,
+                password="",
+                observer=False,
+            )
+            self.assertTrue(first.rollback_join(30000, 1))
+            first.update_settings(
+                1,
+                match_settings_wire=b"updated-settings",
+                mode_id=0x2001,
+                map_id=0x2F,
+                map_string="test-map",
+                sub_mode_id=0x1003,
+                flags=0x3008,
+            )
+            first.move_member(20000, 2, 1)
+            first.set_player_state(20000, 12, ready=False)
+            first.set_started(1, True)
+
+            second = RoomRegistry(db_path=db_path)
+            loaded = second.get_room(1)
+            self.assertEqual(loaded["room_id"], created["room_id"])
+            self.assertEqual(loaded["match_settings_wire"], b"updated-settings")
+            self.assertEqual(loaded["sub_mode_id"], 0x1003)
+            self.assertTrue(loaded["started"])
+            self.assertEqual(
+                [member["uin"] for member in loaded["members"]],
+                [10000, 20000],
+            )
+            joined = next(
+                member for member in loaded["members"] if member["uin"] == 20000
+            )
+            self.assertEqual(
+                (joined["seat_index"], joined["camp"], joined["state"]),
+                (2, 1, 12),
+            )
+
+            reset = second.reset_round_state(1)
+            self.assertFalse(reset["started"])
+            self.assertTrue(all(not member["ready"] for member in reset["members"]))
+            second.set_ready(20000, True)
+            refreshed = first.room_for_player(10000)
+            ready = next(
+                member for member in refreshed["members"] if member["uin"] == 20000
+            )
+            self.assertTrue(ready["ready"])
+            left = second.leave_room(10000)
+            self.assertEqual(left["new_owner_uin"], 20000)
+            self.assertEqual(first.get_room(1)["owner_uin"], 20000)
+            second.leave_room(20000)
+            self.assertIsNone(first.get_room(1))
+            first.close()
+            second.close()
+
+    def test_startup_can_clear_stale_persisted_live_rooms(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "accounts.sqlite3"
+            first = RoomRegistry(db_path=db_path)
+            self.make_room(first)
+            first.set_ready(10000, True)
+            first.set_started(1, True)
+
+            restarted = RoomRegistry(db_path=db_path)
+            self.assertEqual(restarted.clear_all(), 1)
+
+            self.assertEqual(restarted.list_rooms(include_started=True), [])
+            after_clear = RoomRegistry(db_path=db_path)
+            self.assertEqual(after_clear.list_rooms(include_started=True), [])
+            first.close()
+            restarted.close()
+            after_clear.close()
+
+    def test_database_transactions_prevent_one_player_joining_two_rooms(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "accounts.sqlite3"
+            first = RoomRegistry(db_path=db_path)
+            second = RoomRegistry(db_path=db_path)
+            self.make_room(first, owner=10000)
+            second.create_room(
+                {
+                    "room_id": 2,
+                    "display_id": 2,
+                    "match_settings_wire": b"",
+                    "fighter_capacity": 4,
+                },
+                owner_uin=20000,
+                owner_name="P20000",
+            )
+            barrier = threading.Barrier(2)
+            outcomes = []
+
+            def join(registry, room_id):
+                barrier.wait()
+                try:
+                    registry.join_room(
+                        uin=30000,
+                        nickname="P30000",
+                        room_id=room_id,
+                    )
+                except RoomRegistryError as exc:
+                    outcomes.append(str(exc))
+                else:
+                    outcomes.append("joined")
+
+            threads = (
+                threading.Thread(target=join, args=(first, 1)),
+                threading.Thread(target=join, args=(second, 2)),
+            )
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(outcomes.count("joined"), 1)
+            self.assertEqual(
+                sum(value.startswith("player-already-in-room:") for value in outcomes),
+                1,
+            )
+            first.close()
+            second.close()
+
     def test_spawner_can_begin_new_round_without_relobby(self):
         with tempfile.TemporaryDirectory() as td:
             cfg = SpawnerConfig(
@@ -185,6 +322,20 @@ class RoomRegistryConsistencyTests(unittest.TestCase):
 
 
 class ServerStaticSafetyTests(unittest.TestCase):
+    def test_server_uses_sqlite_lobby_state_and_clears_it_after_bind(self):
+        server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        self.assertIn(
+            "V150_ROOM_REGISTRY = RoomRegistry(db_path=PLAYER_DB_PATH)",
+            server,
+        )
+        bind = server.index("listener_sockets = _prepare_listener_sockets()")
+        clear = server.index("stale_room_count = V150_ROOM_REGISTRY.clear_all()")
+        start = server.index("for label, kind, port, sock in listener_sockets:", clear)
+        self.assertLess(bind, clear)
+        self.assertLess(clear, start)
+
     def test_auth_hex_is_debug_only(self):
         server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
             encoding="utf-8", errors="replace"

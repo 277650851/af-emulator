@@ -10,7 +10,8 @@ Persistent:
   * inventory / equipment
 
 Not persistent here:
-  * rooms, online sessions, ready state, match membership, DS processes
+  * match rooms are owned by RoomRegistry (stored in this SQLite file)
+  * live network sessions and dedicated-server processes
 """
 
 from __future__ import annotations
