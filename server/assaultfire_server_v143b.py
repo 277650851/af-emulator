@@ -5975,7 +5975,7 @@ def _v74_build_main_channel_list_response():
     """
     main_info = (
         _v48_u16(1)
-        + _v48_u16(1)  # MainChnl_Rookie; matches our level-1 local profile
+        + _v48_u16(0)  # Do not advertise MainChnl_Rookie(1); avoids the client 0-14 rookie-level gate
         + _v50_geo_tdr_string("Local Channel", 32)
         + _v48_u32(100)
         + _v48_u32(1)
@@ -11410,7 +11410,7 @@ def handle_placeholder(conn, addr, label):
                                                 label,
                                                 "ZN2C_RES_MAINCHNLLIST v74 "
                                                 "cmd=0xA356 result=0x8100 "
-                                                "count=1 id=1 type=Rookie(1) "
+                                                "count=1 id=1 type=0 (non-Rookie) "
                                                 "name='Local Channel' "
                                                 "players=1/100 dsa=127.0.0.1x3 wire=0100007f"
                                             )
