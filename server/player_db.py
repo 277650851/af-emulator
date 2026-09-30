@@ -5,7 +5,7 @@ supplementary game tables without changing password/authentication semantics.
 
 Persistent:
   * AP login -> stable UIN mapping for the current local AP path
-  * nickname/profile selection state
+  * nickname, experience, and profile selection state
   * AP/GP/MP wallet
   * inventory / equipment
 
@@ -46,6 +46,16 @@ def _i64(value: Any) -> int:
     value = int(value)
     if value < 0 or value > 0x7FFFFFFFFFFFFFFF:
         raise PlayerDBError(f"value outside SQLite signed 64-bit range: {value}")
+    return value
+
+
+def _experience_value(value: Any) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError) as exc:
+        raise PlayerDBError("experience must be an integer") from exc
+    if value < 0 or value > 0x7FFFFFFF:
+        raise PlayerDBError("experience must be between 0 and 2147483647")
     return value
 
 
@@ -94,6 +104,7 @@ class PlayerDatabase:
                     CREATE TABLE IF NOT EXISTS player_profiles (
                         uin INTEGER PRIMARY KEY CHECK (uin >= 10001),
                         nickname TEXT,
+                        experience INTEGER NOT NULL DEFAULT 0 CHECK (experience >= 0),
                         current_role_gid INTEGER NOT NULL,
                         current_bag_gid INTEGER NOT NULL,
                         next_gid INTEGER NOT NULL,
@@ -151,9 +162,21 @@ class PlayerDatabase:
                         "ALTER TABLE player_inventory "
                         "ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0"
                     )
+                profile_columns = {
+                    str(row["name"]).casefold()
+                    for row in conn.execute(
+                        "PRAGMA table_info(player_profiles)"
+                    ).fetchall()
+                }
+                if "experience" not in profile_columns:
+                    conn.execute(
+                        "ALTER TABLE player_profiles "
+                        "ADD COLUMN experience INTEGER NOT NULL DEFAULT 0 "
+                        "CHECK (experience >= 0)"
+                    )
                 conn.execute(
                     "INSERT OR REPLACE INTO meta(key, value) "
-                    "VALUES('player_state_schema_version', '2')"
+                    "VALUES('player_state_schema_version', '3')"
                 )
                 conn.commit()
             finally:
@@ -254,6 +277,7 @@ class PlayerDatabase:
             next_gid = max_gid + 1
         return {
             "version": 1,
+            "experience": _experience_value(state.get("experience", 0)),
             "wallet": {
                 "ap": max(0, int(wallet.get("ap", 0))),
                 "gp": max(0, int(wallet.get("gp", 0))),
@@ -306,13 +330,14 @@ class PlayerDatabase:
             conn.execute(
                 """
                 INSERT INTO player_profiles(
-                    uin, nickname, current_role_gid, current_bag_gid, next_gid,
-                    created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    uin, nickname, experience, current_role_gid, current_bag_gid,
+                    next_gid, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     uin,
                     nickname,
+                    normalized["experience"],
                     normalized["current_role_gid"],
                     normalized["current_bag_gid"],
                     normalized["next_gid"],
@@ -387,7 +412,8 @@ class PlayerDatabase:
         try:
             p = conn.execute(
                 """
-                SELECT nickname, current_role_gid, current_bag_gid, next_gid
+                SELECT nickname, Experience AS experience, current_role_gid,
+                       current_bag_gid, next_gid
                 FROM player_profiles WHERE uin = ?
                 """,
                 (uin,),
@@ -410,6 +436,7 @@ class PlayerDatabase:
             return {
                 "version": 1,
                 "nickname": p["nickname"],
+                "experience": _experience_value(p["experience"]),
                 "wallet": {"ap": int(w["ap"]), "gp": int(w["gp"]), "mp": int(w["mp"])},
                 "current_role_gid": int(p["current_role_gid"]),
                 "current_bag_gid": int(p["current_bag_gid"]),
@@ -450,10 +477,11 @@ class PlayerDatabase:
             conn.execute(
                 """
                 INSERT INTO player_profiles(
-                    uin, nickname, current_role_gid, current_bag_gid, next_gid,
-                    created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    uin, nickname, experience, current_role_gid, current_bag_gid,
+                    next_gid, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uin) DO UPDATE SET
+                    experience=excluded.experience,
                     current_role_gid=excluded.current_role_gid,
                     current_bag_gid=excluded.current_bag_gid,
                     next_gid=excluded.next_gid,
@@ -462,6 +490,7 @@ class PlayerDatabase:
                 (
                     uin,
                     nickname,
+                    normalized["experience"],
                     normalized["current_role_gid"],
                     normalized["current_bag_gid"],
                     normalized["next_gid"],

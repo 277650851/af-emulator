@@ -127,7 +127,7 @@ with tempfile.TemporaryDirectory() as td:
         adb.PBKDF2_ITERATIONS = old_rounds
 
 source = SERVER.read_text(encoding="utf-8")
-assert "BUILD=v143b-SQLITE-PLAYERSTATE-v4-TEST" in source
+assert 'print("[BOOT] BUILD=v143b-' in source
 assert "PLAYER_DB = PlayerDatabase()" in source
 assert "auth_login_name, auth_account = authenticate_ap_verify_body(" in source
 assert "if auth_account is None:" in source

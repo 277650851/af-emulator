@@ -4208,6 +4208,7 @@ def _v140_default_state():
     max_gid = max((int(p["gid"]) for p in inv), default=((V109_UIN & 0xffffffff) << 32))
     return {
         "version": 1,
+        "experience": 0,
         "wallet": {
             "ap": V140_DEFAULT_AP,
             "gp": V140_DEFAULT_GP,
@@ -4255,6 +4256,12 @@ def _v140_load_legacy_state():
             "gp": max(0, int(wallet.get("gp", V140_DEFAULT_GP))),
             "mp": max(0, int(wallet.get("mp", V140_DEFAULT_MP))),
         }
+        try:
+            state["experience"] = max(
+                0, min(int(raw.get("experience", 0)), 0x7FFFFFFF)
+            )
+        except (TypeError, ValueError):
+            state["experience"] = 0
 
         role_gid = int(raw.get("current_role_gid", V109_ROLE_GID)) & 0xFFFFFFFFFFFFFFFF
         if not any(int(p["gid"]) == role_gid for p in state["inventory"]):
@@ -5296,6 +5303,11 @@ def _v140_build_buy_response(
 
 def _v140_build_update_player_property(update_flag, reason):
     wallet = _v140_wallet()
+    experience = (
+        int(V140_MALL_STATE.get("experience", 0))
+        if int(update_flag) & UPDATE_FLAG_EXP
+        else 0
+    )
     body = (
         _v48_u16(update_flag)
         + _v48_u32(reason)
@@ -5303,7 +5315,7 @@ def _v140_build_update_player_property(update_flag, reason):
         + _v48_i32(0)                 # HappyPoint
         + _v48_i32(int(wallet["gp"]))
         + _v48_i32(int(wallet["mp"]))
-        + _v48_i32(0)                 # Experience delta/snapshot not used here
+        + _v48_i32(experience)        # Persisted total; client derives displayed level
         + _v48_i32(0)                 # EvolutionPoint
         + _v48_i32(0)                 # CardPoint
         + _v48_u16(0)                 # UpdateProp count
@@ -5332,6 +5344,17 @@ def _v140_send_wallet_sync(conn, key, label, reason=UPDATE_REASON_BUY, prefix="m
             f"GP={_v140_wallet()['gp']} MP={_v140_wallet()['mp']} "
             f"reason=0x{why:02x}",
         )
+
+
+def _v140_send_experience_sync(conn, key, label, reason=0):
+    """Send stored EXP so the client can derive and display the player's level."""
+    experience = int(V140_MALL_STATE.get("experience", 0))
+    pkt = _v140_build_update_player_property(UPDATE_FLAG_EXP, reason)
+    _v48_send_app(
+        conn, key, pkt, label,
+        f"ZN2C_NTF_UPDATEPLAYERPROPERTY v140 login flag=EXP "
+        f"experience={experience} reason=0x{int(reason):08x}",
+    )
 
 
 def _v140_send_full_inventory(
@@ -5725,6 +5748,7 @@ def _v48_player_info(uin=10001, nickname="LocalPlayer", cur_role_gid=None):
     if cur_role_gid is None:
         cur_role_gid = _v140_current_role_gid()
     wallet = _v140_wallet()
+    experience = int(V140_MALL_STATE.get("experience", 0))
     return (
         _v48_u64(uin)
         + _v48_u32(0)
@@ -5732,7 +5756,7 @@ def _v48_player_info(uin=10001, nickname="LocalPlayer", cur_role_gid=None):
         + _v48_i32(int(wallet["ap"])) + _v48_i32(int(wallet["gp"]))
         + _v48_i32(int(wallet["mp"])) + _v48_i32(0)
         + _v48_u32(0) + _v48_u16(0)
-        + _v48_i32(0)
+        + _v48_i32(experience)  # Persisted cumulative Experience
         + _v48_dt_zero() + _v48_dt_zero()
         + _v48_u64(cur_role_gid)  # CurRoleGID (v109 real role prop)
         + _v48_u64(0)             # RoleType
@@ -8567,6 +8591,9 @@ def handle_placeholder(conn, addr, label):
                                                 f"hints=0x{seq_hints:08x}"
                                             )
                                             uin_now = _v150_role_uin(role_state)
+                                            # Refresh cached profile values so persistent EXP
+                                            # updates made before this login reach the client.
+                                            _V140_PLAYER_STATE.reload(uin_now)
                                             persisted_nickname = PLAYER_DB.load_nickname(
                                                 uin_now
                                             )
@@ -8684,6 +8711,7 @@ def handle_placeholder(conn, addr, label):
                                                     conn, active_tgame_key, pinfo,
                                                     label,
                                                     "ZN2C_NTF_PLAYERINFO v121-pre-props "
+                                                    f"experience={int(V140_MALL_STATE.get('experience', 0))} "
                                                     "CurRoleGID=0 natural-selfheal-arm"
                                                 )
 
@@ -8743,6 +8771,7 @@ def handle_placeholder(conn, addr, label):
                                                     pinfo_after_props,
                                                     label,
                                                     "ZN2C_NTF_PLAYERINFO v121-after-props "
+                                                    f"experience={int(V140_MALL_STATE.get('experience', 0))} "
                                                     + (
                                                         "CurRoleGID=0 FIRST-NICKNAME-v13-no-role "
                                                         if first_nickname_profile
@@ -8757,6 +8786,11 @@ def handle_placeholder(conn, addr, label):
                                                     label,
                                                     reason=UPDATE_REASON_TP_BALANCE,
                                                     prefix="login",
+                                                )
+                                                _v140_send_experience_sync(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    label,
                                                 )
 
                                                 hints = _v48_build_zonehints(
@@ -9180,6 +9214,7 @@ def handle_placeholder(conn, addr, label):
                                                     pinfo_role_committed, label,
                                                     "ZN2C_NTF_PLAYERINFO v140-post-role-A00A "
                                                     f"CurRoleGID=0x{_v140_current_role_gid():016x} "
+                                                    f"experience={int(V140_MALL_STATE.get('experience', 0))} "
                                                     "reason=role-equip-transaction-complete",
                                                 )
                                                 # v143 probe: v145 proved that after a character
@@ -12749,7 +12784,7 @@ def listen_on_port(port, label, sock=None):
 # Startup
 # ---------------------------------------------------------------------------
 
-print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 (NO COMMIT)")
+print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156+SQLITE-EXP-A005 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 (NO COMMIT)")
 print(
     "[BOOT] First-login nickname v26g: VERIFIED same-session A003 -> "
     "defer A006 -> A146/A147 -> A005 -> A006; "
