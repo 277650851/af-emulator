@@ -4461,17 +4461,56 @@ def _v140_role_slot(item_id):
 # TGAvatarChar_Data.GetCharInfo derives one scalar DefaultBagIndex by testing
 # every bag with IsEquipedToRoot(OwnerPropId). Therefore exactly ONE normal
 # backpack may be mounted to root (literal owner 1) at a time.
-V141_BAG_GIDS = (V109_BAG1_GID, V109_BAG2_GID)
+# Bag 1 and Bag 2 are starter/entitlement props. Discover purchasable bags from
+# the Mall catalog so Bags 3–5 and future catalog entries use the same rules.
+V141_STARTER_BAG_ITEM_IDS = frozenset((
+    V109_BAG1_ITEM_ID,
+    V109_BAG2_ITEM_ID,
+))
+
+
+def _v141_catalog_bag_item_ids():
+    bag_item_ids = set()
+    for commodity_id, bundle_item_ids in V140_COMMODITY_BUNDLES.items():
+        commodity_name = str(
+            V140_COMMODITY_NAMES.get(int(commodity_id), "")
+        ).casefold()
+        if not re.search(r"\b(?:backpack|bag)\b", commodity_name):
+            continue
+
+        bundle_item_ids = [int(item_id) for item_id in bundle_item_ids]
+        # Prefer bundle items whose catalog default location is the Bag root.
+        # If a future backpack entry omits that metadata, its first bundled
+        # item is the purchased root, matching this catalog's bundle ordering.
+        root_items = [
+            item_id for item_id in bundle_item_ids
+            if int(V140_ITEM_DEFAULT_LOCATIONS.get(item_id, -1))
+            == V109_LOC_BAG
+        ]
+        if not root_items and bundle_item_ids:
+            root_items = [bundle_item_ids[0]]
+        bag_item_ids.update(root_items)
+
+    return frozenset(bag_item_ids)
+
+
+V141_BAG_ITEM_IDS = (
+    V141_STARTER_BAG_ITEM_IDS | _v141_catalog_bag_item_ids()
+)
+
+
+def _v141_is_bag_item(item_id):
+    return int(item_id) in V141_BAG_ITEM_IDS
+
+
+def _v141_bag_gids():
+    return {int(prop["gid"]) for prop in _v141_bag_props()}
 
 
 def _v141_bag_props():
     return [
         p for p in V111_INVENTORY
-        if (
-            int(p.get("gid", 0)) in V141_BAG_GIDS
-            or int(p.get("item_id", 0))
-               in (V109_BAG1_ITEM_ID, V109_BAG2_ITEM_ID)
-        )
+        if _v141_is_bag_item(p.get("item_id", 0))
     ]
 
 
@@ -5298,6 +5337,28 @@ def _v140_send_wallet_sync(conn, key, label, reason=UPDATE_REASON_BUY, prefix="m
 def _v140_send_full_inventory(
     conn, key, label, prefix="mall", session_uin=V109_UIN
 ):
+    # Normalize every A006 snapshot. Old inventory rows can have Bag 1 and a
+    # purchased backpack both mounted as owner=1, which makes the client infer
+    # the wrong DefaultBagIndex when Storage is reopened.
+    selected_bag_gid, bag_changes = _v141_set_current_bag(
+        V140_MALL_STATE.get("current_bag_gid"),
+        reason=f"{prefix}-inventory-publish",
+    )
+    if bag_changes:
+        _v140_save_state(f"{prefix}-bag-invariant")
+    mounted_bag_gids = [
+        int(prop["gid"]) for prop in _v141_bag_props()
+        if int(prop.get("owner_gid", 0)) == V110_BAG_MOUNT_OWNER
+    ]
+    log(
+        "MALL-BAG",
+        f"v156 A006 inventory publish uin={session_uin} prefix={prefix} "
+        f"selected=0x{selected_bag_gid:016x} "
+        f"owned_bags={len(_v141_bag_props())} "
+        f"mounted={[f'0x{gid:016x}' for gid in mounted_bag_gids]} "
+        f"changes={len(bag_changes)}",
+    )
+
     rows = list(V111_INVENTORY)
     chunks = [rows[i:i+5] for i in range(0, len(rows), 5)] or [[]]
 
@@ -5410,7 +5471,7 @@ def _v143b_resolve_null_subject_unequip(op):
     target_bag = int(op.get("target_gid", 0))
     req_loc = int(op.get("location", V109_LOC_BAG))
 
-    if target_bag not in (V109_BAG1_GID, V109_BAG2_GID):
+    if target_bag not in _v141_bag_gids():
         return None
 
     # Exact live retail quirk: melee Remove can arrive as loc=0 even though
@@ -5494,8 +5555,10 @@ def _v111_apply_prop_operation(op):
         return "subject GID not in starter inventory (ACK only)", eff
 
     if op["operation"] == PROP_OP_DROP:
-        # Keep the three structural starter props; allow ordinary items.
-        if gid in (V109_ROLE_GID, V109_BAG1_GID, V109_BAG2_GID):
+        # Keep the role and every catalog-recognized backpack root.
+        if gid == V109_ROLE_GID or _v141_is_bag_item(
+            subject.get("item_id", 0)
+        ):
             return "drop ignored for structural starter prop", eff
         V111_INVENTORY[:] = [
             p for p in V111_INVENTORY if int(p["gid"]) != gid
@@ -5571,9 +5634,9 @@ def _v111_apply_prop_operation(op):
     # Client's live bag-selection packet is:
     #   BagGID -> target literal 1, Location=Bag.
     #
-    # v141: selecting Bag1/Bag2 is exclusive. Mount the selected bag to root
-    # and unmount the other one so GetCharInfo has exactly one DefaultBagIndex.
-    if item_id in (V109_BAG1_ITEM_ID, V109_BAG2_ITEM_ID):
+    # v141: selecting any owned backpack is exclusive. Mount it to root and
+    # unmount all other owned bags so GetCharInfo has one DefaultBagIndex.
+    if _v141_is_bag_item(item_id):
         selected_gid, bag_changes = _v141_set_current_bag(
             int(subject["gid"]),
             reason="A008-bag-select",
@@ -5585,7 +5648,7 @@ def _v111_apply_prop_operation(op):
             f"exclusive changes={len(bag_changes)}"
         )
     else:
-        valid_bags = {V109_BAG1_GID, V109_BAG2_GID}
+        valid_bags = _v141_bag_gids()
         if requested_owner in valid_bags:
             owner_gid = requested_owner
             owner_source = "client-bag"
@@ -9042,7 +9105,7 @@ def handle_placeholder(conn, addr, label):
 
                                             # v142: v144 live-memory tracing proved that A009+A00A
                                             # alone does NOT update TGOnlinePlayerData.CurrentBagPropId
-                                            # for an explicit Bag1/Bag2 selection.  Keep v117's
+                                            # for an explicit bag selection. Keep v117's
                                             # suppression for roles/weapons, but for a BAG selection
                                             # publish the authoritative inventory immediately after
                                             # A009+A00A so the stock client can rebuild CurrentBag.
@@ -9060,10 +9123,7 @@ def handle_placeholder(conn, addr, label):
                                             )
                                             if (
                                                 int(op.get("operation", -1)) == PROP_OP_EQUIP
-                                                and _v142_item_id in (
-                                                    V109_BAG1_ITEM_ID,
-                                                    V109_BAG2_ITEM_ID,
-                                                )
+                                                and _v141_is_bag_item(_v142_item_id)
                                             ):
                                                 _v140_send_full_inventory(
                                                     conn,
@@ -12689,7 +12749,7 @@ def listen_on_port(port, label, sock=None):
 # Startup
 # ---------------------------------------------------------------------------
 
-print("[BOOT] BUILD=v143b-SQLITE-PLAYERSTATE-v4-TEST + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 (NO COMMIT)")
+print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 (NO COMMIT)")
 print(
     "[BOOT] First-login nickname v26g: VERIFIED same-session A003 -> "
     "defer A006 -> A146/A147 -> A005 -> A006; "
