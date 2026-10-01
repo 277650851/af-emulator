@@ -1297,12 +1297,6 @@ def handle_version(conn, addr):
 
     finally:
         try:
-            rs = locals().get("role_state")
-            if str(label).upper() == "ZONE" and isinstance(rs, dict):
-                _v150_unregister_zone_session(rs, conn)
-        except Exception:
-            pass
-        try:
             conn.close()
         except Exception:
             pass
