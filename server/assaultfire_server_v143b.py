@@ -8699,7 +8699,6 @@ def handle_placeholder(conn, addr, label):
                                         "cmd00 body traffic will be decrypted with the new key"
                                     )
                                     if (
-                                                                   if (
                                         role_state.get("persistent_resume")
                                         and label.upper() == "ZONE"
                                     ):
@@ -8709,7 +8708,8 @@ def handle_placeholder(conn, addr, label):
                                             "waiting for client C2ZN_REQ_LOGIN before "
                                             "sending the app login response",
                                         )
-  log(
+                                else:
+                                    log(
                                         label,
                                         f"TGame SYNACK plaintext mismatch expected={TGAME_SYN_RAND.hex()}"
                                     )
