@@ -9,15 +9,14 @@ publishes SESSION_READY for the v9 bridge.
 
 No original game executable is modified on disk. If TGame_AFDEV.exe is absent,
 the loader may create a local private copy from the user's own TGame.exe.
-Runtime addresses are build-specific: the clean stock hash is accepted directly;
-a non-stock local copy must match TGame.exe byte-for-byte and is then gated by
-the loader's suspended-process byte-signature checks before execution resumes.
+Runtime addresses are build-specific. If TGame_AFDEV.exe exists, the loader
+uses it regardless of its whole-file hash and verifies required patch-site bytes
+in the suspended process before execution resumes.
 """
 
 import argparse
 import ctypes
 from ctypes import wintypes
-import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -44,11 +43,6 @@ def _configure_utf8_stdio():
 
 _configure_utf8_stdio()
 
-
-EXPECTED_SHA256 = (
-    "b4273f2658ca94eebc559a997fdfcd02"
-    "d51e77ce75b892250c1db7fb80c70b51"
-)
 
 DEFAULT_GAME_DIR = os.environ.get("AF_GAME_DIR", "")
 DEFAULT_MAP = os.environ.get("AF_DS_DEFAULT_MAP", "")
@@ -780,16 +774,6 @@ def ensure_admin():
         )
 
     raise SystemExit(0)
-
-
-def sha256_file(path):
-    h = hashlib.sha256()
-
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(block)
-
-    return h.hexdigest()
 
 
 def process_alive(hproc):
@@ -6304,8 +6288,6 @@ def main():
         )
         shutil.copy2(source_exe, exe)
 
-    digest = sha256_file(exe)
-
     print(
         "[AFDEV] Assault Fire PH PVE MAP LOADER"
     )
@@ -6316,36 +6298,9 @@ def main():
         f"[AFDEV] DEV EXE  : {exe}"
     )
     print(
-        f"[AFDEV] SHA256   : {digest}"
+        "[AFDEV] BUILD    : using TGame_AFDEV.exe without whole-file hash gating; "
+        "runtime patch-site signatures will still be validated"
     )
-
-    if digest.lower() == EXPECTED_SHA256:
-        print("[AFDEV] BUILD    : verified clean PH v1.0.0.24")
-    else:
-        # The one-click setup intentionally supports a user-confirmed patched
-        # TGame.exe and creates TGame_AFDEV.exe from that exact source.  Whole-
-        # file SHA-256 therefore cannot be the only compatibility gate.
-        #
-        # For any non-stock hash, require the AFDEV working copy to be exactly
-        # the user's local TGame.exe.  The process is launched suspended below,
-        # and all build-specific patch sites are verified against known bytes
-        # before the primary thread is resumed.
-        if not source_exe.is_file():
-            raise SystemExit(
-                "Unexpected TGame_AFDEV.exe SHA-256 and local TGame.exe is missing; "
-                "cannot verify the AFDEV source copy."
-            )
-        source_digest = sha256_file(source_exe)
-        if source_digest.lower() != digest.lower():
-            raise SystemExit(
-                "Unexpected TGame_AFDEV.exe SHA-256 and it does not match the "
-                "local TGame.exe. Recreate TGame_AFDEV.exe from TGame.exe."
-            )
-        print(
-            "[AFDEV] BUILD    : non-stock local TGame copy accepted for "
-            "suspended runtime signature validation"
-        )
-        print(f"[AFDEV] SOURCE   : TGame.exe SHA256={source_digest}")
 
     # Confirm map exists before launching.
     map_name = Path(args.map).stem
