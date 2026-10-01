@@ -11835,6 +11835,16 @@ def handle_placeholder(conn, addr, label):
                     "DS-CLEANUP",
                     f"r10 ZONE disconnect cleanup failed: {type(cleanup_e).__name__}: {cleanup_e}",
                 )
+            try:
+                rs = locals().get("role_state")
+                if isinstance(rs, dict):
+                    _v150_unregister_zone_session(rs, conn)
+            except Exception as session_cleanup_e:
+                log(
+                    "ZONE",
+                    "online-session cleanup failed: "
+                    f"{type(session_cleanup_e).__name__}: {session_cleanup_e}",
+                )
         try:
             conn.close()
         except Exception:
