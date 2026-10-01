@@ -2962,6 +2962,8 @@ TGAME_ZN_REQ_ZONECHANNEL_LIST = 0xA132
 TGAME_ZN_RES_ZONECHANNEL_LIST = 0xA133
 TGAME_ZN_REQ_MAINCHNLLIST = 0xA355
 TGAME_ZN_RES_MAINCHNLLIST = 0xA356
+TGAME_ZN_REQ_CHANNEL_PING_VALUE = 0xA357
+TGAME_ZN_RES_CHANNEL_PING_VALUE = 0xA358
 
 # v125: this PH client emits A303 twice only after the normal lobby/main-channel
 # UI has initialized.  Later branches recovered it as C2ZN_REQ_FRIENDSSTATUS.
@@ -6004,6 +6006,23 @@ def _v74_build_main_channel_list_response():
         body,
     )
 
+
+
+def _v159_parse_channel_ping_request(body):
+    if len(body) != 4:
+        raise ValueError(
+            f"channel timing request must be exactly 4B, got {len(body)}B"
+        )
+    return struct.unpack(">I", body)[0]
+
+
+def _v159_build_channel_ping_response():
+    body = _v48_u16(ZONE_ERR_SUCC) + _v50_geo_tdr_string("", 256)
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_RES_CHANNEL_PING_VALUE,
+        body,
+    )
 
 
 def _v75_parse_zone_channel_list_request(body):
@@ -11408,6 +11427,22 @@ def handle_placeholder(conn, addr, label):
                                                 "cmd=0xA133 zones=1 last=1 "
                                                 "subchannels=1 id=1 name='Local Subchannel' "
                                                 "players=1/100 endpoint=127.0.0.1:65006"
+                                            )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_CHANNEL_PING_VALUE:
+                                            padding = _v159_parse_channel_ping_request(
+                                                app["body"]
+                                            )
+                                            log(
+                                                label,
+                                                "C2ZN channel timing request "
+                                                f"cmd=0xA357 padding=0x{padding:08x}"
+                                            )
+                                            rsp = _v159_build_channel_ping_response()
+                                            _v48_send_app(
+                                                conn, active_tgame_key, rsp,
+                                                label,
+                                                "ZN2C channel timing response cmd=0xA358"
                                             )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_MAINCHNLLIST:
