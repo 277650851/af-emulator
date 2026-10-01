@@ -61,7 +61,13 @@ from assaultfire_ap_auth import (
     authenticate_ap_verify_body,
     build_ap_result_plaintext,
 )
+
+# Hosted reconnect persistence: keep sessions alive long enough for rolling
+# updates/restarts. Operators can still override this in the environment.
+os.environ.setdefault("AF_TGAME_SESSION_TTL_SECONDS", "3600")
+
 from tgame_ticket_state import (
+    SESSION_TTL_SECONDS,
     get_unexpired_session_uins,
     get_sessions_for_ip,
     get_ticket_crypto,
@@ -70,6 +76,14 @@ from tgame_ticket_state import (
     touch_session,
 )
 from tgame_reconnect import parse_cmd06_resume
+
+try:
+    TGAME_SESSION_TOUCH_INTERVAL_SECONDS = max(
+        15.0,
+        min(300.0, float(os.environ.get("AF_TGAME_SESSION_TOUCH_SECONDS", "60"))),
+    )
+except (TypeError, ValueError):
+    TGAME_SESSION_TOUCH_INTERVAL_SECONDS = 60.0
 
 # v24: v20 success framing plus BOTH PublicData bitmap and PrivateData tail probes.
 QUIET_ROLE_HEX = True
@@ -7585,6 +7599,48 @@ def _v48_send_app(conn, key, app_plain, label, desc, *, tpdu_cmd=0):
         f"enc_len={len(enc)} wire={_short_hex(pkt, 160)}"
     )
     return pkt
+
+
+def tgame_build_cmd04_ident(key, mode, ident_plain):
+    """Build TPDU_CMD_IDENT (cmd04) for a resumed TGame connection.
+
+    TQQAPI v14 layout:
+      TPDUBase(12) || u32 EncryptIdentLen || EncryptIdent
+
+    EncryptIdent decrypts to TPDUIdentInfo:
+      u32 Pos || char Ident[16]
+
+    On reconnect we replay the exact validated 20-byte TPDUIdentInfo that the
+    client presented inside cmd06, rather than inventing a new identity.
+    """
+    ident_plain = bytes(ident_plain or b"")
+    if len(ident_plain) != 20:
+        raise ValueError(
+            f"TPDUIdentInfo must be exactly 20 bytes, got {len(ident_plain)}"
+        )
+    if mode == 3:
+        enc = tgame_mode3_encrypt(ident_plain, key)
+    elif mode == 4:
+        enc = tgame_mode4_encrypt(ident_plain, key)
+    else:
+        raise ValueError(f"unsupported IDENT encryption mode {mode}")
+    if len(enc) > 0xFFFFFFFF:
+        raise ValueError("encrypted IDENT too large")
+    total = 16 + len(enc)
+    pkt = (
+        b"\x55\x0e\x04\x00"
+        + struct.pack(">I", total)
+        + bytes(4)
+        + struct.pack(">I", len(enc))
+        + enc
+    )
+    if len(pkt) != total:
+        raise AssertionError(
+            f"cmd04 IDENT frame length mismatch: total={total} actual={len(pkt)}"
+        )
+    return pkt, enc
+
+
 def tgame_build_cmd01_chgskey(old_key, mode, new_key=b"LOCAL_GAME_KEY01"):
     """Build the post-SYN key-change packet expected after cmd09.
 
@@ -8355,6 +8411,13 @@ def handle_placeholder(conn, addr, label):
                             f"{type(_resume_error).__name__}",
                         )
                     _resume_matches = []
+                    if len(_resume_candidates) > 1:
+                        log(
+                            label,
+                            "Persistent TGame multi-session lookup "
+                            f"ip={addr[0]} candidates={len(_resume_candidates)}; "
+                            "authenticating cmd06 against every candidate key/UIN",
+                        )
                     for _candidate in _resume_candidates:
                         _candidate_key = _candidate.get("transport_key")
                         if _candidate_key is None:
@@ -8365,6 +8428,29 @@ def handle_placeholder(conn, addr, label):
                                 bytes(_candidate_key),
                                 tgame_mode3_decrypt,
                             )
+                            # PH v14 cmd06 is NOT laid out like the older
+                            # TPDUExtRelay XML at wire offsets 12..28. The
+                            # verified parser proves those fields are:
+                            #   EncMethod, ServiceID, reserved, EncHeadLen
+                            # and the encrypted header plaintext starts with
+                            # UIN. Live-compatible framing is:
+                            #   UIN(u32) || TPDUIdentInfo(20 bytes)
+                            # where TPDUIdentInfo = Pos(u32) || Ident[16].
+                            # Reuse that exact decrypted identity for cmd04.
+                            _relay_head_len = struct.unpack(">I", data[4:8])[0]
+                            _relay_header_plain = tgame_mode3_decrypt(
+                                data[28:_relay_head_len], bytes(_candidate_key)
+                            )
+                            if len(_relay_header_plain) < 24:
+                                raise ValueError(
+                                    "cmd06 decrypted header too short for UIN+TPDUIdentInfo"
+                                )
+                            _relay_ident_plain = bytes(_relay_header_plain[4:24])
+                            _cmd06["ident_plain"] = _relay_ident_plain
+                            _cmd06["ident_pos"] = struct.unpack(
+                                ">I", _relay_ident_plain[:4]
+                            )[0]
+                            _cmd06["header_plain_len"] = len(_relay_header_plain)
                         except Exception:
                             continue
                         if _cmd06["uin"] == int(_candidate["uin"]):
@@ -8375,8 +8461,9 @@ def handle_placeholder(conn, addr, label):
                         for candidate, _request in _resume_matches
                     }
                     if len(_resume_uins) == 1:
-                        # Repeated logins may leave several sessions for the
-                        # same account; use the most recently active one.
+                        # Multi-user hosted mode: many UINs may coexist. Repeated logins
+                        # for the SAME account may leave several durable tickets;
+                        # use that account's most recently active matching ticket.
                         _resume, _cmd06 = max(
                             _resume_matches,
                             key=lambda match: float(match[0]["last_seen_at"]),
@@ -8404,6 +8491,16 @@ def handle_placeholder(conn, addr, label):
                             "tgame": True,
                             "uin": tgame_session_uin,
                             "persistent_resume": True,
+                            # cmd06 is the client's transport continuity marker.
+                            # Keep it so the post-SYNACK resume path can derive
+                            # the same diagnostic sequence window as normal A000.
+                            "persistent_resume_client_seq": int(_cmd06["sequence"]),
+                            "persistent_resume_service_id": int(_cmd06.get("service_id", 0)),
+                            "persistent_resume_header_plain_len": int(_cmd06.get("header_plain_len", 0)),
+                            "persistent_resume_ident_pos": int(_cmd06.get("ident_pos", 0)),
+                            "persistent_resume_ident_plain": bytes(
+                                _cmd06.get("ident_plain") or b""
+                            ),
                         }
                         _v140_select_player(tgame_session_uin)
                         _persist_login, _persist_nick = (
@@ -8455,6 +8552,9 @@ def handle_placeholder(conn, addr, label):
                             "Persistent TGame cmd06 authenticated "
                             f"uin={tgame_session_uin} "
                             f"client_seq=0x{_cmd06['sequence']:08x} "
+                            f"service_id={int(_cmd06.get('service_id', 0))} "
+                            f"header_plain_len={int(_cmd06.get('header_plain_len', 0))} "
+                            f"ident_pos=0x{int(_cmd06.get('ident_pos', 0)):08x} "
                             f"expires_in={_resume_remaining}s",
                         )
                         syn, syn_cipher = tgame_build_cmd08_syn_auto(
@@ -8642,6 +8742,39 @@ def handle_placeholder(conn, addr, label):
                                 )
                                 if plain_now == TGAME_SYN_RAND:
                                     log(label, "TGame SYNACK verified: challenge echo matches")
+
+                                    # TPDU relay/reconnect completion: the stock
+                                    # TQQAPI state machine sends IDENT (cmd04)
+                                    # before CHGSKEY after SYNACK. Fresh AF login
+                                    # happens to tolerate our old CHGSKEY-only path,
+                                    # but a cmd06 RELAY remains in reconnect state
+                                    # without the connection-established IDENT.
+                                    if (
+                                        role_state.get("persistent_resume")
+                                        and label.upper() == "ZONE"
+                                    ):
+                                        _resume_ident_plain = bytes(
+                                            role_state.get(
+                                                "persistent_resume_ident_plain"
+                                            ) or b""
+                                        )
+                                        ident_pkt, ident_enc = tgame_build_cmd04_ident(
+                                            active_tgame_key,
+                                            mode_now,
+                                            _resume_ident_plain,
+                                        )
+                                        conn.sendall(ident_pkt)
+                                        log(
+                                            label,
+                                            "TX TGAME cmd04 IDENT for persistent resume "
+                                            f"({len(ident_pkt)}B) "
+                                            f"service_id={int(role_state.get('persistent_resume_service_id', 0))} "
+                                            f"header_plain_len={int(role_state.get('persistent_resume_header_plain_len', 0))} "
+                                            f"ident_pos=0x{int(role_state.get('persistent_resume_ident_pos', 0)):08x} "
+                                            f"enc_len={len(ident_enc)}; "
+                                            "replayed cmd06 decrypted-header TPDUIdentInfo",
+                                        )
+
                                     chg, chg_enc, new_key = tgame_build_cmd01_chgskey(
                                         active_tgame_key, mode_now
                                     )
@@ -8702,12 +8835,80 @@ def handle_placeholder(conn, addr, label):
                                         role_state.get("persistent_resume")
                                         and label.upper() == "ZONE"
                                     ):
-                                        log(
-                                            label,
-                                            "Persistent TGame transport resumed; "
-                                            "waiting for client C2ZN_REQ_LOGIN before "
-                                            "sending the app login response",
+                                        # Verified restart-resume path: after
+                                        # cmd06 -> cmd08 -> cmd09 -> cmd04 -> cmd01,
+                                        # stock PH does not send a fresh A000. Replay
+                                        # the already-proven A001 login response, then
+                                        # let the normal FF05 deferred-profile path run.
+                                        uin_now = _v150_role_uin(role_state)
+                                        _V140_PLAYER_STATE.reload(uin_now)
+                                        persisted_nickname = PLAYER_DB.load_nickname(uin_now)
+                                        awaiting_first_nickname = persisted_nickname is None
+                                        role_state[
+                                            "v5_awaiting_first_nickname"
+                                        ] = awaiting_first_nickname
+
+                                        resume_base_seq = int(
+                                            role_state.get(
+                                                "persistent_resume_client_seq", 0
+                                            )
+                                        ) & 0xFFFFFFFF
+                                        seq_login = (resume_base_seq + 1) & 0xFFFFFFFF
+                                        seq_pinfo = (resume_base_seq + 2) & 0xFFFFFFFF
+                                        seq_props = (resume_base_seq + 3) & 0xFFFFFFFF
+                                        seq_hints = (resume_base_seq + 4) & 0xFFFFFFFF
+                                        login_result = (
+                                            0x0401
+                                            if awaiting_first_nickname
+                                            else ZONE_ERR_SUCC
                                         )
+                                        login_rsp = _v48_build_zn_login_response(
+                                            seq_login,
+                                            result=login_result,
+                                            expose_wallet=not awaiting_first_nickname,
+                                        )
+                                        _v48_send_app(
+                                            conn,
+                                            active_tgame_key,
+                                            login_rsp,
+                                            label,
+                                            "ZN2C_RES_LOGIN RESTART-RESUME-IDENT-A001 "
+                                            f"result=0x{login_result:04x} "
+                                            f"uin={uin_now} "
+                                            f"resume_client_seq=0x{resume_base_seq:08x} "
+                                            f"nickname={persisted_nickname!r}",
+                                        )
+
+                                        if awaiting_first_nickname:
+                                            # Mirror the normal A000 first-account gate.
+                                            role_state["v12_force_blank_nickname"] = True
+                                            role_state["v13_no_role_login"] = True
+                                            role_state["v20_force_a001_0401"] = True
+                                            pending_zone_profile = None
+                                            log(
+                                                label,
+                                                "Persistent resume A001 sent with result=0x0401; "
+                                                "first-nickname profile remains withheld",
+                                            )
+                                        else:
+                                            role_state.pop(
+                                                "v12_force_blank_nickname", None
+                                            )
+                                            role_state.pop(
+                                                "v13_no_role_login", None
+                                            )
+                                            pending_zone_profile = {
+                                                "seq_pinfo": seq_pinfo,
+                                                "seq_props": seq_props,
+                                                "seq_hints": seq_hints,
+                                                "first_nickname_probe": False,
+                                            }
+                                            log(
+                                                label,
+                                                "Persistent TGame transport resumed; "
+                                                "proactive A001 replay sent; waiting for FF05 "
+                                                "instead of waiting for a fresh A000",
+                                            )
                                 else:
                                     log(
                                         label,
@@ -8760,7 +8961,7 @@ def handle_placeholder(conn, addr, label):
                                     if (
                                         tgame_session_ticket is not None
                                         and tgame_session_uin is not None
-                                        and time.monotonic() - tgame_last_persist_touch >= 15.0
+                                        and time.monotonic() - tgame_last_persist_touch >= TGAME_SESSION_TOUCH_INTERVAL_SECONDS
                                     ):
                                         try:
                                             if touch_session(
@@ -13174,7 +13375,14 @@ def listen_on_port(port, label, sock=None):
 # Startup
 # ---------------------------------------------------------------------------
 
-print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156+SQLITE-EXP-A005 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 (NO COMMIT)")
+print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156+SQLITE-EXP-A005 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 + RESTART-RESUME-HOSTED-MULTISESSION-v1")
+print(
+    f"[BOOT] Hosted reconnect persistence: sqlite-multisession=enabled "
+    f"session_ttl={SESSION_TTL_SECONDS}s "
+    f"touch_interval={TGAME_SESSION_TOUCH_INTERVAL_SECONDS:.0f}s "
+    f"binding=UIN+client-IP+encrypted-transport-key",
+    flush=True,
+)
 print(
     "[BOOT] First-login nickname v26g: VERIFIED same-session A003 -> "
     "defer A006 -> A146/A147 -> A005 -> A006; "
