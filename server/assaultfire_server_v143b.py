@@ -8404,7 +8404,6 @@ def handle_placeholder(conn, addr, label):
                             "tgame": True,
                             "uin": tgame_session_uin,
                             "persistent_resume": True,
-                            "resume_sequence": int(_cmd06["sequence"]),
                         }
                         _v140_select_player(tgame_session_uin)
                         _persist_login, _persist_nick = (
@@ -8700,60 +8699,17 @@ def handle_placeholder(conn, addr, label):
                                         "cmd00 body traffic will be decrypted with the new key"
                                     )
                                     if (
+                                                                   if (
                                         role_state.get("persistent_resume")
                                         and label.upper() == "ZONE"
                                     ):
-                                        resume_seq = int(
-                                            role_state.get("resume_sequence", 0)
-                                        )
-                                        resume_login = _v48_build_zn_login_response(
-                                            (resume_seq + 1) & 0xFFFFFFFF,
-                                            result=ZONE_ERR_SUCC,
-                                            expose_wallet=True,
-                                        )
-                                        _v48_send_app(
-                                            conn,
-                                            active_tgame_key,
-                                            resume_login,
-                                            label,
-                                            "ZN2C_RES_LOGIN persistent-resume",
-                                        )
-                                        pending_zone_profile = {
-                                            "seq_pinfo": (resume_seq + 2) & 0xFFFFFFFF,
-                                            "seq_props": (resume_seq + 3) & 0xFFFFFFFF,
-                                            "seq_hints": (resume_seq + 4) & 0xFFFFFFFF,
-                                            "first_nickname_probe": False,
-                                            "persistent_resume": True,
-                                        }
-                                        resume_room = role_state.pop(
-                                            "persistent_resume_room", None
-                                        )
-                                        if isinstance(resume_room, dict):
-                                            room_rsp = _v150_build_res_enter_match_room(
-                                                resume_room
-                                            )
-                                            _v48_send_app(
-                                                conn,
-                                                active_tgame_key,
-                                                room_rsp,
-                                                label,
-                                                "ZN2C_RES_ENTERMATCHROOM persistent-resume "
-                                                f"room={int(resume_room['room_id'])}",
-                                            )
-                                            log(
-                                                label,
-                                                "Persistent TGame lobby room replayed "
-                                                f"uin={_v150_role_uin(role_state)} "
-                                                f"room={int(resume_room['room_id'])} "
-                                                "after transport resume",
-                                            )
                                         log(
                                             label,
-                                            "Persistent TGame app resume bootstrap sent; "
-                                            "waiting for client FF05 before profile replay",
+                                            "Persistent TGame transport resumed; "
+                                            "waiting for client C2ZN_REQ_LOGIN before "
+                                            "sending the app login response",
                                         )
-                                else:
-                                    log(
+  log(
                                         label,
                                         f"TGame SYNACK plaintext mismatch expected={TGAME_SYN_RAND.hex()}"
                                     )

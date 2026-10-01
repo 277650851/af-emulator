@@ -322,6 +322,29 @@ class RoomRegistryConsistencyTests(unittest.TestCase):
 
 
 class ServerStaticSafetyTests(unittest.TestCase):
+    def test_persistent_resume_waits_for_zone_login_request(self):
+        server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        resume = server.index(
+            'if (\n                                        role_state.get("persistent_resume")'
+        )
+        resume_end = server.index(
+            "\n                                else:\n                                    log(",
+            resume,
+        )
+        resume_block = server[resume:resume_end]
+        self.assertNotIn("_v48_build_zn_login_response(", resume_block)
+        self.assertNotIn("_v48_send_app(", resume_block)
+        self.assertIn("Persistent TGame transport resumed", resume_block)
+        self.assertIn("C2ZN_REQ_LOGIN before", resume_block)
+
+        login_request = server.index('if app["cmd"] == TGAME_ZN_REQ_LOGIN:')
+        login_response = server.index("_v48_build_zn_login_response(", login_request)
+        login_ready = server.index('elif app["cmd"] == 0xFF05:', login_request)
+        self.assertLess(login_request, login_response)
+        self.assertLess(login_response, login_ready)
+
     def test_server_recovers_waiting_rooms_after_bind(self):
         server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
             encoding="utf-8", errors="replace"
