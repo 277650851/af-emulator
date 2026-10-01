@@ -557,3 +557,79 @@ class RoomRegistry:
                 if connection.in_transaction:
                     connection.rollback()
                 raise
+
+    @_database_operation(write=True)
+    def recover_after_restart(
+        self,
+        *,
+        retain_uins: set[int] | None = None,
+    ) -> dict[str, int]:
+        """Keep resumable waiting rooms and discard rooms that cannot resume.
+
+        Active matches depend on transient UE3 dedicated-server processes, so
+        they are removed. Waiting rooms survive only for players whose
+        persisted transport session has not expired. Ready state and DS
+        allocation metadata are cleared because those are process-local.
+        """
+        retained = (
+            None if retain_uins is None
+            else {int(uin) for uin in retain_uins if int(uin) > 0}
+        )
+        recovered_rooms = 0
+        removed_rooms = 0
+        removed_members = 0
+        with self._lock:
+            for room_id, room in list(self._rooms.items()):
+                # A configured DS spawner does not make a waiting room an
+                # active match. Its process-local reservation is cleared below;
+                # the room itself can still be restored for the player to retry.
+                if bool(room.get("started")):
+                    for uin in list((room.get("members") or {}).keys()):
+                        self._player_room.pop(int(uin), None)
+                    self._rooms.pop(room_id, None)
+                    removed_rooms += 1
+                    continue
+
+                members = room.get("members") or {}
+                for raw_uin in list(members):
+                    uin = int(raw_uin)
+                    if retained is not None and uin not in retained:
+                        members.pop(raw_uin, None)
+                        self._player_room.pop(uin, None)
+                        removed_members += 1
+
+                if not members:
+                    self._rooms.pop(room_id, None)
+                    removed_rooms += 1
+                    continue
+
+                owner_uin = int(room.get("owner_uin", 0))
+                if owner_uin not in members:
+                    new_owner = min(
+                        members.values(),
+                        key=lambda member: (
+                            int(member.get("seat_index", 0)),
+                            int(member.get("uin", 0)),
+                        ),
+                    )
+                    owner_uin = int(new_owner["uin"])
+                    room["owner_uin"] = owner_uin
+                for uin, member in members.items():
+                    member["ready"] = False
+                    member["state"] = PLAYER_STATE_UNREADY
+                    flags = int(member.get("flags", 0)) & ~PLAYER_FLAG_ROOM_OWNER
+                    if int(uin) == owner_uin:
+                        flags |= PLAYER_FLAG_ROOM_OWNER
+                    member["flags"] = flags
+
+                room["started"] = False
+                room.pop("ds_slot", None)
+                room.pop("ds_public_port", None)
+                room.pop("ds_endpoint", None)
+                recovered_rooms += 1
+
+        return {
+            "recovered_rooms": recovered_rooms,
+            "removed_rooms": removed_rooms,
+            "removed_members": removed_members,
+        }

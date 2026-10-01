@@ -322,7 +322,7 @@ class RoomRegistryConsistencyTests(unittest.TestCase):
 
 
 class ServerStaticSafetyTests(unittest.TestCase):
-    def test_server_uses_sqlite_lobby_state_and_clears_it_after_bind(self):
+    def test_server_recovers_waiting_rooms_after_bind(self):
         server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(
             encoding="utf-8", errors="replace"
         )
@@ -331,10 +331,17 @@ class ServerStaticSafetyTests(unittest.TestCase):
             server,
         )
         bind = server.index("listener_sockets = _prepare_listener_sockets()")
-        clear = server.index("stale_room_count = V150_ROOM_REGISTRY.clear_all()")
-        start = server.index("for label, kind, port, sock in listener_sockets:", clear)
-        self.assertLess(bind, clear)
-        self.assertLess(clear, start)
+        recover = server.index(
+            "restart_room_state = V150_ROOM_REGISTRY.recover_after_restart("
+        )
+        start = server.index("for label, kind, port, sock in listener_sockets:", recover)
+        self.assertIn(
+            "retain_uins=get_unexpired_session_uins(db_path=PLAYER_DB.db_path)",
+            server,
+        )
+        self.assertIn("SERVER_SHUTTING_DOWN.set()", server)
+        self.assertLess(bind, recover)
+        self.assertLess(recover, start)
 
     def test_auth_hex_is_debug_only(self):
         server = (ROOT / "server" / "assaultfire_server_v143b.py").read_text(

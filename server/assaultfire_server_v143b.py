@@ -61,6 +61,15 @@ from assaultfire_ap_auth import (
     authenticate_ap_verify_body,
     build_ap_result_plaintext,
 )
+from tgame_ticket_state import (
+    get_unexpired_session_uins,
+    get_sessions_for_ip,
+    get_ticket_crypto,
+    issue_ticket,
+    save_transport_key,
+    touch_session,
+)
+from tgame_reconnect import parse_cmd06_resume
 
 # v24: v20 success framing plus BOTH PublicData bitmap and PrivateData tail probes.
 QUIET_ROLE_HEX = True
@@ -371,7 +380,8 @@ def _v143b_init_spawner():
 # own creator-only room dict, so another client could not see/join it.  r11
 # restores a process-wide room registry and live ZONE session map. Room
 # records are SQLite-backed; live sockets and dedicated-server processes remain
-# runtime-only and stale room records are cleared after startup preflight.
+# runtime-only. Waiting rooms can be restored for unexpired sessions after a
+# restart; active matches are removed because their DS process cannot resume.
 # Account/progression data remains in PlayerDatabase. Match rooms still
 # disappear when their final member leaves.
 V150_ROOM_REGISTRY = RoomRegistry(db_path=PLAYER_DB_PATH)
@@ -379,6 +389,7 @@ V150_ROOM_REGISTRY = RoomRegistry(db_path=PLAYER_DB_PATH)
 _V150_ZONE_LOCK = threading.RLock()
 _V150_ZONE_SESSIONS = {}  # uin -> {conn,key,label,role_state,nickname}
 _V150_CONN_SEND_LOCKS = {}  # id(socket) -> RLock
+SERVER_SHUTTING_DOWN = threading.Event()
 
 
 def _v150_role_uin(role_state):
@@ -1139,15 +1150,8 @@ def build_auth_response(request_bytes):
     )
 
     print(
-        f"[AUTH] shared="
-        f"{shared_bytes.hex()}",
-        flush=True
-    )
-
-    print(
-        f"[AUTH] aes_key="
-        f"{aes_key.hex()}",
-        flush=True
+        "[AUTH] DH shared secret established; shared and AES key material redacted",
+        flush=True,
     )
 
     # Client requires nonce + 1.
@@ -1508,11 +1512,35 @@ def handle_auth(conn, addr):
             f"PID={_auth_pid} -> uin={auth_uid}"
         )
 
-        result_plain = (
-            build_ap_result_plaintext(
-                hdr["seqno"],
-                uid=auth_uid,
+        try:
+            auth_ticket = issue_ticket(
+                auth_uid,
+                addr[0],
+                aes_key,
+                mode=3,
+                db_path=PLAYER_DB.db_path,
+                private_key_path=PRIVATE_KEY_PATH,
             )
+        except Exception as _ticket_error:
+            log(
+                "AUTH",
+                f"LOGIN REJECTED login={auth_login_name!r}: "
+                f"could not create TGame ticket ({type(_ticket_error).__name__})",
+            )
+            result_plain = build_ap_result_plaintext(
+                hdr["seqno"],
+                uid=0,
+                ticket=b"",
+                error_code=1,
+                error_message=b"Server login initialization failed.\x00",
+            )
+            conn.sendall(build_ap_frame(aes_key, result_plain))
+            return
+
+        result_plain = build_ap_result_plaintext(
+            hdr["seqno"],
+            uid=auth_uid,
+            ticket=auth_ticket,
         )
 
         result_frame = build_ap_frame(
@@ -1523,7 +1551,7 @@ def handle_auth(conn, addr):
         if DEBUG_AUTH_HEX:
             log(
                 "AUTH-DEBUG",
-                f"AP TX cmd=4 plaintext {len(result_plain)}B: {result_plain.hex()}",
+                f"AP TX cmd=4 plaintext {len(result_plain)}B (redacted)",
                 level="DEBUG",
             )
             log(
@@ -1764,15 +1792,23 @@ def decode_role_packet_for_log(data):
         plain, status = role_qqtea_decrypt(enc)
         lines.append(f"unified-decrypt: {status}")
         if plain is not None:
-            lines.append(f"unified-plain-len={len(plain)} hex={plain.hex()}")
+            lines.append(f"unified-plain-len={len(plain)} (contents redacted)")
             if len(plain) >= 50:
                 uin = struct.unpack('>I', plain[6:10])[0]
                 ts2 = struct.unpack('>I', plain[10:14])[0]
                 session_key = plain[30:46]
-                lines.append(f"parsed-unified: uin={uin} time={ts2} session_key={session_key!r} session_key_hex={session_key.hex()}")
+                lines.append(
+                    f"parsed-unified: uin={uin} time={ts2} "
+                    f"session_key_len={len(session_key)} (value redacted)"
+                )
 
     tail = data[26 + auth_len:]
-    lines.append(f"tail/body: offset={26 + auth_len} len={len(tail)} hex={tail.hex()}")
+    if data[0:3] == b"\x55\x0e\x03":
+        lines.append(
+            f"tail/body: offset={26 + auth_len} len={len(tail)} (contents redacted)"
+        )
+    else:
+        lines.append(f"tail/body: offset={26 + auth_len} len={len(tail)} hex={tail.hex()}")
     return lines
 
 
@@ -2366,9 +2402,7 @@ def tgame_recover_key_by_ticket(pid, ticket, want_authtype=4, exclude_anchors=No
             addr = next_addr
 
         if not candidates:
-            return None, None, (
-                f"ticket {ticket!r} not found in TGame PID={pid}"
-            )
+            return None, None, f"current AP ticket not found in TGame PID={pid}"
 
         rejected = []
         valid = []
@@ -2386,7 +2420,7 @@ def tgame_recover_key_by_ticket(pid, ticket, want_authtype=4, exclude_anchors=No
             mode = read_u32(h, anchor + _TGA_OFF_MODE)
             if key is None or mode not in (2, 3, 4) or key == bytes(16):
                 rejected.append(
-                    f"{hex(anchor)}:mode={mode},key={'none' if key is None else key.hex()}"
+                    f"{hex(anchor)}:mode={mode},key_present={key is not None and key != bytes(16)}"
                 )
                 continue
 
@@ -2416,8 +2450,8 @@ def tgame_recover_key_by_ticket(pid, ticket, want_authtype=4, exclude_anchors=No
                     if conn_key == key and conn_mode == mode:
                         info["verified"] = True
                     else:
-                        info["crosscheck_key"] = (
-                            conn_key.hex() if conn_key is not None else None
+                        info["crosscheck_key_present"] = (
+                            conn_key is not None and conn_key != bytes(16)
                         )
                         info["crosscheck_mode"] = conn_mode
 
@@ -2455,7 +2489,7 @@ def tgame_find_internal_crypto_state(pid):
       conn+0x84 : encryption mode (2/3/4)
 
     This is deliberately read-only and is used only for the local replacement
-    backend, because the synthetic LOCAL_TICKET_001 does not carry the original
+    backend, because a server-generated AP ticket does not carry the original
     Tencent-side credential material needed to derive the client-generated key.
     """
     if os.name != "nt" or pid is None:
@@ -7234,7 +7268,7 @@ def _v132_send_pve_afdev_handoff(
         "cmd=0xA11A result=0x8100 "
         f"ds={handoff_host}:{handoff_port} "
         f"ip_value=0x{ip_wire_value:08x} "
-        f"dskey={TGAME_DS_KEY.hex()} domain={domain!r} use_domain={use_domain}"
+        f"dskey_set={bool(TGAME_DS_KEY)} domain={domain!r} use_domain={use_domain}"
     )
     sent_uins = []
     room_snapshot_for_handoff = (
@@ -7920,6 +7954,18 @@ def tgame_parse_auth(data):
     auth_type = struct.unpack(">I", data[20:24])[0]
     uin = struct.unpack(">I", data[24:28])[0]
     auth_len = struct.unpack(">I", data[28:32])[0]
+    ticket = data[32:32 + auth_len]
+
+    if (
+        total_len < 32 + auth_len
+        or total_len > len(data)
+        or auth_type != 4
+        or auth_len != 16
+        or uin <= 0
+        or len(ticket) != auth_len
+        or any(character not in b"0123456789ABCDEF" for character in ticket)
+    ):
+        return None
 
     return {
         "total_len": total_len,
@@ -7928,7 +7974,7 @@ def tgame_parse_auth(data):
         "auth_type": auth_type,
         "uin": uin,
         "auth_len": auth_len,
-        "ticket": data[32:32 + auth_len],
+        "ticket": ticket,
     }
 
 
@@ -8035,18 +8081,41 @@ def handle_placeholder(conn, addr, label):
             else "unresolved"
         )
 
+        is_tgame_service = label.upper() in ("ROLE", "ZONE", "DS-TCP")
+        tgame_auth_wire = tgame_parse_auth(data) if is_tgame_service else None
+        is_tgame_auth_packet = is_tgame_service and data[:3] == b"\x55\x0e\x03"
+        is_tgame_resume_wire = is_tgame_service and data[:3] == b"\x55\x0e\x06"
+        if tgame_auth_wire is not None:
+            ticket_fingerprint = hashlib.sha256(
+                tgame_auth_wire.get("ticket", b"")
+            ).hexdigest()[:12]
+            first_rx_summary = (
+                f"{_short_hex(data[:32], 32)} "
+                f"ticket_fp={ticket_fingerprint}"
+            )
+        elif is_tgame_auth_packet:
+            first_rx_summary = (
+                f"{_short_hex(data[:32], 32)} AUTH payload redacted"
+            )
+        elif is_tgame_resume_wire:
+            first_rx_summary = (
+                f"{_short_hex(data[:28], 28)} encrypted resume body redacted"
+            )
+        else:
+            first_rx_summary = _short_hex(data, 96)
+
         log(
             label,
             f"FIRST RX COMPLETE ({len(data)}B) "
-            f"OWNER={owner}: {_short_hex(data, 96)}",
+            f"OWNER={owner}: {first_rx_summary}",
             level="DEBUG",
         )
 
-        if label.upper() in ("ROLE", "ZONE", "DS-TCP"):
+        if is_tgame_service and not is_tgame_resume_wire:
             for line in decode_role_packet_for_log(data):
                 log(label, line)
 
-        if not QUIET_ROLE_HEX:
+        if not QUIET_ROLE_HEX and not is_tgame_auth_packet and not is_tgame_resume_wire:
             print(
                 f"\n[{label}] OWNER: {owner}\n"
                 f"[{label}] COPY THIS HEX:\n"
@@ -8078,11 +8147,21 @@ def handle_placeholder(conn, addr, label):
 
         role_state = {}
         tgame_mode4_key = None
+        tgame_crypto_mode = None
+        tgame_session_ticket = None
+        tgame_session_uin = None
+        tgame_session_ip = addr[0]
         if label.upper() in ("ROLE", "ZONE", "DS-TCP"):
-            tgame_auth = tgame_parse_auth(data) if (process_name or "").lower() == "tgame.exe" else None
+            # Remote TGame.exe cannot be identified by Windows PID from the VPS.
+            # Recognize its ticket-bearing AUTH packet by the validated wire shape.
+            tgame_auth = tgame_auth_wire
 
             if tgame_auth is not None:
-                ticket_disp = tgame_auth.get("ticket", b"").decode("ascii", "replace")
+                tgame_session_ticket = tgame_auth.get("ticket")
+                tgame_session_uin = int(tgame_auth.get("uin") or 0)
+                ticket_fingerprint = hashlib.sha256(
+                    tgame_auth.get("ticket", b"")
+                ).hexdigest()[:12]
                 log(
                     label,
                     "TGame AUTH decoded: "
@@ -8092,51 +8171,68 @@ def handle_placeholder(conn, addr, label):
                     f"auth_type={tgame_auth.get('auth_type')} "
                     f"uin={tgame_auth.get('uin')} "
                     f"auth_len={tgame_auth.get('auth_len')} "
-                    f"ticket={ticket_disp!r}"
+                    f"ticket_fp={ticket_fingerprint}"
                 )
 
-                # v42: AuthType-4 does not carry the mode-3 session key on the
-                # wire. The live ProtocalHandler object contains both our exact
-                # AP ticket and the copied 16-byte key, at fixed offsets. Anchor
-                # on the ticket from THIS cmd03 and recover the matching key/mode
-                # directly from THIS TGame PID. No debugger log is required.
-                with _TGAME_USED_AUTH_ANCHORS_LOCK:
-                    _used_auth_anchors = set(
-                        _TGAME_USED_AUTH_ANCHORS.get(int(pid), set())
-                    )
-
-                # The ZONE connection is a second live AuthAP object carrying
-                # the same ticket. Give TGame a brief moment to finish linking
-                # the new handler/connection object, then require a fresh
-                # ticket anchor instead of reusing the GEO object's key.
+                # The AUTH DH exchange already established this AES key. The
+                # successful AP result ties it to the opaque ticket that TGame
+                # presents here, so the server can resume the handshake without a
+                # client-side HTTPS helper or access to the remote process.
                 tgame_mode4_key = None
                 tgame_crypto_mode = None
                 crypto_src = None
-                for _recover_try in range(10):
-                    tgame_mode4_key, tgame_crypto_mode, crypto_src = (
-                        tgame_recover_key_by_ticket(
-                            pid=pid,
-                            ticket=tgame_auth.get("ticket", b""),
-                            exclude_anchors=_used_auth_anchors,
+                _ticket_crypto = get_ticket_crypto(
+                    tgame_auth.get("ticket", b""),
+                    int(tgame_auth.get("uin") or 0),
+                    addr[0],
+                    db_path=PLAYER_DB.db_path,
+                    private_key_path=PRIVATE_KEY_PATH,
+                )
+                if _ticket_crypto is not None:
+                    tgame_mode4_key = _ticket_crypto["session_key"]
+                    tgame_crypto_mode = int(_ticket_crypto["mode"])
+                    crypto_src = "server AUTH ticket mapping"
+                elif pid is not None and (process_name or "").lower() == "tgame.exe":
+                    # Keep the exact local-process probe as a diagnostic
+                    # fallback for a local test client. Remote players use the
+                    # AUTH ticket mapping above; the server never reads their PC.
+                    with _TGAME_USED_AUTH_ANCHORS_LOCK:
+                        _used_auth_anchors = set(
+                            _TGAME_USED_AUTH_ANCHORS.get(int(pid), set())
                         )
-                    )
-                    if tgame_mode4_key is not None:
-                        break
-                    time.sleep(0.05)
 
-                if (
-                    tgame_mode4_key is not None
-                    and isinstance(crypto_src, dict)
-                    and crypto_src.get("anchor")
-                ):
-                    try:
-                        _chosen_anchor = int(str(crypto_src["anchor"]), 16)
-                        with _TGAME_USED_AUTH_ANCHORS_LOCK:
-                            _TGAME_USED_AUTH_ANCHORS.setdefault(
-                                int(pid), set()
-                            ).add(_chosen_anchor)
-                    except Exception:
-                        pass
+                    # The ZONE connection is a second live AuthAP object carrying
+                    # the same ticket. Require a fresh anchor rather than reusing
+                    # the GEO connection's key.
+                    for _recover_try in range(10):
+                        tgame_mode4_key, tgame_crypto_mode, crypto_src = (
+                            tgame_recover_key_by_ticket(
+                                pid=pid,
+                                ticket=tgame_auth.get("ticket", b""),
+                                exclude_anchors=_used_auth_anchors,
+                            )
+                        )
+                        if tgame_mode4_key is not None:
+                            break
+                        time.sleep(0.05)
+
+                    if (
+                        tgame_mode4_key is not None
+                        and isinstance(crypto_src, dict)
+                        and crypto_src.get("anchor")
+                    ):
+                        try:
+                            _chosen_anchor = int(str(crypto_src["anchor"]), 16)
+                            with _TGAME_USED_AUTH_ANCHORS_LOCK:
+                                _TGAME_USED_AUTH_ANCHORS.setdefault(
+                                    int(pid), set()
+                                ).add(_chosen_anchor)
+                        except Exception:
+                            pass
+                else:
+                    crypto_src = (
+                        "no live AUTH key for this ticket, UIN, and client IP"
+                    )
                 if tgame_mode4_key is None and label.upper() == "DS-TCP":
                     # v95 controlled DS fallback:
                     # A11A handed this exact 16-byte value to TGame as
@@ -8152,18 +8248,17 @@ def handle_placeholder(conn, addr, label):
                     log(
                         label,
                         "v95 DS bootstrap fallback: "
-                        f"mode=3 key={tgame_mode4_key.hex()} "
-                        "source=A11A GameServerInfo.DSKey"
+                        "mode=3 source=A11A GameServerInfo.DSKey"
                     )
 
                 if tgame_mode4_key is None:
-                    log(label, f"TGame ticket-anchor key recovery FAILED: {crypto_src}")
+                    log(label, f"TGame AUTH ticket key lookup FAILED: {crypto_src}")
                     log(label, "v95 sends no cmd08 because no TPDU bootstrap key is available.")
                 elif tgame_crypto_mode not in (3, 4):
                     log(
                         label,
                         f"TGame ticket-anchor state mode={tgame_crypto_mode} "
-                        f"key={tgame_mode4_key.hex()} source={crypto_src}; "
+                        f"source={crypto_src}; "
                         "unsupported for this SYN"
                     )
                 else:
@@ -8172,7 +8267,6 @@ def handle_placeholder(conn, addr, label):
                             label,
                             "TGame ticket-anchor crypto-state: "
                             f"mode={tgame_crypto_mode} "
-                            f"key={tgame_mode4_key.hex()} "
                             f"verified={crypto_src.get('verified')} "
                             f"uin={crypto_src.get('uin')} "
                             f"service_id={crypto_src.get('service_id')} "
@@ -8185,8 +8279,7 @@ def handle_placeholder(conn, addr, label):
                         log(
                             label,
                             f"TGame ticket-anchor crypto-state: "
-                            f"mode={tgame_crypto_mode} "
-                            f"key={tgame_mode4_key.hex()} source={crypto_src}"
+                            f"mode={tgame_crypto_mode} source={crypto_src}"
                         )
 
                     syn_t0 = time.perf_counter()
@@ -8240,8 +8333,162 @@ def handle_placeholder(conn, addr, label):
                     )
             else:
                 role_state = role_extract_auth_state(data)
+                if (
+                    label.upper() in ("ROLE", "ZONE")
+                    and len(data) >= 3
+                    and data[:3] == b"\x55\x0e\x06"
+                ):
+                    # cmd06 resumes an established transport session. Decrypt
+                    # the UIN and sequence with each candidate key, then match
+                    # the UIN before accepting the reconnect.
+                    try:
+                        _resume_candidates = get_sessions_for_ip(
+                            addr[0],
+                            db_path=PLAYER_DB.db_path,
+                            private_key_path=PRIVATE_KEY_PATH,
+                        )
+                    except Exception as _resume_error:
+                        _resume_candidates = []
+                        log(
+                            label,
+                            "Persistent TGame session lookup failed: "
+                            f"{type(_resume_error).__name__}",
+                        )
+                    _resume_matches = []
+                    for _candidate in _resume_candidates:
+                        _candidate_key = _candidate.get("transport_key")
+                        if _candidate_key is None:
+                            continue
+                        try:
+                            _cmd06 = parse_cmd06_resume(
+                                data,
+                                bytes(_candidate_key),
+                                tgame_mode3_decrypt,
+                            )
+                        except Exception:
+                            continue
+                        if _cmd06["uin"] == int(_candidate["uin"]):
+                            _resume_matches.append((_candidate, _cmd06))
+
+                    _resume_uins = {
+                        int(candidate["uin"])
+                        for candidate, _request in _resume_matches
+                    }
+                    if len(_resume_uins) == 1:
+                        # Repeated logins may leave several sessions for the
+                        # same account; use the most recently active one.
+                        _resume, _cmd06 = max(
+                            _resume_matches,
+                            key=lambda match: float(match[0]["last_seen_at"]),
+                        )
+                        tgame_mode4_key = bytes(_resume["transport_key"])
+                        tgame_crypto_mode = int(_resume["mode"])
+                        tgame_session_ticket = str(
+                            _resume["ticket"]
+                        ).encode("ascii")
+                        tgame_session_uin = int(_resume["uin"])
+                        try:
+                            touch_session(
+                                tgame_session_ticket,
+                                tgame_session_uin,
+                                tgame_session_ip,
+                                db_path=PLAYER_DB.db_path,
+                            )
+                        except Exception as _resume_touch_error:
+                            log(
+                                label,
+                                "Persistent TGame session expiry refresh failed "
+                                f"during resume: {type(_resume_touch_error).__name__}",
+                            )
+                        role_state = {
+                            "tgame": True,
+                            "uin": tgame_session_uin,
+                            "persistent_resume": True,
+                            "resume_sequence": int(_cmd06["sequence"]),
+                        }
+                        _v140_select_player(tgame_session_uin)
+                        _persist_login, _persist_nick = (
+                            _r12_load_persisted_nickname(tgame_session_uin)
+                        )
+                        if _persist_login:
+                            role_state["login_name"] = _persist_login
+                        if _persist_nick:
+                            role_state["nickname"] = _persist_nick
+                        _resume_room = V150_ROOM_REGISTRY.room_for_player(
+                            tgame_session_uin
+                        )
+                        if _resume_room is not None:
+                            _resume_member = next(
+                                (
+                                    member
+                                    for member in _resume_room.get("members", [])
+                                    if int(member.get("uin", 0))
+                                    == tgame_session_uin
+                                ),
+                                None,
+                            )
+                            if _resume_member is not None:
+                                role_state["persistent_resume_room"] = _resume_room
+                                role_state["v79_created_match_room"] = _resume_room
+                                role_state["v143b_ds_room_id"] = int(
+                                    _resume_room["room_id"]
+                                )
+                                role_state["v83_in_match_room"] = True
+                                role_state["v88_match_seat"] = int(
+                                    _resume_member.get("seat_index", 0)
+                                )
+                                role_state["v88_match_camp"] = int(
+                                    _resume_member.get("camp", 1)
+                                )
+                                log(
+                                    label,
+                                    "Persistent TGame room state restored "
+                                    f"uin={tgame_session_uin} "
+                                    f"room={int(_resume_room['room_id'])} "
+                                    f"members={len(_resume_room.get('members', []))}",
+                                )
+                        _resume_remaining = max(
+                            0,
+                            int(float(_resume["expires_at"]) - time.time()),
+                        )
+                        log(
+                            label,
+                            "Persistent TGame cmd06 authenticated "
+                            f"uin={tgame_session_uin} "
+                            f"client_seq=0x{_cmd06['sequence']:08x} "
+                            f"expires_in={_resume_remaining}s",
+                        )
+                        syn, syn_cipher = tgame_build_cmd08_syn_auto(
+                            tgame_mode4_key, tgame_crypto_mode
+                        )
+                        conn.sendall(syn)
+                        log(
+                            label,
+                            f"TX TGAME cmd08 SYN for persistent resume "
+                            f"({len(syn)}B) mode={tgame_crypto_mode} "
+                            f"cipher_len={len(syn_cipher)}; waiting for cmd09 SYNACK",
+                        )
+                    elif len(_resume_uins) > 1:
+                        log(
+                            label,
+                            "Persistent TGame cmd06 matches multiple accounts "
+                            f"for this client IP: candidates={len(_resume_uins)}; "
+                            "not resuming",
+                        )
+                    else:
+                        log(
+                            label,
+                            "No unexpired persistent TGame session "
+                            "authenticated this cmd06 packet",
+                        )
             if not role_state.get("tgame"):
-                log(label, f"live auth state: mode={role_state.get('mode')} uin={role_state.get('uin')} seq={role_state.get('seq')} key={role_state.get('session_key')!r} body_status={role_state.get('body_status')}")
+                log(
+                    label,
+                    f"live auth state: mode={role_state.get('mode')} "
+                    f"uin={role_state.get('uin')} seq={role_state.get('seq')} "
+                    f"session_key_present={bool(role_state.get('session_key'))} "
+                    f"body_status={role_state.get('body_status')}",
+                )
             app_plain = role_state.get("app_plain") or b""
             if len(app_plain) >= 14:
                 try:
@@ -8313,6 +8560,7 @@ def handle_placeholder(conn, addr, label):
         )
         tgame_stream_tail = b""
         tgame_stream_frame_queue = []
+        tgame_last_persist_touch = 0.0
 
         # v69 diagnostic:
         # The client consistently sends FF05 only *after* accepting A001.
@@ -8403,6 +8651,39 @@ def handle_placeholder(conn, addr, label):
                                     active_tgame_mode = mode_now
                                     tgame_chgskey_complete = True
                                     tgame_stream_mode = True
+                                    if (
+                                        tgame_session_ticket is not None
+                                        and tgame_session_uin is not None
+                                    ):
+                                        try:
+                                            _persisted = save_transport_key(
+                                                tgame_session_ticket,
+                                                tgame_session_uin,
+                                                tgame_session_ip,
+                                                new_key,
+                                                mode=mode_now,
+                                                db_path=PLAYER_DB.db_path,
+                                                private_key_path=PRIVATE_KEY_PATH,
+                                            )
+                                            if _persisted:
+                                                tgame_last_persist_touch = time.monotonic()
+                                                log(
+                                                    label,
+                                                    "Persistent TGame transport session saved "
+                                                    f"for uin={tgame_session_uin}",
+                                                )
+                                            else:
+                                                log(
+                                                    label,
+                                                    "Persistent TGame transport session was not "
+                                                    "updated (ticket missing, expired, or IP mismatch)",
+                                                )
+                                        except Exception as _persist_error:
+                                            log(
+                                                label,
+                                                "Persistent TGame transport session save failed: "
+                                                f"{type(_persist_error).__name__}",
+                                            )
                                     # Do NOT clear tgame_stream_frame_queue or
                                     # tgame_stream_tail here.  TCP may already
                                     # have delivered another complete/partial
@@ -8410,13 +8691,67 @@ def handle_placeholder(conn, addr, label):
                                     log(
                                         label,
                                         f"TX TGAME cmd01 CHGSKEY v44 ({len(chg)}B) "
-                                        f"new_key={new_key!r} enc_len={len(chg_enc)}: {chg.hex()}"
+                                        f"new_key=<redacted> enc_len={len(chg_enc)}: "
+                                        f"{_short_hex(chg, 96)}"
                                     )
                                     log(
                                         label,
                                         "TGame transport key switched locally; subsequent "
                                         "cmd00 body traffic will be decrypted with the new key"
                                     )
+                                    if (
+                                        role_state.get("persistent_resume")
+                                        and label.upper() == "ZONE"
+                                    ):
+                                        resume_seq = int(
+                                            role_state.get("resume_sequence", 0)
+                                        )
+                                        resume_login = _v48_build_zn_login_response(
+                                            (resume_seq + 1) & 0xFFFFFFFF,
+                                            result=ZONE_ERR_SUCC,
+                                            expose_wallet=True,
+                                        )
+                                        _v48_send_app(
+                                            conn,
+                                            active_tgame_key,
+                                            resume_login,
+                                            label,
+                                            "ZN2C_RES_LOGIN persistent-resume",
+                                        )
+                                        pending_zone_profile = {
+                                            "seq_pinfo": (resume_seq + 2) & 0xFFFFFFFF,
+                                            "seq_props": (resume_seq + 3) & 0xFFFFFFFF,
+                                            "seq_hints": (resume_seq + 4) & 0xFFFFFFFF,
+                                            "first_nickname_probe": False,
+                                            "persistent_resume": True,
+                                        }
+                                        resume_room = role_state.pop(
+                                            "persistent_resume_room", None
+                                        )
+                                        if isinstance(resume_room, dict):
+                                            room_rsp = _v150_build_res_enter_match_room(
+                                                resume_room
+                                            )
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                room_rsp,
+                                                label,
+                                                "ZN2C_RES_ENTERMATCHROOM persistent-resume "
+                                                f"room={int(resume_room['room_id'])}",
+                                            )
+                                            log(
+                                                label,
+                                                "Persistent TGame lobby room replayed "
+                                                f"uin={_v150_role_uin(role_state)} "
+                                                f"room={int(resume_room['room_id'])} "
+                                                "after transport resume",
+                                            )
+                                        log(
+                                            label,
+                                            "Persistent TGame app resume bootstrap sent; "
+                                            "waiting for client FF05 before profile replay",
+                                        )
                                 else:
                                     log(
                                         label,
@@ -8466,6 +8801,25 @@ def handle_placeholder(conn, addr, label):
                                 # C2ZN (0x3243) inside cmd00.
                                 try:
                                     app = _v48_parse_app(plain_now)
+                                    if (
+                                        tgame_session_ticket is not None
+                                        and tgame_session_uin is not None
+                                        and time.monotonic() - tgame_last_persist_touch >= 15.0
+                                    ):
+                                        try:
+                                            if touch_session(
+                                                tgame_session_ticket,
+                                                tgame_session_uin,
+                                                tgame_session_ip,
+                                                db_path=PLAYER_DB.db_path,
+                                            ):
+                                                tgame_last_persist_touch = time.monotonic()
+                                        except Exception as _touch_error:
+                                            log(
+                                                label,
+                                                "Persistent TGame session expiry refresh failed: "
+                                                f"{type(_touch_error).__name__}",
+                                            )
                                     log(
                                         label,
                                         "TGame APP: "
@@ -8831,6 +9185,28 @@ def handle_placeholder(conn, addr, label):
                                                     "ZN2C_NTF_ZONE_HINTS v71-after-ff05 "
                                                     "hint=0"
                                                 )
+
+                                                resume_room = role_state.pop(
+                                                    "persistent_resume_room", None
+                                                )
+                                                if isinstance(resume_room, dict):
+                                                    room_rsp = _v150_build_res_enter_match_room(
+                                                        resume_room
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        room_rsp,
+                                                        label,
+                                                        "ZN2C_RES_ENTERMATCHROOM persistent-resume "
+                                                        f"room={int(resume_room['room_id'])}",
+                                                    )
+                                                    log(
+                                                        label,
+                                                        "Persistent TGame lobby room replayed "
+                                                        f"uin={_v150_role_uin(role_state)} "
+                                                        f"room={int(resume_room['room_id'])}",
+                                                    )
 
                                                 pending_zone_profile = None
                                                 if first_nickname_profile:
@@ -11794,7 +12170,10 @@ def handle_placeholder(conn, addr, label):
         # r10 fail-safe: a ZONE disconnect belongs to one player. Remove only
         # that UIN from room/match membership. The shared DS remains alive while
         # another in-match player exists; the last player triggers cleanup.
-        if str(label).upper() == "ZONE":
+        if (
+            str(label).upper() == "ZONE"
+            and not SERVER_SHUTTING_DOWN.is_set()
+        ):
             try:
                 rs = locals().get("role_state")
                 if isinstance(rs, dict):
@@ -13033,11 +13412,13 @@ if __name__ == "__main__":
             _development_web.stop()
         raise SystemExit(4)
 
-    # Connections and DS processes cannot be resumed after a server restart.
-    # Clear their persisted lobby snapshots only after this process has passed
-    # preflight, bound every listener, and passed the launch-gate check.
+    # Recover waiting-room membership only for unexpired transport sessions.
+    # Active matches depend on process-local UE3 servers and cannot survive a
+    # backend restart, so RoomRegistry drops those while preserving lobby rooms.
     try:
-        stale_room_count = V150_ROOM_REGISTRY.clear_all()
+        restart_room_state = V150_ROOM_REGISTRY.recover_after_restart(
+            retain_uins=get_unexpired_session_uins(db_path=PLAYER_DB.db_path),
+        )
     except Exception as lobby_db_exc:
         reason = (
             "lobby database initialization failed: "
@@ -13064,7 +13445,9 @@ if __name__ == "__main__":
     log(
         "ROOM",
         f"SQLite lobby state ready db={V150_ROOM_REGISTRY.db_path}; "
-        f"cleared stale rooms={stale_room_count}",
+        f"recovered waiting rooms={restart_room_state['recovered_rooms']} "
+        f"removed rooms={restart_room_state['removed_rooms']} "
+        f"expired members={restart_room_state['removed_members']}",
     )
 
     for label, kind, port, sock in listener_sockets:
@@ -13090,6 +13473,7 @@ if __name__ == "__main__":
             flush=True
         )
     finally:
+        SERVER_SHUTTING_DOWN.set()
         if _development_web is not None:
             try:
                 _development_web.stop()

@@ -741,3 +741,20 @@ Helpful contributions include:
 Please read [../CONTRIBUTING.md](../CONTRIBUTING.md) before submitting code.
 
 Small changes with clear evidence are better than large guessed protocol implementations.
+
+## Reconnecting after a server restart
+
+The server stores TGame reconnect sessions in the same SQLite account database,
+with session keys encrypted using the server RSA private key. Keep using the same
+database and the same private key file (normally `server\PRIVATE.PEM`) when
+restarting the server. If you pass a custom key path, keep using that path.
+
+A session lasts for 15 minutes without valid game traffic; valid traffic refreshes
+the timeout. Set `AF_TGAME_SESSION_TTL_SECONDS` to change the idle timeout
+(60 seconds to 7 days). The reconnect is also bound to the client's public IP. If
+the session expires or the IP changes, the player must log in again.
+
+After restart, an unstarted lobby room can be restored for players with live
+sessions, with everyone marked unready. A match already in progress cannot resume
+because its dedicated server process ended with the backend. No client key helper
+or separate HTTPS request is needed for reconnect.

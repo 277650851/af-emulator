@@ -19,11 +19,12 @@ class PVERuntimeTests(unittest.TestCase):
         self.assertIn("zero_dskey", s)
         self.assertIn("native_movement", s)
 
-    def test_loader_builds_private_afdev_copy_and_gates_nonstock_source(self):
+    def test_loader_builds_private_afdev_copy_and_validates_runtime_signatures(self):
         s = self.text("tools/server_spawner/AFDevLoader_v48_spawner_multi_instance.py")
         self.assertIn('source_exe = game_dir / "TGame.exe"', s)
         self.assertIn("shutil.copy2(source_exe, exe)", s)
-        self.assertIn("source_digest.lower() != digest.lower()", s)
+        self.assertIn("without whole-file hash gating", s)
+        self.assertIn("runtime patch-site signatures will still be validated", s)
         self.assertIn("suspended runtime signature validation", s)
         self.assertIn("verify_and_patch(", s)
 
