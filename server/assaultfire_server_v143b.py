@@ -3285,7 +3285,7 @@ def _v48_parse_geo_req_zonelist(body):
     }
 
 
-def _v48_build_geo_zonelist(seq, port=TGAME_ZONE_PORT):
+def _v48_build_geo_zonelist(seq, port=TGAME_ZONE_PORT, ping_ms=0xfffffffe):
     """Build GEO2C_ResZoneList using the framing learned from the live GEO path.
 
     Like the runtime-verified PingList response, this GEO response starts at
@@ -3307,7 +3307,7 @@ def _v48_build_geo_zonelist(seq, port=TGAME_ZONE_PORT):
         + _v50_geo_tdr_string("127.0.0.1", 128)
         + _v48_u16(port)
         + _v48_i32(1)
-        + _v48_u32(1)
+        + _v48_u32(ping_ms)
         + _v48_u32(1)
         + b"".join(_v48_i32(0) for _ in range(6))
     )
@@ -8528,15 +8528,29 @@ def handle_placeholder(conn, addr, label):
                                                 f"consumed={zreq['consumed']}/{zreq['body_len']}"
                                             )
                                             client_seq = app["seq"] & 0xffffffff
+                                            client_ping_ms = (
+                                                int(zreq["servers"][0]["ping_ms"]) & 0xffffffff
+                                                if zreq["servers"]
+                                                else 0xfffffffe
+                                            )
+                                            client_ping_signed = (
+                                                client_ping_ms
+                                                if client_ping_ms < 0x80000000
+                                                else client_ping_ms - 0x100000000
+                                            )
                                             log(
                                                 label,
                                                 "GEO ZoneList response derived from accepted PingList framing: "
                                                 f"client_rx_seq=0x{client_seq:08x} "
+                                                f"client_ping_ms_u32={client_ping_ms} "
+                                                f"client_ping_ms_signed={client_ping_signed} "
                                                 "response_seq_prefix=NONE "
                                                 "domain_len_prefix=u32be"
                                             )
                                             zrsp = _v48_build_geo_zonelist(
-                                                client_seq, port=TGAME_ZONE_PORT
+                                                client_seq,
+                                                port=TGAME_ZONE_PORT,
+                                                ping_ms=client_ping_ms,
                                             )
                                             _v48_send_app(
                                                 conn, active_tgame_key, zrsp,
@@ -8545,6 +8559,8 @@ def handle_placeholder(conn, addr, label):
                                                 "seq_prefix=NONE body_len=0x3E "
                                                 "result=0x8B00 zones=1 "
                                                 f"target=127.0.0.1:{TGAME_ZONE_PORT} "
+                                                f"ping_ms_u32={client_ping_ms} "
+                                                f"ping_ms_signed={client_ping_signed} "
                                                 "decision=Sequential"
                                             )
                                             log(
