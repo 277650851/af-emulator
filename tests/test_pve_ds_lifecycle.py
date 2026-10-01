@@ -25,7 +25,7 @@ class PVERuntimeTests(unittest.TestCase):
         self.assertIn("shutil.copy2(source_exe, exe)", s)
         self.assertIn("without whole-file hash gating", s)
         self.assertIn("runtime patch-site signatures will still be validated", s)
-        self.assertIn("suspended runtime signature validation", s)
+        self.assertIn("in the suspended process before execution resumes", s)
         self.assertIn("verify_and_patch(", s)
 
 

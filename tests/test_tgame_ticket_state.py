@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from server.tgame_ticket_state import (
@@ -64,11 +65,14 @@ class TGameTicketStateTests(unittest.TestCase):
         self.assertGreater(result["expires_at"], time.time())
 
     def test_crypto_keys_are_encrypted_at_rest(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
+        connection = sqlite3.connect(self.db_path)
+        try:
             row = connection.execute(
                 "SELECT auth_key_enc FROM af_tgame_sessions WHERE ticket = ?",
                 (self.ticket.decode("ascii"),),
             ).fetchone()
+        finally:
+            connection.close()
         self.assertIsNotNone(row)
         self.assertNotIn(self.auth_key, bytes(row[0]))
 
@@ -133,29 +137,39 @@ class TGameTicketStateTests(unittest.TestCase):
         )
 
     def test_idle_game_session_expiry_and_touch(self) -> None:
-        self.assertTrue(
-            save_transport_key(
-                self.ticket,
-                self.uin,
-                self.client_ip,
-                self.transport_key,
-                ttl_seconds=0.03,
-                **self._kwargs(),
+        now = time.time() + 5.0
+        with patch("server.tgame_ticket_state.time.time") as clock:
+            clock.return_value = now
+            self.assertTrue(
+                save_transport_key(
+                    self.ticket,
+                    self.uin,
+                    self.client_ip,
+                    self.transport_key,
+                    ttl_seconds=0.03,
+                    **self._kwargs(),
+                )
             )
-        )
-        self.assertTrue(
-            touch_session(
-                self.ticket,
-                self.uin,
-                self.client_ip,
-                ttl_seconds=0.08,
-                db_path=self.db_path,
+            clock.return_value = now + 0.01
+            self.assertTrue(
+                touch_session(
+                    self.ticket,
+                    self.uin,
+                    self.client_ip,
+                    ttl_seconds=0.08,
+                    db_path=self.db_path,
+                )
             )
-        )
-        time.sleep(0.03)
-        self.assertEqual(len(get_sessions_for_ip(self.client_ip, **self._kwargs())), 1)
-        time.sleep(0.06)
-        self.assertEqual(get_sessions_for_ip(self.client_ip, **self._kwargs()), [])
+            clock.return_value = now + 0.04
+            self.assertEqual(
+                len(get_sessions_for_ip(self.client_ip, **self._kwargs())),
+                1,
+            )
+            clock.return_value = now + 0.10
+            self.assertEqual(
+                get_sessions_for_ip(self.client_ip, **self._kwargs()),
+                [],
+            )
 
     def test_unexpired_session_uins_excludes_ticket_only_and_expired_rows(self) -> None:
         self.assertEqual(
