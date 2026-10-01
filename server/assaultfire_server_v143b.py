@@ -3344,7 +3344,7 @@ def _v48_build_zn_login_response(
     seq, *, result=ZONE_ERR_SUCC, expose_wallet=True
 ):
     # ZN2C_ResLogin:
-    # u16 Result | u32 MainChannelId | u32 SubChannelId | double ServerTime |
+    # u16 Result | u32 MainChannelId | u32 SubChannelId | i64 ServerTime |
     # i32 TGamePoint | i32 GoldPoint | i16 FreePropCount
     wallet = _v140_wallet()
     ap = int(wallet["ap"]) if expose_wallet else 0
@@ -3353,7 +3353,7 @@ def _v48_build_zn_login_response(
         _v48_u16(result)
         + _v48_u32(1)
         + _v48_u32(1)
-        + _v48_f64(float(int(time.time())))
+        + _v48_i64(int(time.time()))
         + _v48_i32(ap)  # TGamePoint / PH AP
         + _v48_i32(gp)  # GoldPoint / GP
         + _v48_i16(0)
