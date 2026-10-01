@@ -357,6 +357,13 @@ def main():
     ap.add_argument("--target-host", default=TARGET[0])
     ap.add_argument("--target-port", type=int, default=TARGET[1])
     ap.add_argument("--actor-dump", default=str(ACTOR_DUMP_PATH))
+    ap.add_argument(
+        "--packet-diagnostics",
+        action="store_true",
+        default=os.environ.get("AF_DS_PACKET_DIAGNOSTICS", "").strip().lower()
+        in ("1", "true", "yes", "on"),
+        help="decrypt and log every relayed packet (off by default to reduce host-side jitter)",
+    )
 
     ap.add_argument("--lazy-spawn", action="store_true")
     ap.add_argument("--python-exe", default=sys.executable)
@@ -398,7 +405,8 @@ def main():
     listen_port = int(args.listen_port)
     target = (args.target_host, int(args.target_port))
     ACTOR_DUMP_PATH = Path(args.actor_dump).resolve()
-    ACTOR_DUMP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if args.packet_diagnostics:
+        ACTOR_DUMP_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     state_file = Path(args.state_file).resolve() if args.state_file else None
     ready_file = Path(args.ready_file).resolve() if args.ready_file else None
@@ -451,7 +459,8 @@ def main():
             else:
                 state_write_failures = 0
 
-    append_actor_dump("\n=== NEW BRIDGE-v9 MULTI-PEER LATCH SESSION %.6f ===" % time.time())
+    if args.packet_diagnostics:
+        append_actor_dump("\n=== NEW BRIDGE-v9 MULTI-PEER LATCH SESSION %.6f ===" % time.time())
     cs = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     cs.bind((listen_ip, listen_port))
     disable_udp_connreset(cs)
@@ -459,9 +468,16 @@ def main():
     publish(state="LISTENING")
     print(f"[BRIDGE-v9.2] lazy relay listening {listen_ip}:{listen_port} -> {target[0]}:{target[1]}", flush=True)
     print(f"[BRIDGE-v9.2] AFDEV=OFF; first valid AF DS/UE3 client UDP packet triggers v48", flush=True)
-    print(f"[BRIDGE-v9] diagnostic decode key = {DECODE_KEY.hex()}", flush=True)
     print("[BRIDGE-v9] upstream sockets are allocated per client peer", flush=True)
-    print(f"[BRIDGE-v9] actor payload log = {ACTOR_DUMP_PATH}", flush=True)
+    if args.packet_diagnostics:
+        print(f"[BRIDGE-v9] diagnostic decode key = {DECODE_KEY.hex()}", flush=True)
+        print(f"[BRIDGE-v9] actor payload log = {ACTOR_DUMP_PATH}", flush=True)
+    else:
+        print(
+            "[BRIDGE-v9] packet diagnostics disabled; set AF_DS_PACKET_DIAGNOSTICS=1 "
+            "or pass --packet-diagnostics to enable",
+            flush=True,
+        )
 
     # r10/v9 multiplayer bridge: one public room endpoint, but one distinct
     # upstream UDP socket per client peer.  AFDEV therefore sees separate source
@@ -775,7 +791,12 @@ def main():
                         print(f"[C->S] UDP reset ignored: {exc}", flush=True)
                         continue
                     c2s += 1
-                    print(f"[C->S #{c2s}] peer={addr[0]}:{addr[1]} {summarize('C->S', wire)}", flush=True)
+                    if args.packet_diagnostics:
+                        print(
+                            f"[C->S #{c2s}] peer={addr[0]}:{addr[1]} "
+                            f"{summarize('C->S', wire)}",
+                            flush=True,
+                        )
 
                     pstate = peers.get(addr)
                     if pstate is None:
@@ -832,7 +853,12 @@ def main():
                     if src != target:
                         continue
                     s2c += 1
-                    print(f"[S->C #{s2c}] peer={addr[0]}:{addr[1]} {summarize('S->C', wire)}", flush=True)
+                    if args.packet_diagnostics:
+                        print(
+                            f"[S->C #{s2c}] peer={addr[0]}:{addr[1]} "
+                            f"{summarize('S->C', wire)}",
+                            flush=True,
+                        )
                     if args.lazy_spawn and not pstate.get("live"):
                         pstate["live"] = True
                         pstate["latched_wire"] = None
