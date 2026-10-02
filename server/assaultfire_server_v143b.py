@@ -5252,11 +5252,16 @@ def _v140_plan_purchase(req, self_uin=V109_UIN):
     if int(req.get("count", 0)) <= 0 or not req.get("commodities"):
         raise _v140_ShopReject(SHOP_ERR_SHOPCART_EMPTY, "empty cart")
 
-    if int(req.get("buy_type", 0)) != 1:
-        raise _v140_ShopReject(
-            SHOP_ERR_FAIL,
-            f"only normal self-buy is implemented; buy_type={req.get('buy_type')}",
-        )
+    # v164: BuyType is opaque stock-client purchase-mode metadata.
+    #
+    # Do not whitelist BuyType values or tie purchase handling to particular
+    # commodities/weapons. Direct purchases, recommended-item multi-buy, and
+    # shopping-cart purchases all use the same generic atomic planner.
+    #
+    # Authorization is based on Consignne below. Every commodity row is still
+    # validated server-side for ID, price index/period, currency, voucher,
+    # ConvertMP and wallet balance before anything is committed.
+    buy_type = int(req.get("buy_type", 0)) & 0xFFFF
 
     self_uin = int(self_uin) & 0xFFFFFFFF
     consignne = int(req.get("consignne") or self_uin)
@@ -9837,6 +9842,34 @@ def handle_placeholder(conn, addr, label):
                                             op = _r13_canonicalize_operation(
                                                 wire_op, session_uin
                                             )
+
+                                            # v165: preserve the subject's pre-operation
+                                            # ownership before _v111_apply_prop_operation()
+                                            # mutates it. This lets us dynamically identify
+                                            # root-level equipment TAKEOFF as well as EQUIP
+                                            # without knowing any item IDs.
+                                            _v165_pre_subject = _v140_find_prop(
+                                                int(op.get("subject_gid", 0))
+                                            )
+                                            _v165_pre_item_id = (
+                                                int(
+                                                    _v165_pre_subject.get(
+                                                        "item_id", 0
+                                                    )
+                                                )
+                                                if _v165_pre_subject is not None
+                                                else 0
+                                            )
+                                            _v165_pre_owner = (
+                                                int(
+                                                    _v165_pre_subject.get(
+                                                        "owner_gid", 0
+                                                    )
+                                                )
+                                                if _v165_pre_subject is not None
+                                                else 0
+                                            )
+
                                             action, effective_op = (
                                                 _v111_apply_prop_operation(op)
                                             )
@@ -9931,6 +9964,134 @@ def handle_placeholder(conn, addr, label):
                                                 if _v142_subject is not None
                                                 else 0
                                             )
+
+                                            # v165: root-level equipment changes can invalidate
+                                            # the stock Storage Weapon-tab cache even though the
+                                            # authoritative current bag and weapon ownership are
+                                            # still correct.
+                                            #
+                                            # Detect the CLASS of operation, not any specific
+                                            # item/bag:
+                                            #   - EQUIP or TAKEOFF
+                                            #   - real known subject
+                                            #   - not a character root
+                                            #   - not a backpack
+                                            #   - subject was or becomes attached to root owner 1
+                                            #
+                                            # Weapon changes remain excluded because their owner
+                                            # is a dynamic backpack GID, preserving v117's proven
+                                            # no-A006 behavior for weapon-slot operations.
+                                            _v165_root_equipment_change = (
+                                                _v165_pre_subject is not None
+                                                and int(
+                                                    op.get("operation", -1)
+                                                )
+                                                in (
+                                                    PROP_OP_EQUIP,
+                                                    PROP_OP_TAKEOFF,
+                                                )
+                                                and not _v140_is_role_item(
+                                                    _v165_pre_item_id
+                                                )
+                                                and not _v141_is_bag_item(
+                                                    _v165_pre_item_id
+                                                )
+                                                and (
+                                                    int(_v165_pre_owner)
+                                                    == V110_BAG_MOUNT_OWNER
+                                                    or int(
+                                                        effective_op.get(
+                                                            "target_gid", 0
+                                                        )
+                                                    )
+                                                    == V110_BAG_MOUNT_OWNER
+                                                )
+                                            )
+
+                                            if _v165_root_equipment_change:
+                                                _v165_bag_gid = (
+                                                    _v141_current_bag_gid()
+                                                )
+                                                _v165_bag = _v140_find_prop(
+                                                    _v165_bag_gid
+                                                )
+
+                                                if (
+                                                    _v165_bag is not None
+                                                    and _v141_is_bag_item(
+                                                        int(
+                                                            _v165_bag.get(
+                                                                "item_id", 0
+                                                            )
+                                                        )
+                                                    )
+                                                ):
+                                                    _v165_bag_body = (
+                                                        _v111_pack_prop_operation(
+                                                            _r13_project_operation(
+                                                                {
+                                                                    "operation": PROP_OP_EQUIP,
+                                                                    "subject_gid": _v165_bag_gid,
+                                                                    "target_gid": V110_BAG_MOUNT_OWNER,
+                                                                    "location": V109_LOC_BAG,
+                                                                },
+                                                                session_uin,
+                                                            )
+                                                        )
+                                                    )
+
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        _v111_build_prop_operation_response(
+                                                            _v165_bag_body
+                                                        ),
+                                                        label,
+                                                        "ZN2C_RES_PROPOPERATION "
+                                                        "v165-root-item-current-bag "
+                                                        "cmd=0xA009 result=0x8100 "
+                                                        f"bag=0x{_v165_bag_gid:016x}",
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        _v111_build_prop_operation_notification(
+                                                            _v165_bag_body
+                                                        ),
+                                                        label,
+                                                        "ZN2C_NTF_PROPOPERATION "
+                                                        "v165-root-item-current-bag "
+                                                        "cmd=0xA00A "
+                                                        f"bag=0x{_v165_bag_gid:016x}",
+                                                    )
+                                                    _v140_send_full_inventory(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        label,
+                                                        prefix=(
+                                                            "v165-root-item-bag-reconcile"
+                                                        ),
+                                                        session_uin=session_uin,
+                                                    )
+                                                    log(
+                                                        label,
+                                                        "v165: dynamic root-equipment "
+                                                        "change reconciled selected bag + A006 "
+                                                        f"item={_v165_pre_item_id} "
+                                                        f"op={int(op.get('operation', -1))} "
+                                                        f"pre_owner=0x{int(_v165_pre_owner):016x} "
+                                                        f"post_owner=0x{int(effective_op.get('target_gid', 0)):016x} "
+                                                        f"bag=0x{_v165_bag_gid:016x}",
+                                                    )
+                                                else:
+                                                    log(
+                                                        label,
+                                                        "v165: root-equipment reconcile "
+                                                        "skipped: current bag does not resolve "
+                                                        "to an owned backpack "
+                                                        f"bag=0x{int(_v165_bag_gid):016x}",
+                                                    )
+
                                             if (
                                                 int(op.get("operation", -1)) == PROP_OP_EQUIP
                                                 and _v141_is_bag_item(_v142_item_id)
