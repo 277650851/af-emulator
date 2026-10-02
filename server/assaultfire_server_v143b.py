@@ -10217,51 +10217,113 @@ def handle_placeholder(conn, addr, label):
                                                     f"experience={int(V140_MALL_STATE.get('experience', 0))} "
                                                     "reason=role-equip-transaction-complete",
                                                 )
-                                                # v143 probe: v145 proved that after a character
-                                                # switch the BUG state and the manually FIXED
-                                                # Bag2->Bag1 state have identical CurrentRole,
-                                                # PreviewRole, CurrentBag and backend QBS09
-                                                # ownership. Test the smallest downstream rebuild
-                                                # trigger: replay ONLY the currently selected bag as
-                                                # an authoritative A00A notification after role
-                                                # commit. Do not alter backend state and do not
-                                                # synthesize a Bag2 toggle.
-                                                _v143_replay_bag_gid = _v141_current_bag_gid()
-                                                _v143_replay_bag = _v140_find_prop(
-                                                    _v143_replay_bag_gid
-                                                )
-                                                if _v143_replay_bag is not None:
-                                                    _v143_bag_body = _v111_pack_prop_operation(
-                                                        _r13_project_operation(
-                                                            {
-                                                                "operation": PROP_OP_EQUIP,
-                                                                "subject_gid": _v143_replay_bag_gid,
-                                                                "target_gid": V110_BAG_MOUNT_OWNER,
-                                                                "location": V109_LOC_BAG,
-                                                            },
-                                                            session_uin,
+                                                # v167: a stock role switch invalidates the
+                                                # Storage Weapon-tab contents cache.  The backend
+                                                # state remains correct (selected backpack and its
+                                                # weapon ownership do not change), but an A00A-only
+                                                # backpack replay is insufficient: the UI shows the
+                                                # selected bag with empty weapon slots until the user
+                                                # clicks that same bag again.
+                                                #
+                                                # Reconcile the ACTUAL selected backpack
+                                                # dynamically.  No Bag1/Bag2 GID, role, weapon or
+                                                # item ID is hard-coded:
+                                                #   role A008/A009/A00A
+                                                #     -> A005 current role
+                                                #     -> A00A current backpack
+                                                #     -> authoritative A006 inventory snapshot
+                                                #
+                                                # This intentionally remains role-switch scoped.
+                                                # v117's no-A006 rule for ordinary weapon A008
+                                                # operations is left unchanged.
+                                                _v167_bag_gid = _v141_current_bag_gid()
+                                                _v167_bag = _v140_find_prop(_v167_bag_gid)
+                                                if (
+                                                    _v167_bag is not None
+                                                    and _v141_is_bag_item(
+                                                        int(
+                                                            _v167_bag.get(
+                                                                "item_id", 0
+                                                            )
                                                         )
                                                     )
-                                                    _v143_bag_ntf = (
+                                                ):
+                                                    _v167_bag_body = (
+                                                        _v111_pack_prop_operation(
+                                                            _r13_project_operation(
+                                                                {
+                                                                    "operation": PROP_OP_EQUIP,
+                                                                    "subject_gid": _v167_bag_gid,
+                                                                    "target_gid": V110_BAG_MOUNT_OWNER,
+                                                                    "location": V109_LOC_BAG,
+                                                                },
+                                                                session_uin,
+                                                            )
+                                                        )
+                                                    )
+                                                    # v168: v167 proved that A00A + A006 alone is
+                                                    # not enough after a role switch.  The already-
+                                                    # proven v165 Item-tab fix and a real manual bag
+                                                    # click both use the complete stock callback
+                                                    # sequence A009 -> A00A -> A006.  Reuse that
+                                                    # sequence here for the dynamically selected bag.
+                                                    #
+                                                    # A009 is intentionally emitted before A00A,
+                                                    # matching the normal A008 bag-selection handler.
+                                                    # Backend ownership is NOT changed here.
+                                                    _v168_bag_rsp = (
+                                                        _v111_build_prop_operation_response(
+                                                            _v167_bag_body
+                                                        )
+                                                    )
+                                                    _v168_bag_ntf = (
                                                         _v111_build_prop_operation_notification(
-                                                            _v143_bag_body
+                                                            _v167_bag_body
                                                         )
                                                     )
                                                     _v48_send_app(
                                                         conn,
                                                         active_tgame_key,
-                                                        _v143_bag_ntf,
+                                                        _v168_bag_rsp,
+                                                        label,
+                                                        "ZN2C_RES_PROPOPERATION "
+                                                        "v168-post-role-current-bag "
+                                                        "cmd=0xA009 result=0x8100 "
+                                                        f"bag=0x{_v167_bag_gid:016x}",
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        _v168_bag_ntf,
                                                         label,
                                                         "ZN2C_NTF_PROPOPERATION "
-                                                        "v143-post-role-current-bag-replay "
-                                                        f"bag=0x{_v143_replay_bag_gid:016x}",
+                                                        "v168-post-role-current-bag "
+                                                        "cmd=0xA00A "
+                                                        f"bag=0x{_v167_bag_gid:016x}",
+                                                    )
+                                                    _v140_send_full_inventory(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        label,
+                                                        prefix=(
+                                                            "v168-post-role-bag-reconcile"
+                                                        ),
+                                                        session_uin=session_uin,
                                                     )
                                                     log(
                                                         label,
-                                                        "v143 probe: role commit complete; "
-                                                        "replayed current bag A00A only "
-                                                        f"bag=0x{_v143_replay_bag_gid:016x} "
-                                                        "(no state change, no A006, no fake Bag2)",
+                                                        "v168: role switch replayed complete "
+                                                        "dynamic bag callback A009+A00A+A006 "
+                                                        f"bag=0x{_v167_bag_gid:016x} "
+                                                        f"bag_item={int(_v167_bag.get('item_id', 0))}",
+                                                    )
+                                                else:
+                                                    log(
+                                                        label,
+                                                        "v167: post-role bag reconcile "
+                                                        "skipped because current bag does not "
+                                                        "resolve to an owned backpack "
+                                                        f"bag=0x{int(_v167_bag_gid):016x}",
                                                     )
                                                 # Keep the old Bag1 refresh compatibility only for
                                                 # the starter role; purchased roles do not need to arm
