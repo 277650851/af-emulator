@@ -81,13 +81,17 @@ def _page(title: str, body: str) -> str:
 <title>{_esc(title)} - Assault Fire Dev</title>
 <style>
 body{{font-family:Segoe UI,Arial,sans-serif;background:#101820;color:#e7f6ff;margin:0}}
-main{{max-width:760px;margin:48px auto;padding:28px;background:#172733;border:1px solid #2c6175;border-radius:10px}}
+main{{max-width:980px;margin:48px auto;padding:28px;background:#172733;border:1px solid #2c6175;border-radius:10px}}
 h1,h2{{color:#62d9ff}} input,button{{font:inherit;padding:9px;margin:5px 0}}
 input{{width:min(100%,420px);box-sizing:border-box}}
 button{{background:#1d819e;color:white;border:0;border-radius:5px;cursor:pointer}}
 a{{color:#6ee7ff}} .err{{color:#ff9b9b}} .ok{{color:#8dffa5}}
 table{{width:100%;border-collapse:collapse}} th,td{{text-align:left;border-bottom:1px solid #32515d;padding:8px}}
 small{{color:#a9bec8}} code{{color:#8dffa5}}
+.ap-form{{display:flex;gap:6px;align-items:center;white-space:nowrap}}
+.ap-form input{{width:125px;margin:0}}
+.ap-form button{{margin:0;white-space:nowrap}}
+.muted{{color:#a9bec8}}
 </style>
 </head>
 <body><main>{nav}<h1>{_esc(title)}</h1>{body}</main></body>
@@ -138,6 +142,64 @@ def _nickname_for_uin(uin: int) -> str | None:
             (int(uin),),
         ).fetchone()
         return str(row["nickname"]) if row and row["nickname"] else None
+    finally:
+        conn.close()
+
+
+def _ap_for_uin(uin: int) -> int | None:
+    """Return persisted AP for an initialized game wallet."""
+    conn = _connect()
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='player_wallets'"
+        ).fetchone()
+        if not exists:
+            return None
+        row = conn.execute(
+            "SELECT ap FROM player_wallets WHERE uin=?",
+            (int(uin),),
+        ).fetchone()
+        return int(row["ap"]) if row is not None else None
+    finally:
+        conn.close()
+
+
+def _set_ap_for_uin(uin: int, ap_value: int) -> None:
+    """Update AP only; keep the active game/login session intact."""
+    value = int(ap_value)
+    if value < 0 or value > 2_147_483_647:
+        raise ValueError("AP must be between 0 and 2147483647")
+
+    conn = _connect()
+    try:
+        account = conn.execute(
+            "SELECT 1 FROM accounts WHERE uin=?",
+            (int(uin),),
+        ).fetchone()
+        if not account:
+            raise ValueError("account not found")
+
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='player_wallets'"
+        ).fetchone()
+        if not exists:
+            raise ValueError(
+                "player wallet is not initialized yet; sign in to the game once first"
+            )
+
+        cur = conn.execute(
+            "UPDATE player_wallets "
+            "SET ap=?, updated_at=CURRENT_TIMESTAMP "
+            "WHERE uin=?",
+            (value, int(uin)),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(
+                "player wallet is not initialized yet; sign in to the game once first"
+            )
+        conn.commit()
     finally:
         conn.close()
 
@@ -383,10 +445,25 @@ def admin():
         uin = int(row["uin"])
         target = "active" if row["status"] != "active" else "disabled"
         action = "Unban / Enable" if target == "active" else "Ban / Disable"
+        ap_value = _ap_for_uin(uin)
+        if ap_value is None:
+            ap_cell = (
+                '<span class="muted">Launch game once to initialize wallet</span>'
+            )
+        else:
+            ap_cell = (
+                f'<form class="ap-form" method="post" '
+                f'action="/admin/account/{uin}/ap">'
+                f'{_form_token()}'
+                f'<input name="ap" type="number" min="0" max="2147483647" '
+                f'value="{int(ap_value)}" required>'
+                f'<button type="submit">Save AP</button></form>'
+            )
         rendered.append(
             "<tr>"
             f"<td>{uin}</td><td>{_esc(row['username'])}</td>"
             f"<td>{_esc(_nickname_for_uin(uin) or '')}</td>"
+            f"<td>{ap_cell}</td>"
             f"<td>{_esc(row['status'])}</td><td>"
             f'<form method="post" action="/admin/account/{uin}/status">'
             f"{_form_token()}"
@@ -396,14 +473,31 @@ def admin():
     body = (
         "<p>Admin access is available only after signing in through "
         "<code>/login</code>.</p>"
+        "<p><small>Set AP here while the player stays logged in. "
+        "Then click the AP reload icon in Mall to request A50E and refresh "
+        "the value from SQLite.</small></p>"
         "<table><thead><tr><th>UIN</th><th>Username</th><th>Nickname</th>"
-        "<th>Status</th><th>Action</th></tr></thead><tbody>"
+        "<th>AP</th><th>Status</th><th>Action</th></tr></thead><tbody>"
         + "".join(rendered)
         + "</tbody></table>"
         + f'<form method="post" action="/logout">{_form_token()}'
         + '<button type="submit">Log out</button></form>'
     )
     return _page("Admin", body)
+
+
+@app.post("/admin/account/<int:uin>/ap")
+def admin_ap(uin: int):
+    if not session.get("admin_authenticated"):
+        abort(404)
+    if not _valid_csrf():
+        return "Invalid CSRF token.", 400
+    try:
+        value = int(request.form.get("ap", ""))
+        _set_ap_for_uin(uin, value)
+    except (TypeError, ValueError) as exc:
+        return str(exc), 400
+    return redirect(url_for("admin"))
 
 
 @app.post("/admin/account/<int:uin>/status")

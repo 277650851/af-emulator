@@ -9641,6 +9641,9 @@ def handle_placeholder(conn, addr, label):
                                             )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_TP_BALANCE:
+                                            # AP-NATIVE-REFRESH-v1:
+                                            # Website/DB changes are external to this process,
+                                            # so A50E is the explicit cache-refresh boundary.
                                             if len(app["body"]) != 8:
                                                 raise ValueError(
                                                     "A50E TP/AP balance request must be 8B"
@@ -9648,23 +9651,52 @@ def handle_placeholder(conn, addr, label):
                                             balance_uin = struct.unpack(
                                                 ">Q", app["body"]
                                             )[0]
+                                            session_uin = int(
+                                                _v150_role_uin(role_state)
+                                            )
+                                            if int(balance_uin) != session_uin:
+                                                log(
+                                                    label,
+                                                    "C2ZN_REQ_TPBALANCE "
+                                                    "AP-NATIVE-REFRESH-v1 "
+                                                    f"wire_uin={balance_uin} "
+                                                    f"session_uin={session_uin} "
+                                                    "action=USE_AUTHENTICATED_UIN",
+                                                )
+
+                                            # Reload the authoritative persisted wallet.
+                                            # This makes an AP value changed by the website
+                                            # visible without reconnecting the player.
+                                            _V140_PLAYER_STATE.reload(session_uin)
                                             wallet = _v140_wallet()
+
                                             log(
                                                 label,
-                                                "C2ZN_REQ_TPBALANCE v143v "
-                                                f"uin={balance_uin} "
+                                                "C2ZN_REQ_TPBALANCE "
+                                                "AP-NATIVE-REFRESH-v1 "
+                                                f"uin={session_uin} "
                                                 f"AP={wallet['ap']} "
-                                                "action=TEMP_LOCAL_GAMEPOINT_SYNC "
-                                                "wire_reply=NONE",
+                                                "action=SQLITE_RELOAD_NATIVE_A00B",
                                             )
 
-                                            # TEMPORARY workaround: the stock PH
-                                            # native A50E response mapping is not yet
-                                            # verified.  Do not send guessed A00B/A506
-                                            # replies; refresh only the proven local
-                                            # GamePoint field from server state.
-                                            _V143V_LOCAL_AP_SYNC.request(
-                                                reason="A50E-refresh"
+                                            # Native client notification path:
+                                            # protocol TP == PH display AP.
+                                            pkt = _v140_build_update_player_property(
+                                                UPDATE_FLAG_TP,
+                                                UPDATE_REASON_TP_BALANCE,
+                                            )
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                pkt,
+                                                label,
+                                                "ZN2C_NTF_UPDATEPLAYERPROPERTY "
+                                                "AP-NATIVE-REFRESH-v1 "
+                                                "cmd=0xA00B flag=AP reason=0x30 "
+                                                f"uin={session_uin} "
+                                                f"AP={wallet['ap']} "
+                                                f"GP={wallet['gp']} "
+                                                f"MP={wallet['mp']}",
                                             )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_BUYCOMMODITY:
