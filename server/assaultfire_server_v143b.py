@@ -3454,6 +3454,43 @@ V129_SOFIA_HAIR_ITEM_ID = 100602
 # PVE skill ownership is a real PlayerPropInfo, not PlayerInfo.SkillScore.
 R20_STRENGTH_ITEM_ID = 100049
 
+# PVE-SKILL-PROGRESSION-v2
+# Stock TGOnlinePlayerData.GetAllSkillItemInfos() exposes these as the normal
+# level-progression skills (UnlockWay_1 == 1). The client marks a skill owned
+# only when a matching PlayerPropInfo exists.
+#
+# required_level is the level shown by the client. min_total_exp is the
+# cumulative legacy Assault Fire / NZ EXP threshold for that level. We use the
+# EXP threshold because Experience is the authoritative value persisted by the
+# emulator and is what the stock client uses to derive PlayerLevel.
+#
+# Rank-127 / event-condition skills are deliberately NOT present here.
+V170_PVE_LEVEL_SKILLS = (
+    # item_id, required_level, min_total_exp, display name
+    (100049, 1,      0, "Strength"),
+    (100043, 3,    720, "Quick Fix"),
+    (100313, 4,   1290, "Emergency surgery"),
+    (100046, 5,   2080, "Last Stand"),
+    (100185, 5,   2080, "Airborne"),
+    (100186, 5,   2080, "Heavy Gunner"),
+    (100189, 5,   2080, "Team Heal"),
+    (100044, 6,   3100, "Wonder Drug"),
+    (100050, 7,   4360, "Physical fitness"),
+    (100314, 7,   4360, "Arms experts"),
+    (100052, 8,   5870, "Mag-Master2"),
+    (100319, 8,   5870, "Invincibility"),
+    (100047, 9,   7640, "Invisibility"),
+    (100317, 9,   7640, "Med Hacker"),
+    (100053, 10,  9710, "Quickhand"),
+    (100187, 10,  9710, "Quick Reload"),
+    (100188, 10,  9710, "Runaway"),
+    (100318, 16, 29550, "Kamikaze"),
+    (100316, 18, 39470, "Skill-master"),
+)
+V170_PVE_LEVEL_SKILL_IDS = frozenset(
+    int(row[0]) for row in V170_PVE_LEVEL_SKILLS
+)
+
 V109_ROLE_GID = ((V109_UIN & 0xffffffff) << 32) | 1
 V109_BAG1_GID = ((V109_UIN & 0xffffffff) << 32) | 2
 V109_BAG2_GID = ((V109_UIN & 0xffffffff) << 32) | 3
@@ -4764,21 +4801,156 @@ def _v140_expire_due_items(now=None, reason="item-expiration"):
     return removed_props
 
 
+def _v170_reconcile_progression_skills():
+    """Synchronize normal PVE skill ownership to persisted Experience.
+
+    Normal UnlockWay_1==1 skills are authoritative progression rewards:
+      * earned rows are present;
+      * unearned rows are absent.
+
+    Rank-127/event-condition skills are outside V170_PVE_LEVEL_SKILL_IDS and
+    are therefore completely untouched.
+    """
+    experience = max(0, int(V140_MALL_STATE.get("experience", 0)))
+
+    eligible_rows = [
+        (int(item_id), int(required_level), int(min_exp), str(name))
+        for item_id, required_level, min_exp, name in V170_PVE_LEVEL_SKILLS
+        if experience >= int(min_exp)
+    ]
+    eligible_ids = {row[0] for row in eligible_rows}
+
+    revoked = []
+    kept_inventory = []
+    for prop in list(V111_INVENTORY):
+        item_id = int(prop.get("item_id", 0))
+        if (
+            item_id in V170_PVE_LEVEL_SKILL_IDS
+            and item_id not in eligible_ids
+        ):
+            meta = next(
+                (
+                    row for row in V170_PVE_LEVEL_SKILLS
+                    if int(row[0]) == item_id
+                ),
+                None,
+            )
+            if meta is not None:
+                revoked.append(
+                    (
+                        int(prop.get("gid", 0)),
+                        item_id,
+                        int(meta[1]),
+                        int(meta[2]),
+                        str(meta[3]),
+                    )
+                )
+            continue
+        kept_inventory.append(prop)
+
+    if revoked:
+        V111_INVENTORY[:] = kept_inventory
+
+    owned_item_ids = {
+        int(prop.get("item_id", 0)) for prop in V111_INVENTORY
+    }
+    missing = [
+        row for row in eligible_rows if row[0] not in owned_item_ids
+    ]
+
+    used_gids = {int(prop.get("gid", 0)) for prop in V111_INVENTORY}
+    granted = []
+    for item_id, required_level, min_exp, name in missing:
+        gid = _v140_next_gid(used_gids)
+        used_gids.add(gid)
+        V111_INVENTORY.append(
+            {
+                "gid": gid,
+                "item_id": item_id,
+                "owner_gid": 0,
+                "location": V109_LOC_BAG,
+                "durability": 0,
+                "durability_max": 0,
+                "avail_hours": V140_ITEM_AVAIL_HOURS,
+                "validity": V140_ITEM_AVAIL_HOURS,
+                "gain_type": 1,
+                "obtained_at": 0,
+                "expires_at": 0,
+            }
+        )
+        granted.append((gid, item_id, required_level, min_exp, name))
+        owned_item_ids.add(item_id)
+
+    if granted or revoked:
+        V140_MALL_STATE["inventory"] = [dict(p) for p in V111_INVENTORY]
+
+    return {
+        "experience": experience,
+        "eligible_ids": eligible_ids,
+        "granted": granted,
+        "revoked": revoked,
+    }
+
+
 def _v140_select_player(uin):
     uin = _V140_PLAYER_STATE.select(int(uin))
     _v140_expire_due_items(reason="sqlite-player-select-expiry")
+
+    skill_sync = _v170_reconcile_progression_skills()
+    skill_grants = list(skill_sync["granted"])
+    skill_revokes = list(skill_sync["revoked"])
+    skill_changed = bool(skill_grants or skill_revokes)
+
     preferred = V140_MALL_STATE.get("current_bag_gid")
     selected_gid, changes = _v141_set_current_bag(
         preferred,
         reason="sqlite-player-select",
     )
+    if changes or skill_changed:
+        save_reason = (
+            "sqlite-player-select-skill-reconcile"
+            if skill_changed
+            else "sqlite-bag-invariant-repair"
+        )
+        _v140_save_state(save_reason)
+
     if changes:
-        _v140_save_state("sqlite-bag-invariant-repair")
         log(
             "MALL-SQLITE",
             f"v4 repaired bag-root state uin={uin} "
             f"current_bag=0x{selected_gid:016x} changes={changes}",
         )
+
+    if skill_changed:
+        log(
+            "PVE-SKILL",
+            "PVE-SKILL-PROGRESSION-v2 reconciled "
+            f"uin={uin} exp={int(skill_sync['experience'])} "
+            f"granted={len(skill_grants)} revoked={len(skill_revokes)}",
+        )
+        if skill_grants:
+            log(
+                "PVE-SKILL",
+                "v2 granted: "
+                + " | ".join(
+                    f"{name}(item={item_id},level={required_level},"
+                    f"gid=0x{gid:016x})"
+                    for gid, item_id, required_level, _min_exp, name
+                    in skill_grants
+                ),
+            )
+        if skill_revokes:
+            log(
+                "PVE-SKILL",
+                "v2 revoked-above-level: "
+                + " | ".join(
+                    f"{name}(item={item_id},level={required_level},"
+                    f"gid=0x{gid:016x})"
+                    for gid, item_id, required_level, _min_exp, name
+                    in skill_revokes
+                ),
+            )
+
     return _V140_PLAYER_STATE.state()
 
 
