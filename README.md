@@ -10,6 +10,16 @@
 
 An unofficial **Assault Fire PH** preservation/server-emulation project.
 
+> [!WARNING]
+> **Anti-scam notice — this emulator is free**
+>
+> The official source for this project is this GitHub repository. The maintainers do **not** sell official builds, licenses, activation keys, required downloads, private access, or paid unlocks for the emulator.
+>
+> If someone claims that you **must pay** to obtain an "official" copy, activate the emulator, unlock required features, receive a required key, or gain access on behalf of this project, **do not pay**. That claim is not authorized by the maintainers and may be an attempt to scam you.
+>
+> This repository uses the MIT License, which permits third parties to redistribute or sell copies or related services under its terms. Paying a third party does **not** make their copy, server, support, or service official, endorsed, or affiliated with this project. The emulator itself is available here for free.
+>
+> When in doubt, verify downloads and instructions against this repository before running files or sending money to anyone.
 
 > [!IMPORTANT]
 > **Server independence disclaimer**
