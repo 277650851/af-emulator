@@ -3024,6 +3024,12 @@ TGAME_ZN_NTF_ZONE_HINTS = 0xFF13
 TGAME_ZN_REQ_CHANGE_NICKNAME = 0xF301
 TGAME_ZN_RES_CHANGE_NICKNAME_TEST = 0xF302
 
+# v160: statically recovered stock-PH action-card request/response pairs.
+TGAME_ZN_REQ_CLEAR_MATCH_RECORD = 0xF303
+TGAME_ZN_RES_CLEAR_MATCH_RECORD = 0xF304
+TGAME_ZN_REQ_CLEAR_MATCH_WINLOSE = 0xF305
+TGAME_ZN_RES_CLEAR_MATCH_WINLOSE = 0xF306
+
 # v72: room-allocation family recovered from proto_c2zn.tdr and confirmed
 # by the live 46-byte Start request emitted by the Match -> Start button.
 TGAME_ZN_REQ_STARTROOMALLOC = 0xA3A0
@@ -3717,6 +3723,9 @@ V111_INVENTORY = [
 TGAME_ZN_NTF_UPDATE_PLAYER_PROPERTY = 0xA00B
 TGAME_ZN_REQ_ITEM_OPERATION = 0xA200
 TGAME_ZN_RES_ITEM_OPERATION = 0xA201
+# v160: OnlineRequest_UseFunctionCard(int,int) -> A347/A348.
+TGAME_ZN_REQ_USE_CARD = 0xA347
+TGAME_ZN_RES_USE_CARD = 0xA348
 TGAME_ZN_REQ_SHOPCONFHASH = 0xA361
 TGAME_ZN_RES_SHOPCONFHASH = 0xA362
 TGAME_ZN_REQ_DROPPROP = 0xA363
@@ -4656,7 +4665,7 @@ def _v140_prop_is_expired(prop, now=None):
 
 
 def _v140_expire_due_items(now=None, reason="item-expiration"):
-    """Remove expired Mall props and all props owned by their bundle roots."""
+    """Expire Mall props without deleting equipment stored inside backpacks."""
     now = int(time.time() if now is None else now)
     inventory = list(V111_INVENTORY)
     expired_gids = {
@@ -4668,8 +4677,32 @@ def _v140_expire_due_items(now=None, reason="item-expiration"):
     if not expired_gids:
         return []
 
-    # Bundled character parts and attachments are owned by their root and may
-    # not carry independent expiry timestamps.
+    expired_props = [
+        prop for prop in inventory
+        if int(prop.get("gid", 0)) in expired_gids
+    ]
+
+    # v159: owner_gid is both bundle ownership and equipment placement.
+    # Detach valid contents before removing an expired backpack.
+    expired_bag_gids = {
+        int(prop.get("gid", 0))
+        for prop in expired_props
+        if _v141_is_bag_item(int(prop.get("item_id", 0)))
+    }
+    detached_from_bags = []
+    if expired_bag_gids:
+        for prop in inventory:
+            gid = int(prop.get("gid", 0))
+            owner_gid = int(prop.get("owner_gid", 0))
+            if gid == 0 or gid in expired_gids:
+                continue
+            if owner_gid not in expired_bag_gids:
+                continue
+            old_loc = int(prop.get("location", V109_LOC_BAG))
+            prop["owner_gid"] = 0
+            prop["location"] = V109_LOC_BAG
+            detached_from_bags.append((gid, owner_gid, old_loc))
+
     removed_gids = set(expired_gids)
     while True:
         owned_gids = {
@@ -4683,10 +4716,6 @@ def _v140_expire_due_items(now=None, reason="item-expiration"):
             break
         removed_gids = expanded
 
-    expired_props = [
-        prop for prop in inventory
-        if int(prop.get("gid", 0)) in expired_gids
-    ]
     removed_props = [
         prop for prop in inventory
         if int(prop.get("gid", 0)) in removed_gids
@@ -4702,8 +4731,12 @@ def _v140_expire_due_items(now=None, reason="item-expiration"):
         prop for prop in inventory
         if int(prop.get("gid", 0)) not in removed_gids
     ]
+
     preferred_bag = V140_MALL_STATE.get("current_bag_gid")
-    _v141_set_current_bag(preferred_bag, reason=reason)
+    selected_bag, bag_changes = _v141_set_current_bag(
+        preferred_bag,
+        reason=reason,
+    )
     _v140_save_state(reason)
 
     expired_text = ",".join(
@@ -4711,10 +4744,23 @@ def _v140_expire_due_items(now=None, reason="item-expiration"):
     )
     log(
         "MALL-EXPIRY",
-        f"expired={len(expired_props)} removed={len(removed_props)} "
+        f"v159 expired={len(expired_props)} removed={len(removed_props)} "
         f"owned_removed={len(removed_props) - len(expired_props)} "
+        f"bag_contents_detached={len(detached_from_bags)} "
+        f"current_bag=0x{int(selected_bag):016x} "
+        f"bag_changes={len(bag_changes)} "
         f"now={now} gids=[{expired_text}]",
     )
+    if detached_from_bags:
+        log(
+            "MALL-BAG",
+            "v159 expired backpack preserved contents: "
+            + " | ".join(
+                f"gid=0x{gid:016x} from_bag=0x{bag_gid:016x} "
+                f"old_loc=0x{old_loc:02x} -> owner=0 loc=0x{V109_LOC_BAG:02x}"
+                for gid, bag_gid, old_loc in detached_from_bags
+            ),
+        )
     return removed_props
 
 
@@ -5464,6 +5510,106 @@ def _v140_build_item_operation_response(op_body):
 
 
 
+
+# v160 Item-tab support.
+V160_RENAME_CARD_ITEM_ID = 100181
+V160_CLEAR_RECORD_CARD_ITEM_ID = 100182
+V160_CLEAR_WINLOSE_CARD_ITEM_ID = 100196
+V160_REGULAR_EXP_CARD_ITEM_ID = 100059
+V160_ADVANCED_EXP_CARD_ITEM_ID = 100060
+
+
+def _v160_build_result_only_response(command_id, result=ZONE_ERR_SUCC):
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        int(command_id) & 0xFFFF,
+        _v48_u16(int(result) & 0xFFFF),
+    )
+
+
+def _v160_parse_use_card(body):
+    if len(body) != 8:
+        raise ValueError(f"A347 UseCard body must be exactly 8B, got {len(body)}")
+    func_type, sub_func_type = struct.unpack(">ii", body)
+    return int(func_type), int(sub_func_type)
+
+
+def _v160_find_inventory_item(item_id):
+    item_id = int(item_id)
+    candidates = [
+        p for p in V111_INVENTORY
+        if int(p.get("item_id", 0)) == item_id
+        and not _v140_prop_is_expired(p)
+    ]
+    if not candidates:
+        return None
+
+    def _sort_key(prop):
+        exp = int(prop.get("expires_at", 0) or 0)
+        return (
+            exp <= 0,
+            exp if exp > 0 else 0x7FFFFFFFFFFFFFFF,
+            int(prop["gid"]),
+        )
+
+    return min(candidates, key=_sort_key)
+
+
+def _v160_consume_inventory_item(item_id, reason):
+    prop = _v160_find_inventory_item(item_id)
+    if prop is None:
+        return None
+
+    gid = int(prop["gid"])
+    removed = {gid}
+    while True:
+        children = {
+            int(p.get("gid", 0))
+            for p in V111_INVENTORY
+            if int(p.get("owner_gid", 0)) in removed
+            and int(p.get("gid", 0)) != 0
+        }
+        expanded = removed | children
+        if expanded == removed:
+            break
+        removed = expanded
+
+    V111_INVENTORY[:] = [
+        p for p in V111_INVENTORY
+        if int(p.get("gid", 0)) not in removed
+    ]
+    _v140_save_state(reason)
+    return prop
+
+
+def _v160_activate_known_function_card(func_type, sub_func_type):
+    if int(func_type) != 0:
+        return None, "unsupported FunctionType"
+
+    item_id = {
+        0: V160_REGULAR_EXP_CARD_ITEM_ID,
+        1: V160_ADVANCED_EXP_CARD_ITEM_ID,
+    }.get(int(sub_func_type))
+    if item_id is None:
+        return None, "unsupported ExpAcceleration SubFunctionType"
+
+    prop = _v160_find_inventory_item(item_id)
+    if prop is None:
+        return None, f"required item {item_id} is not owned"
+
+    default_loc = int(V140_ITEM_DEFAULT_LOCATIONS.get(item_id, -1))
+    if default_loc < 0 or default_loc > 0xFF:
+        return None, f"item {item_id} has no usable catalog slot"
+
+    prop["owner_gid"] = V110_BAG_MOUNT_OWNER
+    prop["location"] = default_loc & 0xFF
+    _v140_save_state("A347-use-function-card")
+    return prop, (
+        f"activated item={item_id} gid=0x{int(prop['gid']):016x} "
+        f"slot=0x{default_loc:02x}"
+    )
+
+
 def _v109_build_starter_playerprops(seq):
     """Compatibility helper: only valid when inventory fits one A006."""
     if len(V111_INVENTORY) > 5:
@@ -5521,14 +5667,11 @@ def _v111_build_prop_operation_notification(op_body):
 
 
 def _v143b_resolve_null_subject_unequip(op):
-    """Resolve stock-PH null-subject remove requests into a real equipped GID.
+    """Resolve stock-PH null-subject Remove/Unequip into a real equipped GID.
 
-    Observed stock PH melee remove form:
-        op=0, subject=0, target=<current bag gid>, location=0
-
-    MK4/Jungle Bolo is item 100058 / canonical melee location 0x02.
-    Translate only this exact loc=0 quirk to a canonical takeoff, so a null
-    request can never arbitrarily remove the primary weapon.
+    Live PH melee Remove arrives as op=0, subject=0, target=<bag>, location=0.
+    v161 is catalog-driven instead of hard-coding MK4/Jungle Bolo (100058),
+    and also recovers purchased melee rows left at legacy Location=Bag.
     """
     if int(op.get("operation", -1)) != PROP_OP_EQUIP:
         return None
@@ -5537,54 +5680,75 @@ def _v143b_resolve_null_subject_unequip(op):
 
     target_bag = int(op.get("target_gid", 0))
     req_loc = int(op.get("location", V109_LOC_BAG))
-
     if target_bag not in _v141_bag_gids():
         return None
 
-    # Exact live retail quirk: melee Remove can arrive as loc=0 even though
-    # the equipped PropInfo location is 0x02.
-    if req_loc == V109_LOC_PRIMARY:
-        melee = next(
-            (
-                p for p in V111_INVENTORY
-                if int(p.get("item_id", 0)) == V127_MELEE_ITEM_ID
-                and int(p.get("owner_gid", 0)) == target_bag
-                and int(p.get("location", V109_LOC_BAG)) == V127_LOC_MELEE
-            ),
-            None,
-        )
-        if melee is not None:
-            effective = {
-                "operation": PROP_OP_TAKEOFF,
-                "subject_gid": int(melee["gid"]),
-                "target_gid": 0,
-                "location": V109_LOC_BAG,
-            }
-            return melee, effective, (
-                "v143b null-subject melee remove -> canonical takeoff "
-                f"gid=0x{int(melee['gid']):016x} "
-                f"item={int(melee.get('item_id', 0))}"
+    def _catalog_slot(prop):
+        try:
+            return int(
+                V140_ITEM_DEFAULT_LOCATIONS.get(
+                    int(prop.get("item_id", 0)), -1
+                )
             )
+        except Exception:
+            return -1
 
-    # Generic safe form for explicit non-zero equipment locations.
-    if req_loc in (V127_LOC_PISTOL, V127_LOC_MELEE, V127_LOC_GRENADE):
-        matches = [
+    def _pick_catalog_slot(slot, allow_legacy_bag=False):
+        exact = [
             p for p in V111_INVENTORY
             if int(p.get("owner_gid", 0)) == target_bag
-            and int(p.get("location", V109_LOC_BAG)) == req_loc
-            and int(p.get("item_id", 0)) in V127_STARTER_WEAPON_SLOTS
+            and int(p.get("location", V109_LOC_BAG)) == int(slot)
+            and _catalog_slot(p) == int(slot)
         ]
-        if len(matches) == 1:
-            item = matches[0]
-            effective = {
-                "operation": PROP_OP_TAKEOFF,
-                "subject_gid": int(item["gid"]),
-                "target_gid": 0,
-                "location": V109_LOC_BAG,
-            }
-            return item, effective, (
-                "v143b null-subject slot remove -> canonical takeoff "
-                f"gid=0x{int(item['gid']):016x} slot=0x{req_loc:02x}"
+        if exact:
+            exact.sort(key=lambda p: int(p.get("gid", 0)))
+            return exact[0], "canonical"
+
+        if allow_legacy_bag:
+            legacy = [
+                p for p in V111_INVENTORY
+                if int(p.get("owner_gid", 0)) == target_bag
+                and int(p.get("location", V109_LOC_BAG)) == V109_LOC_BAG
+                and _catalog_slot(p) == int(slot)
+            ]
+            if legacy:
+                legacy.sort(key=lambda p: int(p.get("gid", 0)))
+                return legacy[0], f"legacy-bag candidates={len(legacy)}"
+
+        return None, None
+
+    def _canonical_takeoff(item, slot, source, kind):
+        effective = {
+            "operation": PROP_OP_TAKEOFF,
+            "subject_gid": int(item["gid"]),
+            "target_gid": 0,
+            "location": V109_LOC_BAG,
+        }
+        return item, effective, (
+            f"v161 null-subject {kind} remove -> canonical takeoff "
+            f"gid=0x{int(item['gid']):016x} "
+            f"item={int(item.get('item_id', 0))} "
+            f"catalog_slot=0x{int(slot):02x} source={source}"
+        )
+
+    if req_loc == V109_LOC_PRIMARY:
+        melee, source = _pick_catalog_slot(
+            V127_LOC_MELEE,
+            allow_legacy_bag=True,
+        )
+        if melee is not None:
+            return _canonical_takeoff(
+                melee, V127_LOC_MELEE, source, "melee"
+            )
+
+    if req_loc in (V127_LOC_PISTOL, V127_LOC_MELEE, V127_LOC_GRENADE):
+        item, source = _pick_catalog_slot(
+            req_loc,
+            allow_legacy_bag=True,
+        )
+        if item is not None:
+            return _canonical_takeoff(
+                item, req_loc, source, "slot"
             )
 
     return None
@@ -5733,7 +5897,23 @@ def _v111_apply_prop_operation(op):
         if canonical_slot is not None and location == V109_LOC_BAG:
             location = canonical_slot
 
-        # Real equipment sockets are exclusive inside one bag.
+        # v160: Item-tab props use catalog-defined sockets. Canonicalize only
+        # a generic Location=Bag request; explicit client locations remain.
+        catalog_slot = int(V140_ITEM_DEFAULT_LOCATIONS.get(item_id, -1))
+        if (
+            location == V109_LOC_BAG
+            and not _v140_is_role_item(item_id)
+            and not _v141_is_bag_item(item_id)
+            and 0 <= catalog_slot <= 0xFF
+            and catalog_slot not in (
+                V109_LOC_ROLE1,
+                0x0B,
+                V109_LOC_BAG,
+            )
+        ):
+            location = catalog_slot
+
+        # Real equipment sockets are exclusive inside one bag/root.
         if location != V109_LOC_BAG:
             for other in V111_INVENTORY:
                 if other is subject:
@@ -8374,6 +8554,32 @@ def handle_placeholder(conn, addr, label):
                     "uin": int(tgame_auth.get("uin") or 10001),
                 }
                 _v140_select_player(role_state["uin"])
+
+                # v159: stock PH visually initializes a fresh lobby on Bag 1.
+                # Align a genuinely fresh TGame auth with that client state.
+                # The separate persistent-resume path remains unchanged.
+                _v159_before_bag = _v141_current_bag_gid()
+                _v159_startup_bag, _v159_startup_changes = (
+                    _v141_set_current_bag(
+                        V109_BAG1_GID,
+                        reason="v159-fresh-session-default",
+                    )
+                )
+                if (
+                    int(_v159_startup_bag) != int(_v159_before_bag)
+                    or _v159_startup_changes
+                ):
+                    _v140_save_state("v159-fresh-session-default")
+                role_state["v159_startup_bag_gid"] = int(_v159_startup_bag)
+                log(
+                    "MALL-BAG",
+                    "v159 fresh-session bag aligned with stock lobby "
+                    f"before=0x{int(_v159_before_bag):016x} "
+                    f"selected=0x{int(_v159_startup_bag):016x} "
+                    f"changes={len(_v159_startup_changes)}; "
+                    "persistent-resume path intentionally unchanged",
+                )
+
                 _persist_login, _persist_nick = _r12_load_persisted_nickname(
                     role_state["uin"]
                 )
@@ -9607,12 +9813,20 @@ def handle_placeholder(conn, addr, label):
                                                 active_tgame_key,
                                                 rsp,
                                                 label,
-                                                "ZN2C_RES_ITEM_OPERATION v140 "
+                                                "ZN2C_RES_ITEM_OPERATION v160 "
                                                 "cmd=0xA201 result=0x8100",
+                                            )
+                                            _v140_send_full_inventory(
+                                                conn,
+                                                active_tgame_key,
+                                                label,
+                                                prefix="v160-item-operation",
+                                                session_uin=session_uin,
                                             )
                                             log(
                                                 "MALL",
-                                                f"v140 A200 item operation => {action}",
+                                                "v160 A200 item operation => "
+                                                f"{action}; authoritative A006 refreshed",
                                             )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_PROP_OPERATION:
@@ -9735,6 +9949,37 @@ def handle_placeholder(conn, addr, label):
                                                     f"subject=0x{int(op.get('subject_gid',0)):016x} "
                                                     f"item={_v142_item_id} "
                                                     f"current_bag=0x{_v141_current_bag_gid():016x}",
+                                                )
+
+                                                # v157b: explicit Storage bag state must be
+                                                # republished after the lobby rebuilds.
+                                                role_state[
+                                                    "v157_storage_bag_resync_pending"
+                                                ] = True
+                                                role_state[
+                                                    "v157_storage_bag_resync_mainchan_base"
+                                                ] = int(
+                                                    role_state.get(
+                                                        "v125_mainchan_count", 0
+                                                    )
+                                                )
+                                                role_state[
+                                                    "v157_storage_bag_resync_a303_base"
+                                                ] = int(
+                                                    role_state.get(
+                                                        "v125_a303_count", 0
+                                                    )
+                                                )
+                                                role_state[
+                                                    "v125_bag1_refresh_armed"
+                                                ] = False
+                                                log(
+                                                    label,
+                                                    "v157b: explicit bag selection armed "
+                                                    "Storage->lobby resync "
+                                                    f"bag=0x{_v141_current_bag_gid():016x} "
+                                                    f"mainchan_base={int(role_state.get('v157_storage_bag_resync_mainchan_base', 0))} "
+                                                    f"a303_base={int(role_state.get('v157_storage_bag_resync_a303_base', 0))}",
                                                 )
 
                                             # v125: DO NOT refresh Bag1 here.
@@ -12033,39 +12278,178 @@ def handle_placeholder(conn, addr, label):
                                                 # only missing server-side message from the
                                                 # known-good transaction, so send the exact pair
                                                 # here without rebuilding A006.
-                                                bag_op = _v111_pack_prop_operation(
-                                                    _r13_project_operation(
-                                                        {
-                                                            "operation": PROP_OP_EQUIP,
-                                                            "subject_gid": V109_BAG1_GID,
-                                                            "target_gid": V110_BAG_MOUNT_OWNER,
-                                                            "location": V109_LOC_BAG,
-                                                        },
-                                                        _v150_role_uin(role_state),
+                                                # v158: retain proven second-A303 timing but
+                                                # replay the authoritative selected backpack.
+                                                _v158_bag_gid = _v141_current_bag_gid()
+                                                _v158_bag = _v140_find_prop(_v158_bag_gid)
+
+                                                if (
+                                                    _v158_bag is not None
+                                                    and _v141_is_bag_item(
+                                                        int(_v158_bag.get("item_id", 0))
                                                     )
+                                                ):
+                                                    _v158_bag_op = _v111_pack_prop_operation(
+                                                        _r13_project_operation(
+                                                            {
+                                                                "operation": PROP_OP_EQUIP,
+                                                                "subject_gid": _v158_bag_gid,
+                                                                "target_gid": V110_BAG_MOUNT_OWNER,
+                                                                "location": V109_LOC_BAG,
+                                                            },
+                                                            _v150_role_uin(role_state),
+                                                        )
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        _v111_build_prop_operation_response(
+                                                            _v158_bag_op
+                                                        ),
+                                                        label,
+                                                        "ZN2C_RES_PROPOPERATION "
+                                                        "v158-lobby-ready-current-bag "
+                                                        "cmd=0xA009 result=0x8100 "
+                                                        f"bag=0x{_v158_bag_gid:016x} "
+                                                        f"item={int(_v158_bag.get('item_id', 0))}",
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        _v111_build_prop_operation_notification(
+                                                            _v158_bag_op
+                                                        ),
+                                                        label,
+                                                        "ZN2C_NTF_PROPOPERATION "
+                                                        "v158-lobby-ready-current-bag "
+                                                        "cmd=0xA00A "
+                                                        f"bag=0x{_v158_bag_gid:016x} "
+                                                        f"item={int(_v158_bag.get('item_id', 0))}",
+                                                    )
+                                                    role_state[
+                                                        "v126_bag1_full_transaction_sent"
+                                                    ] = True
+                                                    log(
+                                                        label,
+                                                        "v158: lobby-ready DYNAMIC current-bag "
+                                                        "transaction sent A009+A00A "
+                                                        f"bag=0x{_v158_bag_gid:016x} "
+                                                        f"item={int(_v158_bag.get('item_id', 0))}; "
+                                                        "legacy v126 timing retained; "
+                                                        "no hard-coded Bag1",
+                                                    )
+                                                else:
+                                                    log(
+                                                        label,
+                                                        "v158: lobby-ready dynamic bag replay "
+                                                        "skipped because current_bag_gid does not "
+                                                        "resolve to an owned bag "
+                                                        f"gid=0x{int(_v158_bag_gid):016x}",
+                                                    )
+                                            # v157b: on a Storage->lobby transition, replay the
+                                            # selected bag and a complete inventory snapshot.
+                                            _v157_pending = bool(
+                                                role_state.get(
+                                                    "v157_storage_bag_resync_pending"
                                                 )
-                                                bag_rsp = _v111_build_prop_operation_response(bag_op)
-                                                _v48_send_app(
-                                                    conn, active_tgame_key,
-                                                    bag_rsp, label,
-                                                    "ZN2C_RES_PROPOPERATION v126-lobby-ready-Bag1 "
-                                                    "cmd=0xA009 result=0x8100 subject=Bag1 "
-                                                    "target=1 loc=0x0c",
+                                            )
+                                            _v157_mainchan_base = int(
+                                                role_state.get(
+                                                    "v157_storage_bag_resync_mainchan_base",
+                                                    0,
                                                 )
-                                                bag_ntf = _v111_build_prop_operation_notification(bag_op)
-                                                _v48_send_app(
-                                                    conn, active_tgame_key,
-                                                    bag_ntf, label,
-                                                    "ZN2C_NTF_PROPOPERATION v126-lobby-ready-Bag1 "
-                                                    "cmd=0xA00A subject=Bag1 target=1 loc=0x0c",
+                                            )
+                                            _v157_a303_base = int(
+                                                role_state.get(
+                                                    "v157_storage_bag_resync_a303_base",
+                                                    0,
                                                 )
-                                                role_state["v126_bag1_full_transaction_sent"] = True
-                                                log(
-                                                    label,
-                                                    "v126: lobby-ready Bag1 FULL server transaction "
-                                                    "sent: A009(success)+A00A after A355/A356 + second A303; "
-                                                    "no post-login A006 rebuild; starter extras came from legal login A006 chunk 2"
+                                            )
+                                            _v157_a303_now = int(
+                                                role_state.get(
+                                                    "v125_a303_count", 0
                                                 )
+                                            )
+                                            _v157_mainchan_now = int(
+                                                role_state.get(
+                                                    "v125_mainchan_count", 0
+                                                )
+                                            )
+                                            if (
+                                                _v157_pending
+                                                and _v157_mainchan_now > _v157_mainchan_base
+                                                and _v157_a303_now >= (_v157_a303_base + 2)
+                                            ):
+                                                _v157_bag_gid = _v141_current_bag_gid()
+                                                _v157_bag = _v140_find_prop(_v157_bag_gid)
+                                                if _v157_bag is not None:
+                                                    _v157_bag_op = _v111_pack_prop_operation(
+                                                        _r13_project_operation(
+                                                            {
+                                                                "operation": PROP_OP_EQUIP,
+                                                                "subject_gid": _v157_bag_gid,
+                                                                "target_gid": V110_BAG_MOUNT_OWNER,
+                                                                "location": V109_LOC_BAG,
+                                                            },
+                                                            _v150_role_uin(role_state),
+                                                        )
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        _v111_build_prop_operation_response(
+                                                            _v157_bag_op
+                                                        ),
+                                                        label,
+                                                        "ZN2C_RES_PROPOPERATION "
+                                                        "v157b-lobby-current-bag "
+                                                        "cmd=0xA009 result=0x8100 "
+                                                        f"bag=0x{_v157_bag_gid:016x}",
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        _v111_build_prop_operation_notification(
+                                                            _v157_bag_op
+                                                        ),
+                                                        label,
+                                                        "ZN2C_NTF_PROPOPERATION "
+                                                        "v157b-lobby-current-bag "
+                                                        "cmd=0xA00A "
+                                                        f"bag=0x{_v157_bag_gid:016x}",
+                                                    )
+                                                    _v140_send_full_inventory(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        label,
+                                                        prefix="v157b-lobby-bag-resync",
+                                                        session_uin=_v150_role_uin(role_state),
+                                                    )
+                                                    log(
+                                                        label,
+                                                        "v157b: Storage->lobby current-bag "
+                                                        "resync sent A009+A00A+A006 "
+                                                        f"bag=0x{_v157_bag_gid:016x}",
+                                                    )
+                                                else:
+                                                    log(
+                                                        label,
+                                                        "v157b: Storage->lobby resync skipped: "
+                                                        f"current bag prop missing gid=0x{_v157_bag_gid:016x}",
+                                                    )
+
+                                                role_state[
+                                                    "v157_storage_bag_resync_pending"
+                                                ] = False
+                                                role_state.pop(
+                                                    "v157_storage_bag_resync_mainchan_base",
+                                                    None,
+                                                )
+                                                role_state.pop(
+                                                    "v157_storage_bag_resync_a303_base",
+                                                    None,
+                                                )
+
                                             # Deliberately leave the A303 social request itself
                                             # unanswered in this recovery build, matching v124.
 
@@ -12155,6 +12539,130 @@ def handle_placeholder(conn, addr, label):
                                                     "A3A0 accepted but dynamic DS handoff failed; "
                                                     "partial match state rolled back; no dead endpoint advertised",
                                                 )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_USE_CARD:
+                                            try:
+                                                func_type, sub_func_type = (
+                                                    _v160_parse_use_card(app["body"])
+                                                )
+                                            except ValueError as use_e:
+                                                log(
+                                                    "MALL-ITEM",
+                                                    f"A347 UseCard rejected: {use_e}",
+                                                )
+                                                use_result = ZONE_FAIL_NOACCOUNTEXIST
+                                                use_action = "malformed request"
+                                                use_prop = None
+                                            else:
+                                                use_prop, use_action = (
+                                                    _v160_activate_known_function_card(
+                                                        func_type, sub_func_type
+                                                    )
+                                                )
+                                                use_result = (
+                                                    ZONE_ERR_SUCC
+                                                    if use_prop is not None
+                                                    else ZONE_FAIL_NOACCOUNTEXIST
+                                                )
+
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                _v160_build_result_only_response(
+                                                    TGAME_ZN_RES_USE_CARD,
+                                                    use_result,
+                                                ),
+                                                label,
+                                                "ZN2C_RES_USECARD v160 "
+                                                f"cmd=0xA348 result=0x{use_result:04x}",
+                                            )
+                                            if use_prop is not None:
+                                                _v140_send_full_inventory(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    label,
+                                                    prefix="v160-use-card",
+                                                    session_uin=_v150_role_uin(role_state),
+                                                )
+                                            log(
+                                                "MALL-ITEM",
+                                                "v160 A347 UseCard "
+                                                f"FunctionType={locals().get('func_type', -1)} "
+                                                f"SubFunctionType={locals().get('sub_func_type', -1)} "
+                                                f"result=0x{use_result:04x} => {use_action}",
+                                            )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_CLEAR_MATCH_RECORD:
+                                            card = _v160_consume_inventory_item(
+                                                V160_CLEAR_RECORD_CARD_ITEM_ID,
+                                                "F303-clear-match-record-card",
+                                            )
+                                            clear_result = (
+                                                ZONE_ERR_SUCC
+                                                if card is not None
+                                                else ZONE_FAIL_NOACCOUNTEXIST
+                                            )
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                _v160_build_result_only_response(
+                                                    TGAME_ZN_RES_CLEAR_MATCH_RECORD,
+                                                    clear_result,
+                                                ),
+                                                label,
+                                                "ZN2C_RES_CLEARMATCHRECORD v160 "
+                                                f"cmd=0xF304 result=0x{clear_result:04x}",
+                                            )
+                                            if card is not None:
+                                                _v140_send_full_inventory(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    label,
+                                                    prefix="v160-clear-record-card",
+                                                    session_uin=_v150_role_uin(role_state),
+                                                )
+                                            log(
+                                                "MALL-ITEM",
+                                                "v160 F303 ClearMatchRecordData "
+                                                f"card_item={V160_CLEAR_RECORD_CARD_ITEM_ID} "
+                                                f"consumed={card is not None}",
+                                            )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_CLEAR_MATCH_WINLOSE:
+                                            card = _v160_consume_inventory_item(
+                                                V160_CLEAR_WINLOSE_CARD_ITEM_ID,
+                                                "F305-clear-winlose-card",
+                                            )
+                                            clear_result = (
+                                                ZONE_ERR_SUCC
+                                                if card is not None
+                                                else ZONE_FAIL_NOACCOUNTEXIST
+                                            )
+                                            _v48_send_app(
+                                                conn,
+                                                active_tgame_key,
+                                                _v160_build_result_only_response(
+                                                    TGAME_ZN_RES_CLEAR_MATCH_WINLOSE,
+                                                    clear_result,
+                                                ),
+                                                label,
+                                                "ZN2C_RES_CLEARMATCHWINLOSE v160 "
+                                                f"cmd=0xF306 result=0x{clear_result:04x}",
+                                            )
+                                            if card is not None:
+                                                _v140_send_full_inventory(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    label,
+                                                    prefix="v160-clear-winlose-card",
+                                                    session_uin=_v150_role_uin(role_state),
+                                                )
+                                            log(
+                                                "MALL-ITEM",
+                                                "v160 F305 ClearMatchWinLoseData "
+                                                f"card_item={V160_CLEAR_WINLOSE_CARD_ITEM_ID} "
+                                                f"consumed={card is not None}",
+                                            )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_CHANGE_NICKNAME:
                                             try:
@@ -12260,13 +12768,26 @@ def handle_placeholder(conn, addr, label):
                                                             f"{nick_ds_e}",
                                                         )
 
+                                                rename_card = _v160_consume_inventory_item(
+                                                    V160_RENAME_CARD_ITEM_ID,
+                                                    "F301-rename-card-consume",
+                                                )
+                                                if rename_card is not None:
+                                                    _v140_send_full_inventory(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        label,
+                                                        prefix="v160-rename-card",
+                                                        session_uin=uin_now,
+                                                    )
+
                                                 log(
                                                     "NICKNAME",
                                                     "F301 handled with atomic nickname claim: "
                                                     f"uin={uin_now} old={old_nickname!r} "
                                                     f"new={new_nickname!r}; "
                                                     "runtime + SQLite identity committed; "
-                                                    "NO Rename Card consumption",
+                                                    f"Rename Card consumed={rename_card is not None}",
                                                 )
 
                                         else:
