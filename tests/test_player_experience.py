@@ -154,6 +154,21 @@ assert struct.unpack_from(">I", wallet_body, 0)[0] == 0x01
 assert struct.unpack_from(">H", wallet_body, 4)[0] == 0x2A
 assert struct.unpack_from(">i", wallet_body, 22)[0] == 0
 
+# A50E is the authoritative wallet refresh boundary.  It republishes all
+# three displayed wallet values with their recovered bitmask selectors.
+refresh = server._v140_build_authoritative_wallet_refresh()
+assert [(flag, name, reason) for flag, name, reason, _packet in refresh] == [
+    (0x01, "AP", 0x2A),
+    (0x02, "GP", 0x00),
+    (0x10, "MP", 0x00),
+]
+for flag, _name, reason, refresh_packet in refresh:
+    assert struct.unpack_from(">H", refresh_packet, 2)[0] == 0xA00A
+    refresh_body = refresh_packet[8:]
+    assert len(refresh_body) == 36
+    assert struct.unpack_from(">I", refresh_body, 0)[0] == flag
+    assert struct.unpack_from(">H", refresh_body, 4)[0] == reason
+
 # The login profile is the packet the client uses to initialize progression.
 # Its Experience field follows the variable-length NickName TDR string and the
 # wallet fields; do not derive or substitute a level threshold on the server.
