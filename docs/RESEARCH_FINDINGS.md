@@ -149,6 +149,71 @@ Tutorial rewards therefore remain **unsolved** in the public baseline. This entr
 
 Source catalog: `V139_UTGAME_REQUEST_CATALOG` in `server/assaultfire_server_v143b.py`.
 
+## 7. PH UpdatePlayerProperty uses schema-sensitive A00A routing and bitmask flags
+
+**Status: Verified**
+
+Live PH 1.0.0.24 validation on 2026-10-04 recovered the stock wallet/property update path strongly enough to replace the earlier AP-specific command/layout guesses.
+
+The important result is broader than AP:
+
+- `A00A` is accepted for the **36-byte UpdatePlayerProperty** notification body used by the wallet/progression path.
+- The same client also uses `A00A` for the existing **19-byte PropOperation** notification path.
+- Therefore a numeric command ID by itself is not sufficient to identify the semantic consumer in this family. The body/TDR schema and the live handler/listener path must be considered together.
+- `EUPDATEPROPERTYFLAG_*` values are **bitmasks**, not ordinal selectors:
+
+  | Property | Flag |
+  |---|---:|
+  | TP / PH AP | `0x01` |
+  | GP | `0x02` |
+  | EXP | `0x04` |
+  | PROP | `0x08` |
+  | MP | `0x10` |
+
+The verified fixed UpdatePlayerProperty body is 36 bytes:
+
+```text
+u32 UpdateFlag
+u16 Reason
+i32 TGamePoint
+i32 HappyPoint
+i32 GoldPoint
+i32 MonthPoint
+i32 Experience
+i32 EvolutionPoint
+i32 CardPoint
+u16 Count
+```
+
+For the stock `OnlineRequest_UpdateTPValue()` flow specifically:
+
+```text
+C2ZN A50E ReqTPBalance
+        ↓
+reload authoritative persisted wallet
+        ↓
+ZN2C A00A / 36-byte UpdatePlayerProperty
+UpdateFlag = 0x01
+Reason     = 0x2A  (TPBALANCE)
+TGamePoint = absolute current AP
+Count      = 0
+```
+
+A50E is a **read/synchronization request**, not a top-up operation. Website/admin changes mutate the authoritative persisted balance; pressing the in-game refresh button reloads that balance and publishes the current absolute value. Repeating A50E must therefore be idempotent.
+
+The `TPBALANCE` reason value is `42 / 0x2A`. This was recovered from the shipped enum ordering (`USECARD`, `TPBALANCE`, `EXCHANGE_PROP`) and then live-validated by the working AP refresh path.
+
+### General protocol lesson
+
+Do not assign semantics from adjacent command IDs, stale symbolic ordering, or macro-name string order alone. In this PH client, the same top-level numeric ID can participate in different schema-specific paths. Promotion to stable code should require both:
+
+1. a structure/body recovered from shipped schema/client evidence; and
+2. a live consumer/callback result showing that the intended stock path executed.
+
+This finding should be reused when validating GP, MP, EXP, property notifications, purchase-side wallet changes, and other UpdatePlayerProperty producers. Reason values other than the now-verified TP-balance case remain subject to separate validation; see Issue #57.
+
+Source implementation: `server/assaultfire_server_v143b.py`.
+
 ## Publication rule
 
 Future additions should preserve the distinction between verified behavior, single captures, and research leads. A promising symbol or export name by itself is not enough to mark a feature as working.
