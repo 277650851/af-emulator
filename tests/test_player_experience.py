@@ -142,10 +142,17 @@ with sqlite3.connect(os.environ["AF_ACCOUNT_DB"]) as conn:
     )
 server._V140_PLAYER_STATE.reload(uin)
 
-# Wallet-only notifications keep their EXP slot unchanged; only the EXP flag
-# applies the persisted value on the client.
-wallet_packet = server._v140_build_update_player_property(server.UPDATE_FLAG_TP, 0)
-assert struct.unpack_from(">i", wallet_packet, 8 + 22)[0] == 0
+# UpdatePlayerProperty uses the live-verified A00A 36-byte schema:
+# u32 bitmask flag, u16 reason, then the fixed wallet/progression fields.
+wallet_packet = server._v140_build_update_player_property(
+    server.UPDATE_FLAG_TP, server.UPDATE_REASON_TP_BALANCE
+)
+assert struct.unpack_from(">H", wallet_packet, 2)[0] == 0xA00A
+wallet_body = wallet_packet[8:]
+assert len(wallet_body) == 36
+assert struct.unpack_from(">I", wallet_body, 0)[0] == 0x01
+assert struct.unpack_from(">H", wallet_body, 4)[0] == 0x2A
+assert struct.unpack_from(">i", wallet_body, 22)[0] == 0
 
 # The login profile is the packet the client uses to initialize progression.
 # Its Experience field follows the variable-length NickName TDR string and the
@@ -170,9 +177,12 @@ server._v48_send_app = lambda conn, key, packet, label, desc: captured.append(
 server._v140_send_experience_sync(object(), b"0123456789abcdef", "TEST")
 assert len(captured) == 1
 packet, description = captured[0]
+assert struct.unpack_from(">H", packet, 2)[0] == 0xA00A
 assert struct.unpack_from(">H", packet, 2)[0] == server.TGAME_ZN_NTF_UPDATE_PLAYER_PROPERTY
 body = packet[8:]
-assert struct.unpack_from(">H", body, 0)[0] == server.UPDATE_FLAG_EXP
+assert len(body) == 36
+assert struct.unpack_from(">I", body, 0)[0] == server.UPDATE_FLAG_EXP == 0x04
+assert struct.unpack_from(">H", body, 4)[0] == 0
 assert struct.unpack_from(">i", body, 22)[0] == 43210
 assert "experience=43210" in description
 """
