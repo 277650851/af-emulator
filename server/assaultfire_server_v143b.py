@@ -4445,10 +4445,15 @@ class _V140PlayerStateManager:
     def state(self):
         return self.ensure(self.current_uin())
 
-    def save(self, reason="update"):
+    def save(self, reason="update", moneyflow_rows=None):
         uin = self.current_uin()
         state = self.state()
-        self.db.save_player_state(uin, state, reason=reason)
+        self.db.save_player_state(
+            uin,
+            state,
+            reason=reason,
+            moneyflow_rows=moneyflow_rows,
+        )
         return uin
 
     def reload(self, uin=None):
@@ -4524,7 +4529,7 @@ def _v140_wallet():
     return w
 
 
-def _v140_save_state(reason="update"):
+def _v140_save_state(reason="update", moneyflow_rows=None):
     V140_MALL_STATE["version"] = 1
     V140_MALL_STATE["inventory"] = [dict(p) for p in V111_INVENTORY]
     V140_MALL_STATE["current_role_gid"] = int(_v140_current_role_gid())
@@ -4536,10 +4541,14 @@ def _v140_save_state(reason="update"):
         nxt = (max_gid + 1) & 0xFFFFFFFFFFFFFFFF
     V140_MALL_STATE["next_gid"] = nxt
 
-    uin = _V140_PLAYER_STATE.save(reason)
+    uin = _V140_PLAYER_STATE.save(
+        reason,
+        moneyflow_rows=moneyflow_rows,
+    )
     log(
         "MALL-SQLITE",
-        f"v4 state committed transactionally reason={reason} uin={uin} "
+        f"v5 state committed transactionally reason={reason} uin={uin} "
+        f"moneyflow={len(moneyflow_rows or ())} "
         f"inventory={len(V111_INVENTORY)} "
         f"role=0x{_v140_current_role_gid():016x} "
         f"bag=0x{_v141_current_bag_gid():016x} "
@@ -5621,16 +5630,18 @@ def _v140_build_authoritative_wallet_refresh():
     )
 
 
-def _v140_moneyflow_datetime_now():
-    """Serialize the PH TDR datetime used by PlayerMoneyFlow (8 bytes).
+V140_MONEYFLOW_REPLAY_LIMIT = 360
 
-    PH/TDR type 0x17 is encoded as one 8-byte scalar, so the codec performs a
-    whole-value host/network byte swap. Build the native x86 tdr_datetime_t
-    layout first, then reverse all eight bytes for the wire. Packing each
-    multi-byte component independently as big-endian makes the UI reinterpret
-    minute/second bytes as the year (for example 10021-01-00).
+
+def _v140_moneyflow_datetime_now(epoch=None):
+    """Serialize one PH/TDR datetime scalar for Consumer List rows.
+
+    TDR type 0x17 is an 8-byte scalar. Build the native x86 structure first,
+    then byte-swap the whole scalar for the wire.
     """
-    tm = time.localtime()
+    tm = time.localtime(
+        time.time() if epoch is None else int(epoch)
+    )
     host = struct.pack(
         "<hBBhBB",
         int(tm.tm_year),
@@ -5690,70 +5701,118 @@ def _v140_build_moneyflow_notification(records):
     )
 
 
-def _v140_send_purchase_moneyflow(
-    conn,
-    key,
-    label,
+def _v140_make_purchase_moneyflow_rows(
     *,
     session_uin,
     consume_tp,
     consume_gp,
     consume_mp,
+    occurred_at=None,
+    details="",
+    commodity_ids=(),
 ):
-    """Publish a successful A505 debit to the stock Consumer List."""
+    """Create DB/wire rows from the authoritative post-purchase wallet."""
+    occurred_at = int(
+        time.time() if occurred_at is None else occurred_at
+    )
     wallet = _v140_wallet()
+    details = str(details or "")
+    commodity_ids = [int(value) for value in commodity_ids]
     rows = []
-    summary = []
 
-    if int(consume_tp):
+    for money_type, amount, current in (
+        (MONEYTYPE_TP, int(consume_tp), int(wallet["ap"])),
+        (MONEYTYPE_GP, int(consume_gp), int(wallet["gp"])),
+        (MONEYTYPE_MP, int(consume_mp), int(wallet["mp"])),
+    ):
+        if amount <= 0:
+            continue
         rows.append(
-            _v140_pack_moneyflow_record(
-                session_uin,
-                MONEYTYPE_TP,
-                -int(consume_tp),
-                int(wallet["ap"]),
-            )
+            {
+                "uin": int(session_uin),
+                "occurred_at": occurred_at,
+                "money_type": int(money_type),
+                "number": -amount,
+                "current": current,
+                "reason": MONEYREASON_BUY,
+                "details": details,
+                "commodity_ids": list(commodity_ids),
+            }
         )
-        summary.append(f"AP=-{int(consume_tp)}->{int(wallet['ap'])}")
+    return rows
 
-    if int(consume_gp):
-        rows.append(
-            _v140_pack_moneyflow_record(
-                session_uin,
-                MONEYTYPE_GP,
-                -int(consume_gp),
-                int(wallet["gp"]),
-            )
-        )
-        summary.append(f"GP=-{int(consume_gp)}->{int(wallet['gp'])}")
 
-    if int(consume_mp):
-        rows.append(
-            _v140_pack_moneyflow_record(
-                session_uin,
-                MONEYTYPE_MP,
-                -int(consume_mp),
-                int(wallet["mp"]),
-            )
-        )
-        summary.append(f"MP=-{int(consume_mp)}->{int(wallet['mp'])}")
-
+def _v140_send_moneyflow_rows(
+    conn,
+    key,
+    label,
+    rows,
+    *,
+    source,
+):
+    """Send persisted/live money-flow rows in the stock maximum of 90/packet."""
+    rows = [dict(row) for row in rows]
     if not rows:
-        return
+        return 0
 
-    pkt = _v140_build_moneyflow_notification(rows)
-    _v48_send_app(
+    sent = 0
+    chunks = [rows[i:i + 90] for i in range(0, len(rows), 90)]
+    for chunk_index, chunk in enumerate(chunks):
+        records = [
+            _v140_pack_moneyflow_record(
+                int(row.get("uin", _V140_PLAYER_STATE.current_uin())),
+                int(row["money_type"]),
+                int(row["number"]),
+                int(row["current"]),
+                reason=int(row.get("reason", MONEYREASON_BUY)),
+                when=_v140_moneyflow_datetime_now(
+                    int(row.get("occurred_at", time.time()))
+                ),
+            )
+            for row in chunk
+        ]
+        pkt = _v140_build_moneyflow_notification(records)
+        summary = ",".join(
+            f"{int(row['money_type'])}:{int(row['number'])}"
+            f"->{int(row['current'])}"
+            for row in chunk
+        )
+        _v48_send_app(
+            conn,
+            key,
+            pkt,
+            label,
+            "ZN2C_NTF_MONEYFLOW "
+            "CONSUMER-LIST-A367-PERSIST-v1 "
+            f"source={source} "
+            f"chunk={chunk_index + 1}/{len(chunks)} "
+            f"count={len(chunk)} rows={summary}",
+        )
+        sent += len(chunk)
+    return sent
+
+
+def _v140_replay_moneyflow(conn, key, label, *, session_uin):
+    """Replay persisted Consumer List history after the stock profile is ready."""
+    rows = PLAYER_DB.load_moneyflow(
+        int(session_uin),
+        limit=V140_MONEYFLOW_REPLAY_LIMIT,
+    )
+    for row in rows:
+        row["uin"] = int(session_uin)
+    sent = _v140_send_moneyflow_rows(
         conn,
         key,
-        pkt,
         label,
-        "ZN2C_NTF_MONEYFLOW "
-        "CONSUMER-LIST-A367-v1 "
-        f"cmd=0x{TGAME_ZN_NTF_MONEYFLOW:04X} "
-        f"uin={int(session_uin)} "
-        f"count={len(rows)} reason=BUY(2) "
-        + " ".join(summary),
+        rows,
+        source="sqlite-login-replay",
     )
+    log(
+        "MALL-SQLITE",
+        f"Consumer List replay uin={int(session_uin)} "
+        f"rows={sent} limit={V140_MONEYFLOW_REPLAY_LIMIT}",
+    )
+    return sent
 
 
 def _v140_send_wallet_sync(conn, key, label, reason=UPDATE_REASON_BUY, prefix="mall"):
@@ -9876,6 +9935,19 @@ def handle_placeholder(conn, addr, label):
                                                     label,
                                                 )
 
+                                                # Existing profiles receive their newest
+                                                # durable Consumer List rows after A005/A006
+                                                # and wallet/EXP state are established.
+                                                if not first_nickname_profile:
+                                                    _v140_replay_moneyflow(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        label,
+                                                        session_uin=_v150_role_uin(
+                                                            role_state
+                                                        ),
+                                                    )
+
                                                 hints = _v48_build_zonehints(
                                                     pending_zone_profile["seq_hints"]
                                                 )
@@ -10091,7 +10163,37 @@ def handle_placeholder(conn, addr, label):
                                                 wallet["gp"] -= int(plan["consume_gp"])
                                                 wallet["mp"] -= int(plan["consume_mp"])
 
-                                                _v140_save_state("buy")
+                                                purchase_uin = _v150_role_uin(
+                                                    role_state
+                                                )
+                                                purchase_time = int(time.time())
+                                                purchase_details = "; ".join(
+                                                    str(row.get("commodity_name", ""))
+                                                    for row in plan["staged"]
+                                                    if str(row.get("commodity_name", ""))
+                                                )
+                                                purchase_commodity_ids = [
+                                                    int(row["commodity_id"])
+                                                    for row in plan["staged"]
+                                                ]
+                                                purchase_moneyflow_rows = (
+                                                    _v140_make_purchase_moneyflow_rows(
+                                                        session_uin=purchase_uin,
+                                                        consume_tp=plan["consume_tp"],
+                                                        consume_gp=plan["consume_gp"],
+                                                        consume_mp=plan["consume_mp"],
+                                                        occurred_at=purchase_time,
+                                                        details=purchase_details,
+                                                        commodity_ids=purchase_commodity_ids,
+                                                    )
+                                                )
+
+                                                # Wallet, inventory and Consumer List rows
+                                                # become durable in one SQLite transaction.
+                                                _v140_save_state(
+                                                    "buy",
+                                                    moneyflow_rows=purchase_moneyflow_rows,
+                                                )
 
                                                 rsp = _v140_build_buy_response(
                                                     req,
@@ -10120,19 +10222,14 @@ def handle_placeholder(conn, addr, label):
                                                     prefix="post-buy",
                                                 )
 
-                                                # Issue #42: the stock Consumer List is fed
-                                                # by ZN2C_NtfMoneyFlow (0xA367). Only
-                                                # successful, committed A505 purchases reach
-                                                # this point, so rejected/cancelled buys do
-                                                # not create client history rows.
-                                                _v140_send_purchase_moneyflow(
+                                                # Issue #42: publish the exact rows that were
+                                                # committed with the purchase transaction.
+                                                _v140_send_moneyflow_rows(
                                                     conn,
                                                     active_tgame_key,
                                                     label,
-                                                    session_uin=_v150_role_uin(role_state),
-                                                    consume_tp=plan["consume_tp"],
-                                                    consume_gp=plan["consume_gp"],
-                                                    consume_mp=plan["consume_mp"],
+                                                    purchase_moneyflow_rows,
+                                                    source="live-buy",
                                                 )
 
                                                 # Publish the newly authoritative inventory.
