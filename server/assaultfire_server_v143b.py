@@ -5622,10 +5622,17 @@ def _v140_build_authoritative_wallet_refresh():
 
 
 def _v140_moneyflow_datetime_now():
-    """Serialize the PH TDR datetime used by PlayerMoneyFlow (8 bytes)."""
+    """Serialize the PH TDR datetime used by PlayerMoneyFlow (8 bytes).
+
+    PH/TDR type 0x17 is encoded as one 8-byte scalar, so the codec performs a
+    whole-value host/network byte swap. Build the native x86 tdr_datetime_t
+    layout first, then reverse all eight bytes for the wire. Packing each
+    multi-byte component independently as big-endian makes the UI reinterpret
+    minute/second bytes as the year (for example 10021-01-00).
+    """
     tm = time.localtime()
-    raw = struct.pack(
-        ">hBBhBB",
+    host = struct.pack(
+        "<hBBhBB",
         int(tm.tm_year),
         int(tm.tm_mon),
         int(tm.tm_mday),
@@ -5633,6 +5640,7 @@ def _v140_moneyflow_datetime_now():
         int(tm.tm_min),
         int(tm.tm_sec),
     )
+    raw = host[::-1]
     if len(raw) != 8:
         raise AssertionError(
             f"money-flow datetime wire size {len(raw)} != 8"
