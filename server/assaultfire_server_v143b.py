@@ -49,7 +49,6 @@ from assaultfire_preflight import (
 from assaultfire_logging import build_logger
 from assaultfire_auth import parse_client_dh_plaintext
 from assaultfire_boot import resolve_private_key_path, server_only_requested
-from local_ap_sync import LocalAPSync
 from player_db import DEFAULT_DB_PATH as PLAYER_DB_PATH, PlayerDatabase, PlayerDBError
 from development_web import (
     DevelopmentWebError,
@@ -4511,14 +4510,6 @@ def _v140_wallet():
         {"ap": V140_DEFAULT_AP, "gp": V140_DEFAULT_GP, "mp": V140_DEFAULT_MP},
     )
     return w
-
-
-# TEMPORARY PH 1.0.0.24 compatibility workaround.
-# Native initial AP/GamePoint population is still unresolved.  This local-only
-# helper seeds the already-verified client GamePoint field from the
-# authoritative persisted server wallet.  Remove after the native path is
-# implemented (tracked in docs/MILESTONES.md).
-_V143V_LOCAL_AP_SYNC = LocalAPSync(_V140_PLAYER_STATE.wallet_for_local_sync)
 
 
 def _v140_save_state(reason="update"):
@@ -14327,7 +14318,7 @@ def listen_on_port(port, label, sock=None):
 # Startup
 # ---------------------------------------------------------------------------
 
-print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156+SQLITE-EXP-A005 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 + RESTART-RESUME-HOSTED-MULTISESSION-v1 + A00A-UPDPROP-v100")
+print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156+SQLITE-EXP-A005 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 + RESTART-RESUME-HOSTED-MULTISESSION-v1 + A00A-UPDPROP-v100 + NO-AP-MEMSYNC")
 print(
     f"[BOOT] Hosted reconnect persistence: sqlite-multisession=enabled "
     f"session_ttl={SESSION_TTL_SECONDS}s "
@@ -14371,8 +14362,7 @@ print(
     f"legacy_exists={V140_MALL_STATE_PATH.exists()}"
 )
 print(
-    "[BOOT] AP initialization: "
-    + ("disabled in server-only mode" if SERVER_ONLY_MODE else _V143V_LOCAL_AP_SYNC.describe())
+    "[BOOT] AP synchronization: native A50E -> A00A UpdatePlayerProperty"
 )
 print(
     f"[BOOT] Runtime mode: {RUNTIME_MODE}; "
@@ -14474,13 +14464,6 @@ if __name__ == "__main__":
     # Mutable DS runtime state is created only after preflight succeeds.
     _v143b_init_spawner()
 
-    # TEMPORARY local PH AP initializer. It writes into a local TGame process,
-    # so it is intentionally disabled when this machine is backend-only.
-    if SERVER_ONLY_MODE:
-        print("[SERVER-ONLY] Local TGame AP memory sync disabled.", flush=True)
-    else:
-        _V143V_LOCAL_AP_SYNC.start()
-
     print(
         f"[BOOT] VERSION response: "
         f"{len(VERSION_RESPONSE)}B",
@@ -14552,10 +14535,6 @@ if __name__ == "__main__":
             except Exception:
                 pass
         if not SERVER_ONLY_MODE:
-            try:
-                _V143V_LOCAL_AP_SYNC.stop()
-            except Exception:
-                pass
             update_launch_gate_status(ready=False, reason=reason)
         raise SystemExit(5)
     log(
@@ -14600,7 +14579,6 @@ if __name__ == "__main__":
                     flush=True,
                 )
         if not SERVER_ONLY_MODE:
-            _V143V_LOCAL_AP_SYNC.stop()
             update_launch_gate_status(
                 ready=False,
                 reason="server shutting down",
