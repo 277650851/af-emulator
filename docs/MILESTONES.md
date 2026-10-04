@@ -145,7 +145,7 @@ Tasks:
 - [ ] Add contributor issue templates for protocol research
 - [ ] Document reproducible client compatibility requirements
 - [x] Recover and live-verify the native PH A50E TP/AP refresh path using the schema-sensitive A00A UpdatePlayerProperty notification
-- [ ] Remove the remaining **first-paint-only** local AP/GamePoint process-memory initializer after a clean-start login-only run proves the corrected shared A00A serializer initializes AP before manual refresh
+- [x] Remove the obsolete local AP/GamePoint process-memory initializer; AP synchronization now uses the native protocol path only
 - [ ] Tag a stable release after regression testing
 
 **Exit condition:** the stable project can be installed, understood, tested, and extended from the public repository alone.
