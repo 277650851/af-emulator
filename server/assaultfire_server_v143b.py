@@ -3774,7 +3774,19 @@ TGAME_ZN_REQ_UPDATECOMMODITYFILE = 0xA503
 TGAME_ZN_RES_UPDATECOMMODITYFILE = 0xA504
 TGAME_ZN_REQ_BUYCOMMODITY = 0xA505
 TGAME_ZN_RES_BUYCOMMODITY = 0xA506
+
+# Consumer List purchase history (public issue #42).
+# Direct compiled proto_c2zn metadata and live PH v1.0.0.24 verification:
+#   ID_ZN2C_NTF_MONEYFLOW = 0xA367
+#   MoneyType TP/AP=1, GP=2, MP=3; EMONEYFLOW_BUY=2.
+TGAME_ZN_NTF_MONEYFLOW = 0xA367
+
 TGAME_ZN_REQ_TP_BALANCE = 0xA50E
+
+MONEYTYPE_TP = 1  # protocol TP == PH client AP
+MONEYTYPE_GP = 2
+MONEYTYPE_MP = 3
+MONEYREASON_BUY = 2
 
 PAY_GP = 1
 PAY_TP = 2       # protocol TP == PH client AP
@@ -5606,6 +5618,133 @@ def _v140_build_authoritative_wallet_refresh():
             _v140_build_update_player_property(flag, reason),
         )
         for flag, name, reason in specs
+    )
+
+
+def _v140_moneyflow_datetime_now():
+    """Serialize the PH TDR datetime used by PlayerMoneyFlow (8 bytes)."""
+    tm = time.localtime()
+    raw = struct.pack(
+        ">hBBhBB",
+        int(tm.tm_year),
+        int(tm.tm_mon),
+        int(tm.tm_mday),
+        int(tm.tm_hour),
+        int(tm.tm_min),
+        int(tm.tm_sec),
+    )
+    if len(raw) != 8:
+        raise AssertionError(
+            f"money-flow datetime wire size {len(raw)} != 8"
+        )
+    return raw
+
+
+def _v140_pack_moneyflow_record(
+    uin,
+    money_type,
+    number,
+    current,
+    *,
+    reason=MONEYREASON_BUY,
+    when=None,
+):
+    """Build one stock PH PlayerMoneyFlow record (26 bytes)."""
+    dt = bytes(when) if when is not None else _v140_moneyflow_datetime_now()
+    if len(dt) != 8:
+        raise ValueError(f"money-flow datetime must be 8B, got {len(dt)}")
+    raw = (
+        _v48_u64(int(uin))
+        + dt
+        + _v48_u8(int(money_type))
+        + _v48_i32(int(number))
+        + _v48_i32(int(current))
+        + _v48_u8(int(reason))
+    )
+    if len(raw) != 26:
+        raise AssertionError(f"PlayerMoneyFlow wire size {len(raw)} != 26")
+    return raw
+
+
+def _v140_build_moneyflow_notification(records):
+    """Build verified ZN2C_NtfMoneyFlow (0xA367)."""
+    records = [bytes(row) for row in records]
+    if len(records) > 90:
+        raise ValueError("too many money-flow rows")
+    for row in records:
+        if len(row) != 26:
+            raise ValueError(f"bad PlayerMoneyFlow row size={len(row)}")
+    body = _v48_u32(len(records)) + b"".join(records)
+    return _v62_build_server_app(
+        TGAME_ZN_MAGIC,
+        TGAME_ZN_NTF_MONEYFLOW,
+        body,
+    )
+
+
+def _v140_send_purchase_moneyflow(
+    conn,
+    key,
+    label,
+    *,
+    session_uin,
+    consume_tp,
+    consume_gp,
+    consume_mp,
+):
+    """Publish a successful A505 debit to the stock Consumer List."""
+    wallet = _v140_wallet()
+    rows = []
+    summary = []
+
+    if int(consume_tp):
+        rows.append(
+            _v140_pack_moneyflow_record(
+                session_uin,
+                MONEYTYPE_TP,
+                -int(consume_tp),
+                int(wallet["ap"]),
+            )
+        )
+        summary.append(f"AP=-{int(consume_tp)}->{int(wallet['ap'])}")
+
+    if int(consume_gp):
+        rows.append(
+            _v140_pack_moneyflow_record(
+                session_uin,
+                MONEYTYPE_GP,
+                -int(consume_gp),
+                int(wallet["gp"]),
+            )
+        )
+        summary.append(f"GP=-{int(consume_gp)}->{int(wallet['gp'])}")
+
+    if int(consume_mp):
+        rows.append(
+            _v140_pack_moneyflow_record(
+                session_uin,
+                MONEYTYPE_MP,
+                -int(consume_mp),
+                int(wallet["mp"]),
+            )
+        )
+        summary.append(f"MP=-{int(consume_mp)}->{int(wallet['mp'])}")
+
+    if not rows:
+        return
+
+    pkt = _v140_build_moneyflow_notification(rows)
+    _v48_send_app(
+        conn,
+        key,
+        pkt,
+        label,
+        "ZN2C_NTF_MONEYFLOW "
+        "CONSUMER-LIST-A367-v1 "
+        f"cmd=0x{TGAME_ZN_NTF_MONEYFLOW:04X} "
+        f"uin={int(session_uin)} "
+        f"count={len(rows)} reason=BUY(2) "
+        + " ".join(summary),
     )
 
 
@@ -9971,6 +10110,21 @@ def handle_placeholder(conn, addr, label):
                                                     label,
                                                     reason=UPDATE_REASON_BUY,
                                                     prefix="post-buy",
+                                                )
+
+                                                # Issue #42: the stock Consumer List is fed
+                                                # by ZN2C_NtfMoneyFlow (0xA367). Only
+                                                # successful, committed A505 purchases reach
+                                                # this point, so rejected/cancelled buys do
+                                                # not create client history rows.
+                                                _v140_send_purchase_moneyflow(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    label,
+                                                    session_uin=_v150_role_uin(role_state),
+                                                    consume_tp=plan["consume_tp"],
+                                                    consume_gp=plan["consume_gp"],
+                                                    consume_mp=plan["consume_mp"],
                                                 )
 
                                                 # Publish the newly authoritative inventory.
