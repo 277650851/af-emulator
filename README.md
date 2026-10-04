@@ -1213,8 +1213,6 @@ social/progression systems are still incomplete or being validated.
 >
 > A50E is a read/synchronization operation only. Website/admin AP changes are the write/top-up side; repeated in-game refresh clicks do not grant or increment AP.
 >
-> The local first-paint compatibility helper is still retained temporarily until a clean-start login-only run separately verifies that the corrected shared serializer initializes AP before the player presses refresh. Server-only hosts do not use that helper.
->
 > The protocol finding is not AP-specific: UpdatePlayerProperty uses bitmask flags and a schema-sensitive A00A route. See [Research Findings](docs/RESEARCH_FINDINGS.md) and Issue #57 before adding new GP/MP/EXP/property producers.
 
 For the detailed matrix, read [Project Status](docs/STATUS.md).
