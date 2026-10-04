@@ -5591,6 +5591,24 @@ def _v140_build_update_player_property(update_flag, reason):
     )
 
 
+def _v140_build_authoritative_wallet_refresh():
+    """Build read-only AP/GP/MP refresh notifications from the current wallet."""
+    specs = (
+        (UPDATE_FLAG_TP, "AP", UPDATE_REASON_TP_BALANCE),
+        (UPDATE_FLAG_GP, "GP", 0),
+        (UPDATE_FLAG_MP, "MP", 0),
+    )
+    return tuple(
+        (
+            flag,
+            name,
+            reason,
+            _v140_build_update_player_property(flag, reason),
+        )
+        for flag, name, reason in specs
+    )
+
+
 def _v140_send_wallet_sync(conn, key, label, reason=UPDATE_REASON_BUY, prefix="mall"):
     for flag, name in (
         (UPDATE_FLAG_TP, "AP"),
@@ -9825,7 +9843,7 @@ def handle_placeholder(conn, addr, label):
                                                 log(
                                                     label,
                                                     "C2ZN_REQ_TPBALANCE "
-                                                    "AP-NATIVE-REFRESH-v1 "
+                                                    "WALLET-NATIVE-REFRESH-v2 "
                                                     f"wire_uin={balance_uin} "
                                                     f"session_uin={session_uin} "
                                                     "action=USE_AUTHENTICATED_UIN",
@@ -9843,28 +9861,34 @@ def handle_placeholder(conn, addr, label):
                                                 "AP-NATIVE-REFRESH-v1 "
                                                 f"uin={session_uin} "
                                                 f"AP={wallet['ap']} "
-                                                "action=SQLITE_RELOAD_NATIVE_A00A",
+                                                "action=SQLITE_RELOAD_NATIVE_A00A_AP_GP_MP",
                                             )
 
-                                            # Native client notification path:
-                                            # protocol TP == PH display AP.
-                                            pkt = _v140_build_update_player_property(
-                                                UPDATE_FLAG_TP,
-                                                UPDATE_REASON_TP_BALANCE,
-                                            )
-                                            _v48_send_app(
-                                                conn,
-                                                active_tgame_key,
+                                            # The stock AP reload click is our explicit
+                                            # authoritative wallet refresh boundary.  AP,
+                                            # GP and MP are independent bitmask updates; do
+                                            # not mutate the wallet here.
+                                            for (
+                                                refresh_flag,
+                                                refresh_name,
+                                                refresh_reason,
                                                 pkt,
-                                                label,
-                                                "ZN2C_NTF_UPDATEPLAYERPROPERTY "
-                                                "AP-NATIVE-REFRESH-v1 "
-                                                "cmd=0xA00A flag=AP reason=0x2A "
-                                                f"uin={session_uin} "
-                                                f"AP={wallet['ap']} "
-                                                f"GP={wallet['gp']} "
-                                                f"MP={wallet['mp']}",
-                                            )
+                                            ) in _v140_build_authoritative_wallet_refresh():
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    pkt,
+                                                    label,
+                                                    "ZN2C_NTF_UPDATEPLAYERPROPERTY "
+                                                    "WALLET-NATIVE-REFRESH-v2 "
+                                                    f"cmd=0xA00A flag={refresh_name} "
+                                                    f"flag_value=0x{refresh_flag:02X} "
+                                                    f"reason=0x{refresh_reason:02X} "
+                                                    f"uin={session_uin} "
+                                                    f"AP={wallet['ap']} "
+                                                    f"GP={wallet['gp']} "
+                                                    f"MP={wallet['mp']}",
+                                                )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_BUYCOMMODITY:
                                             req = _v140_parse_buy_commodity(
