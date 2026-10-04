@@ -1202,18 +1202,20 @@ See [Vital Setup Notes](docs/VITAL_SETUP_NOTES.md).
 
 The public stable baseline is **v143b**.
 
-Working/integrated areas include VERSION, AUTH, DIR, ROLE, ZONE, existing/local profile login, shared rooms, dynamic room work, PvE dedicated-server allocation/lifecycle, stock-selected PvE map/settings propagation, lazy AFDEV startup, inventory/shop/profile preservation work, and the current local AP synchronization path.
+Working/integrated areas include VERSION, AUTH, DIR, ROLE, ZONE, existing/local profile login, shared rooms, dynamic room work, PvE dedicated-server allocation/lifecycle, stock-selected PvE map/settings propagation, lazy AFDEV startup, inventory/shop/profile preservation work, and the live-verified native A50E AP/TP refresh path.
 
 Local username/password registration is available through the development
 website described above. First-time in-game nickname creation and parts of the
 social/progression systems are still incomplete or being validated.
 
 > [!IMPORTANT]
-> AP initialization currently uses a temporary local-only workaround on PH v1.0.0.24.
+> PH v1.0.0.24 native AP refresh is now live-verified. The stock AP reload button sends A50E; the emulator reloads the authoritative persisted wallet and publishes the absolute AP value through the recovered A00A UpdatePlayerProperty schema.
 >
-> The server wallet and normal AP purchases remain authoritative, but the stock client's native initial AP/GamePoint population is not yet fully recovered.
+> A50E is a read/synchronization operation only. Website/admin AP changes are the write/top-up side; repeated in-game refresh clicks do not grant or increment AP.
 >
-> The emulator currently copies the persisted AP balance into the verified local player field once per `TGame.exe` process. Disable this with `AF_LOCAL_AP_SYNC=0` only if you know why you are doing it.
+> The local first-paint compatibility helper is still retained temporarily until a clean-start login-only run separately verifies that the corrected shared serializer initializes AP before the player presses refresh. Server-only hosts do not use that helper.
+>
+> The protocol finding is not AP-specific: UpdatePlayerProperty uses bitmask flags and a schema-sensitive A00A route. See [Research Findings](docs/RESEARCH_FINDINGS.md) and Issue #57 before adding new GP/MP/EXP/property producers.
 
 For the detailed matrix, read [Project Status](docs/STATUS.md).
 
