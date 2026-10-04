@@ -1209,9 +1209,11 @@ website described above. First-time in-game nickname creation and parts of the
 social/progression systems are still incomplete or being validated.
 
 > [!IMPORTANT]
-> PH v1.0.0.24 native AP refresh is now live-verified. The stock AP reload button sends A50E; the emulator reloads the authoritative persisted wallet and publishes the absolute AP value through the recovered A00A UpdatePlayerProperty schema.
+> PH v1.0.0.24 native AP refresh is live-verified. The stock AP reload button sends A50E; the emulator reloads the authoritative persisted wallet and publishes wallet values through the recovered A00A UpdatePlayerProperty schema.
 >
-> A50E is a read/synchronization operation only. Website/admin AP changes are the write/top-up side; repeated in-game refresh clicks do not grant or increment AP.
+> The same refresh boundary now republishes AP, GP, and MP with the recovered bitmask flags: AP/TP `0x01`, GP `0x02`, and MP `0x10`. AP is live-verified; the GP/MP extension is implemented from the same recovered schema and should be live-checked with distinctive admin values.
+>
+> A50E is a read/synchronization operation only. Website/admin wallet changes are the write side; repeated in-game refresh clicks do not grant or increment currency.
 >
 > The protocol finding is not AP-specific: UpdatePlayerProperty uses bitmask flags and a schema-sensitive A00A route. See [Research Findings](docs/RESEARCH_FINDINGS.md) and Issue #57 before adding new GP/MP/EXP/property producers.
 
