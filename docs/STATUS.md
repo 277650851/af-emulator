@@ -47,8 +47,8 @@ Experimental or unverified work is excluded from `main` until it is reproducibly
 | Match allocation / capacity policy | 🟡 | The stock A10A/A11A handoff and lazy per-room DS path are integrated, but production-grade pooling, capacity policy, abuse limits, and large-scale multi-host orchestration still need work. |
 | Legacy kernel security-driver compatibility | 🟡 | The original client security driver can cause startup/crash problems on modern Windows independently of the emulator. Track separately in Issue #4; system-level changes are outside the supported emulator implementation. |
 | TDR/protocol documentation | 🟡 | Many structures/opcodes are known, but documentation and exact field verification are incomplete. |
-| Native AP/TP refresh | ✅ | PH v1.0.0.24 live-verified: `OnlineRequest_UpdateTPValue()` emits A50E; the server reloads the authoritative SQLite wallet and publishes the absolute balance through the 36-byte A00A UpdatePlayerProperty schema with TP flag `0x01` and TPBALANCE reason `0x2A`. Repeated refreshes are read-only/idempotent. |
-| AP/GamePoint synchronization | ✅ | Native protocol path only. No client process-memory AP writer is used; the authoritative SQLite balance is synchronized through A50E → schema-sensitive A00A UpdatePlayerProperty. |
+| Native AP/TP refresh | ✅ | PH v1.0.0.24 live-verified: `OnlineRequest_UpdateTPValue()` emits A50E; the server reloads the authoritative SQLite wallet and publishes AP through the 36-byte A00A UpdatePlayerProperty schema with TP flag `0x01` and TPBALANCE reason `0x2A`. Repeated refreshes are read-only/idempotent. |
+| GP/MP live wallet refresh | 🟡 | Integrated on the same A50E boundary using the recovered A00A bitmask flags GP `0x02` and MP `0x10`. The server republishes absolute SQLite AP/GP/MP values without process-memory writes; GP/MP still need one live stock-client display verification before promotion to ✅. |
 
 ## Broken, unavailable, or intentionally excluded
 
