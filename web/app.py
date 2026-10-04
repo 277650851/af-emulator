@@ -146,8 +146,8 @@ def _nickname_for_uin(uin: int) -> str | None:
         conn.close()
 
 
-def _ap_for_uin(uin: int) -> int | None:
-    """Return persisted AP for an initialized game wallet."""
+def _wallet_for_uin(uin: int) -> dict[str, int] | None:
+    """Return persisted AP/GP/MP for an initialized game wallet."""
     conn = _connect()
     try:
         exists = conn.execute(
@@ -157,19 +157,25 @@ def _ap_for_uin(uin: int) -> int | None:
         if not exists:
             return None
         row = conn.execute(
-            "SELECT ap FROM player_wallets WHERE uin=?",
+            "SELECT ap,gp,mp FROM player_wallets WHERE uin=?",
             (int(uin),),
         ).fetchone()
-        return int(row["ap"]) if row is not None else None
+        if row is None:
+            return None
+        return {
+            "ap": int(row["ap"]),
+            "gp": int(row["gp"]),
+            "mp": int(row["mp"]),
+        }
     finally:
         conn.close()
 
 
-def _set_ap_for_uin(uin: int, ap_value: int) -> None:
-    """Update AP only; keep the active game/login session intact."""
-    value = int(ap_value)
-    if value < 0 or value > 2_147_483_647:
-        raise ValueError("AP must be between 0 and 2147483647")
+def _set_wallet_for_uin(uin: int, *, ap: int, gp: int, mp: int) -> None:
+    """Update the persisted wallet without interrupting the active game session."""
+    values = {"ap": int(ap), "gp": int(gp), "mp": int(mp)}
+    if any(value < 0 or value > 2_147_483_647 for value in values.values()):
+        raise ValueError("AP, GP and MP must be between 0 and 2147483647")
 
     conn = _connect()
     try:
@@ -191,9 +197,9 @@ def _set_ap_for_uin(uin: int, ap_value: int) -> None:
 
         cur = conn.execute(
             "UPDATE player_wallets "
-            "SET ap=?, updated_at=CURRENT_TIMESTAMP "
+            "SET ap=?, gp=?, mp=?, updated_at=CURRENT_TIMESTAMP "
             "WHERE uin=?",
-            (value, int(uin)),
+            (values["ap"], values["gp"], values["mp"], int(uin)),
         )
         if cur.rowcount != 1:
             raise ValueError(
@@ -445,25 +451,29 @@ def admin():
         uin = int(row["uin"])
         target = "active" if row["status"] != "active" else "disabled"
         action = "Unban / Enable" if target == "active" else "Ban / Disable"
-        ap_value = _ap_for_uin(uin)
-        if ap_value is None:
-            ap_cell = (
+        wallet = _wallet_for_uin(uin)
+        if wallet is None:
+            wallet_cell = (
                 '<span class="muted">Launch game once to initialize wallet</span>'
             )
         else:
-            ap_cell = (
+            wallet_cell = (
                 f'<form class="ap-form" method="post" '
-                f'action="/admin/account/{uin}/ap">'
+                f'action="/admin/account/{uin}/wallet">'
                 f'{_form_token()}'
-                f'<input name="ap" type="number" min="0" max="2147483647" '
-                f'value="{int(ap_value)}" required>'
-                f'<button type="submit">Save AP</button></form>'
+                f'<label>AP <input name="ap" type="number" min="0" max="2147483647" '
+                f'value="{int(wallet["ap"])}" required></label>'
+                f'<label>GP <input name="gp" type="number" min="0" max="2147483647" '
+                f'value="{int(wallet["gp"])}" required></label>'
+                f'<label>MP <input name="mp" type="number" min="0" max="2147483647" '
+                f'value="{int(wallet["mp"])}" required></label>'
+                f'<button type="submit">Save wallet</button></form>'
             )
         rendered.append(
             "<tr>"
             f"<td>{uin}</td><td>{_esc(row['username'])}</td>"
             f"<td>{_esc(_nickname_for_uin(uin) or '')}</td>"
-            f"<td>{ap_cell}</td>"
+            f"<td>{wallet_cell}</td>"
             f"<td>{_esc(row['status'])}</td><td>"
             f'<form method="post" action="/admin/account/{uin}/status">'
             f"{_form_token()}"
@@ -473,11 +483,11 @@ def admin():
     body = (
         "<p>Admin access is available only after signing in through "
         "<code>/login</code>.</p>"
-        "<p><small>Set AP here while the player stays logged in. "
+        "<p><small>Set AP, GP, or MP here while the player stays logged in. "
         "Then click the AP reload icon in Mall to request A50E and refresh "
-        "the value from SQLite.</small></p>"
+        "the full wallet from SQLite.</small></p>"
         "<table><thead><tr><th>UIN</th><th>Username</th><th>Nickname</th>"
-        "<th>AP</th><th>Status</th><th>Action</th></tr></thead><tbody>"
+        "<th>Wallet (AP / GP / MP)</th><th>Status</th><th>Action</th></tr></thead><tbody>"
         + "".join(rendered)
         + "</tbody></table>"
         + f'<form method="post" action="/logout">{_form_token()}'
@@ -486,15 +496,19 @@ def admin():
     return _page("Admin", body)
 
 
-@app.post("/admin/account/<int:uin>/ap")
-def admin_ap(uin: int):
+@app.post("/admin/account/<int:uin>/wallet")
+def admin_wallet(uin: int):
     if not session.get("admin_authenticated"):
         abort(404)
     if not _valid_csrf():
         return "Invalid CSRF token.", 400
     try:
-        value = int(request.form.get("ap", ""))
-        _set_ap_for_uin(uin, value)
+        _set_wallet_for_uin(
+            uin,
+            ap=int(request.form.get("ap", "")),
+            gp=int(request.form.get("gp", "")),
+            mp=int(request.form.get("mp", "")),
+        )
     except (TypeError, ValueError) as exc:
         return str(exc), 400
     return redirect(url_for("admin"))
