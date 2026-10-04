@@ -3744,7 +3744,7 @@ V111_INVENTORY = [
 #   A361/A362  shop config hash
 #   A503/A504  commodity-file check/ack
 #   A505/A506  buy commodity
-#   A50E       AP/TP balance query -> A00B wallet update
+#   A50E       AP/TP balance query -> A00A UpdatePlayerProperty wallet update
 #   A008/A009/A00A equip/takeoff/current-role transaction (already live)
 #
 # UTGame.u confirms:
@@ -3757,7 +3757,10 @@ V111_INVENTORY = [
 # C2ZN_ReqPropOperation, so v140 keeps that proven wire path rather than
 # inventing separate command IDs.
 #
-TGAME_ZN_NTF_UPDATE_PLAYER_PROPERTY = 0xA00B
+# PH 1.0.0.24 live validation: A00A is schema-sensitive. The existing 19-byte
+# PropOperation notification and the 36-byte UpdatePlayerProperty notification
+# both route through A00A, with the body/TDR schema selecting the consumer.
+TGAME_ZN_NTF_UPDATE_PLAYER_PROPERTY = 0xA00A
 TGAME_ZN_REQ_ITEM_OPERATION = 0xA200
 TGAME_ZN_RES_ITEM_OPERATION = 0xA201
 # v160: OnlineRequest_UseFunctionCard(int,int) -> A347/A348.
@@ -3788,13 +3791,14 @@ SHOP_ERR_SHOPCART_EMPTY = 0x820A
 SHOP_ERR_NOTENOUGHMONEY = 0x820B
 SHOP_ERR_PAYTYPE_INVALID = 0x820C
 
-UPDATE_FLAG_TP = 0
-UPDATE_FLAG_GP = 1
-UPDATE_FLAG_EXP = 2
-UPDATE_FLAG_PROP = 3
-UPDATE_FLAG_MP = 4
-UPDATE_REASON_BUY = 0x08
-UPDATE_REASON_TP_BALANCE = 0x30
+# Stock EUPDATEPROPERTYFLAG_* values are bitmasks, not enum ordinals.
+UPDATE_FLAG_TP = 0x01
+UPDATE_FLAG_GP = 0x02
+UPDATE_FLAG_EXP = 0x04
+UPDATE_FLAG_PROP = 0x08
+UPDATE_FLAG_MP = 0x10
+UPDATE_REASON_BUY = 0x08  # retained pending the reason-value audit in issue #57
+UPDATE_REASON_TP_BALANCE = 0x2A
 
 V140_DEFAULT_AP = 100000
 V140_DEFAULT_GP = 100000
@@ -5576,8 +5580,8 @@ def _v140_build_update_player_property(update_flag, reason):
         else 0
     )
     body = (
-        _v48_u16(update_flag)
-        + _v48_u32(reason)
+        _v48_u32(update_flag)
+        + _v48_u16(reason)
         + _v48_i32(int(wallet["ap"]))
         + _v48_i32(0)                 # HappyPoint
         + _v48_i32(int(wallet["gp"]))
@@ -5588,7 +5592,7 @@ def _v140_build_update_player_property(update_flag, reason):
         + _v48_u16(0)                 # UpdateProp count
     )
     if len(body) != 36:
-        raise AssertionError(f"A00B wallet body len={len(body)}")
+        raise AssertionError(f"A00A UpdatePlayerProperty body len={len(body)}")
     return _v62_build_server_app(
         TGAME_ZN_MAGIC,
         TGAME_ZN_NTF_UPDATE_PLAYER_PROPERTY,
@@ -9848,7 +9852,7 @@ def handle_placeholder(conn, addr, label):
                                                 "AP-NATIVE-REFRESH-v1 "
                                                 f"uin={session_uin} "
                                                 f"AP={wallet['ap']} "
-                                                "action=SQLITE_RELOAD_NATIVE_A00B",
+                                                "action=SQLITE_RELOAD_NATIVE_A00A",
                                             )
 
                                             # Native client notification path:
@@ -9864,7 +9868,7 @@ def handle_placeholder(conn, addr, label):
                                                 label,
                                                 "ZN2C_NTF_UPDATEPLAYERPROPERTY "
                                                 "AP-NATIVE-REFRESH-v1 "
-                                                "cmd=0xA00B flag=AP reason=0x30 "
+                                                "cmd=0xA00A flag=AP reason=0x2A "
                                                 f"uin={session_uin} "
                                                 f"AP={wallet['ap']} "
                                                 f"GP={wallet['gp']} "
@@ -14323,7 +14327,7 @@ def listen_on_port(port, label, sock=None):
 # Startup
 # ---------------------------------------------------------------------------
 
-print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156+SQLITE-EXP-A005 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 + RESTART-RESUME-HOSTED-MULTISESSION-v1")
+print("[BOOT] BUILD=v143b-GITHUB-MAIN-c7ad3-BAG-CATALOG-DYNAMIC-1-5-A006-RECONCILE-v156+SQLITE-EXP-A005 + STABLE LOGIN UIN + SQLITE PROFILE/WALLET/INVENTORY + F301/F302 + RESTART-RESUME-HOSTED-MULTISESSION-v1 + A00A-UPDPROP-v100")
 print(
     f"[BOOT] Hosted reconnect persistence: sqlite-multisession=enabled "
     f"session_ttl={SESSION_TTL_SECONDS}s "
