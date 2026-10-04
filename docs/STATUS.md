@@ -49,6 +49,7 @@ Experimental or unverified work is excluded from `main` until it is reproducibly
 | TDR/protocol documentation | 🟡 | Many structures/opcodes are known, but documentation and exact field verification are incomplete. |
 | Native AP/TP refresh | ✅ | PH v1.0.0.24 live-verified: `OnlineRequest_UpdateTPValue()` emits A50E; the server reloads the authoritative SQLite wallet and publishes AP through the 36-byte A00A UpdatePlayerProperty schema with TP flag `0x01` and TPBALANCE reason `0x2A`. Repeated refreshes are read-only/idempotent. |
 | GP/MP live wallet refresh | 🟡 | Integrated on the same A50E boundary using the recovered A00A bitmask flags GP `0x02` and MP `0x10`. The server republishes absolute SQLite AP/GP/MP values without process-memory writes; GP/MP still need one live stock-client display verification before promotion to ✅. |
+| Consumer List purchase history | 🟡 | Issue #42. PH v1.0.0.24 live-verified `ZN2C_NtfMoneyFlow` command `0xA367`: successful AP and GP purchases render in the stock Consumer List with signed debit and resulting balance. TDR `datetime` is encoded as one 8-byte scalar (whole-value byte swap), fixing bogus dates such as `10021-01-00`. Persistent replay across relog/server restart and richer item-detail text remain follow-up work. |
 
 ## Broken, unavailable, or intentionally excluded
 
