@@ -10,6 +10,8 @@
 
 An unofficial **Assault Fire PH** preservation/server-emulation project.
 
+**In-game English translations:** [Install and restore translation corrections](translations/README.md). Report bad or untranslated text using the [translation issue form](https://github.com/armangido/af-emulator/issues/new?template=translation-report.yml).
+
 > [!WARNING]
 > **Anti-scam notice — this emulator is free**
 >
