@@ -2,16 +2,18 @@
 r"""
 AFDevLoader v48.2 - generic Assault Fire PH PvE dedicated-server loader.
 
-Starts the validated TGame_AFDEV runtime, enters true server mode, opens the
-room-selected installed PvE map on the game thread, applies captured room
-settings, verifies native movement/correction and the live zero DS key, then
-publishes SESSION_READY for the v9 bridge.
+Starts the validated local TGame_AFDEV runtime, enters true server mode, opens
+the room-selected installed PvE map on the game thread, applies captured room
+settings, verifies movement/correction and the live zero DS key, then publishes
+SESSION_READY for the v9 bridge.
 
-No original game executable is modified on disk. If TGame_AFDEV.exe is absent,
-the loader may create a local private copy from the user's own TGame.exe.
-Runtime addresses are build-specific. If TGame_AFDEV.exe exists, the loader
-uses it regardless of its whole-file hash and verifies required patch-site bytes
-in the suspended process before execution resumes.
+The repository never distributes TGame_AFDEV.exe. The one-click launcher builds
+that private copy from the user's own verified TGame.exe and may install the
+verified .afm4 ServerMove-v4 patch into the AFDEV copy only. At runtime this
+loader recognizes the live ServerMove-v4 JMP/body and leaves its stock vtables
+alone; older compatible AFDEV copies still fall back to the v48 in-memory
+movement bridge. Runtime addresses remain build-specific and every required
+patch site is validated before execution resumes.
 """
 
 import argparse
