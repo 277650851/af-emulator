@@ -328,6 +328,17 @@ PVE_SERVERMOVE_STUB_V48 = 0x013A88D0
 PVE_MOVEAUTONOMOUS_IMPL_V48 = 0x008F24B0
 PVE_SERVERMOVE_ERROR_IMPL_V48 = 0x008F2620
 
+# Verified disk-restored ServerMove v4. The public patcher installs a .afm4
+# section and redirects only the shared stripped 0x013A88D0 stub. Vtables stay
+# stock, so the loader can detect the patch from the live JMP plus this invariant
+# bridge prologue without relying on a whole-file hash.
+SERVERMOVE_V4_HEAD = bytes.fromhex(
+    "55 8B EC 53 56 57 83 EC 30 8B F1 8B 9E D8 01 00 "
+    "00 85 DB 0F 84 56 02 00 00 F3 0F 10 45 08 F3 0F"
+)
+SERVERMOVE_V4_STOCK_STUB = bytes.fromhex("C2 28 00 CC CC")
+STEEL_FORTRESS_MODE_ID_V4 = 0x00002002
+
 # Mutation / TGBioPlayerController vtable for the validated PH TGame build.
 # Every movement entry is checked against the proven slot pattern before patching.
 BIO_PC_VTABLE_V49 = 0x01E42FE0
@@ -6534,11 +6545,97 @@ def main():
             )
 
             v48_movement_state = None
+            steel_v4_deferred = False
+            steel_v4_saved_stub = b""
+
+            live_servermove_stub = read_remote(
+                pi.hProcess,
+                PVE_SERVERMOVE_STUB_V48,
+                5,
+            )
+            disk_servermove_v4 = False
+            disk_servermove_v4_target = 0
+
+            if live_servermove_stub == SERVERMOVE_V4_STOCK_STUB:
+                pass
+            elif len(live_servermove_stub) == 5 and live_servermove_stub[0] == 0xE9:
+                rel = struct.unpack("<i", live_servermove_stub[1:5])[0]
+                candidate_target = (
+                    PVE_SERVERMOVE_STUB_V48 + 5 + rel
+                ) & 0xFFFFFFFF
+                candidate_head = read_remote(
+                    pi.hProcess,
+                    candidate_target,
+                    len(SERVERMOVE_V4_HEAD),
+                )
+                if candidate_head != SERVERMOVE_V4_HEAD:
+                    raise RuntimeError(
+                        "shared ServerMove stub is a JMP, but its target does "
+                        "not match the verified ServerMove-v4 bridge"
+                    )
+                disk_servermove_v4 = True
+                disk_servermove_v4_target = candidate_target
+            else:
+                raise RuntimeError(
+                    "shared ServerMove stub is neither the validated stock "
+                    "ret-28h stub nor the verified ServerMove-v4 JMP"
+                )
+
             if args.no_native_movement:
                 print(
                     "[AFDEV-v48] Native movement/correction bridge disabled by "
                     "--no-native-movement."
                 )
+            elif disk_servermove_v4:
+                # Steel/TGIF touches the shared movement entry during map OPEN.
+                # Historical stock-stub runs load the same map successfully, so
+                # defer v4 only during that startup window. The bridge does not
+                # release the client until SESSION_READY, and v4 is restored
+                # immediately after LoadMap stage 7.
+                if int(args.mode_id) == STEEL_FORTRESS_MODE_ID_V4:
+                    steel_v4_saved_stub = bytes(live_servermove_stub)
+                    write_remote(
+                        pi.hProcess,
+                        PVE_SERVERMOVE_STUB_V48,
+                        SERVERMOVE_V4_STOCK_STUB,
+                    )
+                    verify = read_remote(
+                        pi.hProcess,
+                        PVE_SERVERMOVE_STUB_V48,
+                        5,
+                    )
+                    if verify != SERVERMOVE_V4_STOCK_STUB:
+                        raise RuntimeError(
+                            "Steel ServerMove-v4 startup defer verification failed"
+                        )
+                    steel_v4_deferred = True
+                    print(
+                        "[AFDEV-SERVERMOVE-v4-STEEL] DEFERRED during TGIF OPEN: "
+                        "shared stub restored to stock ret 0x28"
+                    )
+
+                v48_movement_state = {
+                    "remote": disk_servermove_v4_target,
+                    "disk_patch": True,
+                    "targets": [
+                        {"label": "shared ServerMove/PWSM disk patch v4"}
+                    ],
+                }
+                print(
+                    "[AFDEV-SERVERMOVE-v4] verified disk patch detected: "
+                    f"0x{PVE_SERVERMOVE_STUB_V48:08X} -> "
+                    f"0x{disk_servermove_v4_target:08X}"
+                )
+                if steel_v4_deferred:
+                    print(
+                        "[AFDEV-SERVERMOVE-v4] runtime v48 bridge SKIPPED; "
+                        "disk v4 will be restored after Steel LoadMap stage 7."
+                    )
+                else:
+                    print(
+                        "[AFDEV-SERVERMOVE-v4] runtime v48 bridge SKIPPED; "
+                        "using disk-restored ServerMove."
+                    )
             else:
                 v48_movement_state = install_native_movement_bridge_v48(
                     pi.hProcess,
@@ -6754,6 +6851,49 @@ def main():
             print(
                 "[AFDEV] LoadMap completed all seven instrumented stages."
             )
+
+        if steel_v4_deferred:
+            if highest_stage < 7:
+                raise RuntimeError(
+                    "Steel LoadMap did not reach stage 7; refusing to enable "
+                    "ServerMove v4 into an incomplete world"
+                )
+            write_remote(
+                pi.hProcess,
+                PVE_SERVERMOVE_STUB_V48,
+                steel_v4_saved_stub,
+            )
+            restored = read_remote(
+                pi.hProcess,
+                PVE_SERVERMOVE_STUB_V48,
+                5,
+            )
+            if restored != steel_v4_saved_stub or restored[0] != 0xE9:
+                raise RuntimeError(
+                    "Steel ServerMove-v4 post-LoadMap restore verification failed"
+                )
+            rel = struct.unpack("<i", restored[1:5])[0]
+            restored_target = (
+                PVE_SERVERMOVE_STUB_V48 + 5 + rel
+            ) & 0xFFFFFFFF
+            restored_head = read_remote(
+                pi.hProcess,
+                restored_target,
+                len(SERVERMOVE_V4_HEAD),
+            )
+            if (
+                restored_target != disk_servermove_v4_target
+                or restored_head != SERVERMOVE_V4_HEAD
+            ):
+                raise RuntimeError(
+                    "Steel ServerMove-v4 restored target/body verification failed"
+                )
+            print(
+                "[AFDEV-SERVERMOVE-v4-STEEL] RESTORED after LoadMap stage 7: "
+                f"0x{PVE_SERVERMOVE_STUB_V48:08X} -> "
+                f"0x{restored_target:08X} PASS"
+            )
+            steel_v4_deferred = False
 
         print()
         print(
