@@ -4570,6 +4570,183 @@ def _v140_role_slot(item_id):
     return loc if loc in (0x0A, 0x0B) else None
 
 
+# PH 1.0.0.24 RawItemDatas: MainShowType=1, Location=0/1/2/7.
+# These sockets belong to a character; the same numbers in a backpack refer
+# to weapons. Do not infer accessory ownership from a socket number alone.
+V173_CHARACTER_ACCESSORY_SLOTS = {
+    100017: 0,
+    100018: 1,
+    100019: 2,
+    100023: 0,
+    100024: 1,
+    100025: 2,
+    100029: 0,
+    100030: 1,
+    100031: 2,
+    100042: 7,
+    100081: 1,
+    100082: 1,
+    100083: 1,
+    100084: 1,
+    100085: 1,
+    100086: 1,
+    100087: 1,
+    100088: 1,
+    100089: 0,
+    100090: 0,
+    100091: 0,
+    100092: 0,
+    100093: 2,
+    100094: 2,
+    100095: 2,
+    100096: 2,
+    100097: 2,
+    100098: 2,
+    100101: 2,
+    100102: 2,
+    100103: 0,
+    100104: 1,
+    100116: 1,
+    100117: 1,
+    100118: 0,
+    100119: 0,
+    100120: 2,
+    100121: 2,
+    100124: 1,
+    100125: 1,
+    100126: 0,
+    100127: 0,
+    100128: 2,
+    100129: 2,
+    100130: 0,
+    100131: 0,
+    100200: 0,
+    100201: 1,
+    100202: 1,
+    100203: 2,
+    100218: 1,
+    100219: 1,
+    100223: 2,
+    100224: 0,
+    100226: 0,
+    100230: 1,
+    100264: 0,
+    100265: 0,
+    100266: 1,
+    100267: 0,
+    100268: 1,
+    100269: 2,
+    100272: 1,
+    100273: 0,
+    100275: 1,
+    100276: 0,
+    100277: 2,
+    100278: 1,
+    100279: 0,
+    100303: 2,
+    100304: 1,
+    100305: 0,
+    100320: 0,
+    100321: 0,
+    100322: 0,
+    100323: 0,
+    100324: 0,
+    100325: 0,
+    100335: 0,
+    100341: 0,
+    100369: 2,
+    100370: 1,
+    100371: 0,
+    100372: 2,
+    100373: 1,
+    100377: 0,
+    100387: 0,
+    100389: 0,
+    100425: 2,
+    100428: 2,
+    100432: 1,
+    100450: 2,
+    100451: 1,
+    100452: 0,
+    100455: 2,
+    100460: 0,
+    100490: 0,
+    100527: 2,
+    100528: 0,
+    100529: 1,
+    100530: 2,
+    100549: 0,
+    100550: 1,
+    100551: 2,
+    100562: 0,
+    100588: 0,
+    100589: 1,
+    100590: 2,
+    100601: 0,
+    100602: 0,
+    100606: 0,
+    100607: 1,
+    100608: 2,
+    100609: 0,
+    100610: 1,
+    100611: 2,
+    100645: 0,
+    100648: 0,
+    100649: 1,
+}
+
+
+def _v173_character_accessory_slot(item_id):
+    return V173_CHARACTER_ACCESSORY_SLOTS.get(int(item_id))
+
+
+def _v173_repair_accessory_owners():
+    """Return accessories incorrectly mounted on backpacks/root to storage."""
+    invalid_owners = _v141_bag_gids() | {V110_BAG_MOUNT_OWNER}
+    changes = []
+    for prop in V111_INVENTORY:
+        if (_v173_character_accessory_slot(prop.get("item_id", 0)) is not None
+                and int(prop.get("owner_gid", 0)) in invalid_owners):
+            before = (int(prop["owner_gid"]), int(prop["location"]))
+            prop["owner_gid"], prop["location"] = 0, V109_LOC_BAG
+            changes.append((int(prop["gid"]), int(prop["item_id"]), before))
+    return changes
+
+
+def _v173_apply_accessory_equip(op):
+    if int(op.get("operation", -1)) != PROP_OP_EQUIP:
+        return None
+    subject = _v140_find_prop(int(op.get("subject_gid", 0)))
+    if subject is None:
+        return None
+    item_id = int(subject.get("item_id", 0))
+    slot = _v173_character_accessory_slot(item_id)
+    if slot is None:
+        return None
+
+    effective = dict(op)
+    roles = {
+        int(prop["gid"]): prop for prop in V111_INVENTORY
+        if _v140_role_slot(int(prop.get("item_id", 0))) is not None
+    }
+    requested = int(op.get("target_gid", 0))
+    owner = requested if requested in roles else int(_v140_current_role_gid())
+    if owner not in roles:
+        effective.update(target_gid=int(subject.get("owner_gid", 0)),
+                         location=int(subject.get("location", V109_LOC_BAG)))
+        return "v173 accessory equip ignored: no owned character root", effective
+
+    # Exclusivity is within this character, never across bag weapon sockets.
+    for other in V111_INVENTORY:
+        if (other is not subject and int(other.get("owner_gid", 0)) == owner
+                and int(other.get("location", V109_LOC_BAG)) == slot):
+            other["owner_gid"], other["location"] = 0, V109_LOC_BAG
+    subject["owner_gid"], subject["location"] = owner, slot
+    effective.update(target_gid=owner, location=slot)
+    return (f"v173 accessory equip item={item_id} character=0x{owner:016x} "
+            f"slot=0x{slot:02x}"), effective
+
+
 # v141 current-bag invariant:
 # TGAvatarChar_Data.GetCharInfo derives one scalar DefaultBagIndex by testing
 # every bag with IsEquipedToRoot(OwnerPropId). Therefore exactly ONE normal
@@ -4602,7 +4779,10 @@ def _v141_catalog_bag_item_ids():
         ]
         if not root_items and bundle_item_ids:
             root_items = [bundle_item_ids[0]]
-        bag_item_ids.update(root_items)
+        bag_item_ids.update(
+            item_id for item_id in root_items
+            if _v173_character_accessory_slot(item_id) is None
+        )
 
     return frozenset(bag_item_ids)
 
@@ -4966,6 +5146,11 @@ def _v140_select_player(uin):
                     in skill_revokes
                 ),
             )
+
+    accessory_repairs = _v173_repair_accessory_owners()
+    if accessory_repairs:
+        _v140_save_state("character-accessory-owner-repair-v173")
+        log("MALL", f"v173 returned misplaced accessories to storage uin={uin} changes={accessory_repairs}")
 
     return _V140_PLAYER_STATE.state()
 
@@ -6160,6 +6345,10 @@ def _v111_apply_prop_operation(op):
     canonical equipment slot is Primary (0). If the client asks to equip that
     weapon to a bag using generic Location=Bag, normalize it to Primary.
     """
+    accessory = _v173_apply_accessory_equip(op)
+    if accessory is not None:
+        return accessory
+
     eff = dict(op)
     gid = int(op["subject_gid"])
     subject = next((p for p in V111_INVENTORY if int(p["gid"]) == gid), None)
