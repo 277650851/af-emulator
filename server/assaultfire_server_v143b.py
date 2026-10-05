@@ -50,6 +50,8 @@ from assaultfire_database_logging import build_logger
 from assaultfire_auth import parse_client_dh_plaintext
 from assaultfire_boot import resolve_private_key_path, server_only_requested
 from player_db import DEFAULT_DB_PATH as PLAYER_DB_PATH, PlayerDatabase, PlayerDBError
+from clan_db import ClanDatabase
+from clan_service import ClanService, COMMANDS as CLAN_COMMANDS, SENSITIVE_COMMANDS as CLAN_SENSITIVE_COMMANDS
 from development_web import (
     DevelopmentWebError,
     DevelopmentWebProcess,
@@ -116,6 +118,38 @@ V139_WIRE_BINDINGS = ({'owner': 'TGOnlineClient', 'name': 'OnlineRequest_CreateA
 V139_PROTOCOL_ONLY = {40960: ('Protocol.Login', 'CURRENT_BRANCH'), 40964: ('Protocol.Heartbeat', 'CURRENT_BRANCH'), 40968: ('Protocol.PropOperation', 'CURRENT_BRANCH'), 41888: ('Protocol.StartRoomAlloc', 'CURRENT_BRANCH'), 41891: ('Protocol.QuitRoomAlloc', 'MAPPED_ONLY'), 65285: ('Protocol.UnknownFF05', 'CURRENT_BRANCH')}
 V139_CURRENT_HANDLER_IDS = frozenset((40960, 40962, 40964, 40968, 41216, 41223, 41226, 41229, 41232, 41235, 41239, 41244, 41246, 41266, 41731, 41813, 41888, 65285))
 
+
+
+# PH clan metadata and October 5 captures; see docs/CLANS.md for live status.
+V139_WIRE_BINDINGS = tuple(
+    b for b in V139_WIRE_BINDINGS
+    if (b["owner"], b["name"]) not in {('TGOnlineTeamRoom', 'OnlineRequest_TeamIntroduction'), ('TGOnlineTeamRoom', 'OnlineRequest_GetOtherTeamInfo'), ('TGOnlineTeamRoom', 'OnlineRequest_ApproveJoinResult'), ('TGOnlineTeamRoom', 'OnlineRequest_FireMember'), ('TGOnlineTeamRoom', 'OnlineRequest_ApproveList'), ('TGOnlineTeamRoom', 'OnlineRequest_CreateTeam'), ('TGOnlineTeamRoom', 'OnlineRequest_GetDetailTeamInfo'), ('TGOnlineTeamRoom', 'OnlineRequest_QuitTeam'), ('TGOnlineTeamRoom', 'OnlineRequest_GetMemberList'), ('TGOnlineTeamRoom', 'OnlineRequest_ApplyToJoinTeam'), ('TGOnlineTeamRoom', 'OnlineRequest_SearchTeamByName'), ('TGOnlineTeamRoom', 'OnlineRequest_CheckTeamName')}
+)
+V139_WIRE_BINDINGS += (
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CreateTeam', 'cmd': 45057, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SearchTeamByName', 'cmd': 45061, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetDetailTeamInfo', 'cmd': 45065, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetMemberList', 'cmd': 45067, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetOtherTeamInfo', 'cmd': 45069, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_CheckTeamName', 'cmd': 45071, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ApplyToJoinTeam', 'cmd': 45075, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ApproveList', 'cmd': 45077, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ApproveJoinResult', 'cmd': 45081, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_FireMember', 'cmd': 45086, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_QuitTeam', 'cmd': 45092, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_TeamIntroduction', 'cmd': 45184, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan macro/structure metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ConfirmJoin', 'cmd': 45079, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_InvitePlayerJoin', 'cmd': 45099, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_PromotionMember', 'cmd': 45088, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_DemotionMember', 'cmd': 45090, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ExtendTeam', 'cmd': 0xB025, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetBulletin', 'cmd': 0xB02D, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SetBulletin', 'cmd': 0xB02F, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_BuyBadge', 'cmd': 0xB04A, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SetBadge', 'cmd': 0xB04E, 'status': 'CURRENT_PARTIAL', 'source': 'PH metalib; badge setting confirmed in client', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetBadgeList', 'cmd': 0xB050, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetTeamMemberGroupList', 'cmd': 0xB08A, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
+)
 
 def _v139_sig(spec):
     params = ", ".join(
@@ -950,6 +984,13 @@ _R12_NEXT_UID = 10001
 
 # One SQLite file remains authoritative for accounts and game persistence.
 PLAYER_DB = PlayerDatabase()
+CLAN_DB = ClanDatabase(PLAYER_DB.db_path)
+CLAN_SERVICE = ClanService(
+    CLAN_DB, is_online=lambda uin: _v150_session_snapshot(uin) is not None,
+    send_notification=lambda uin, cmd, body: _v150_send_online(
+        uin, _v62_build_server_app(TGAME_ZN_MAGIC, cmd, body),
+        f'CLAN notification cmd=0x{cmd:04X} uin={uin}'),
+)
 
 
 def _r12_uid_for_client_pid(pid):
@@ -6550,13 +6591,14 @@ def _v124_build_bag1_refresh_notification():
         _v111_pack_prop_operation(op)
     )
 
-def _v48_player_info(uin=10001, nickname="LocalPlayer", cur_role_gid=None):
+def _v48_player_info(uin=10001, nickname="LocalPlayer", cur_role_gid=None, player_state=None):
     # Exact field order recovered from PlayerInfo metalib. v70 uses the runtime-verified\n    # TDR string form for NickName: u32_be(strlen+1) + NUL-terminated bytes.\n    # CurRoleGID/RoleType
     # v140 resolves the active role and wallet from persistent mall state when omitted.
     if cur_role_gid is None:
-        cur_role_gid = _v140_current_role_gid()
-    wallet = _v140_wallet()
-    experience = int(V140_MALL_STATE.get("experience", 0))
+        cur_role_gid = _v140_current_role_gid() if player_state is None else _r13_wire_gid(player_state["current_role_gid"], uin)
+    wallet = _v140_wallet() if player_state is None else player_state["wallet"]
+    experience = int((V140_MALL_STATE if player_state is None else player_state).get("experience", 0))
+    clan = CLAN_DB.get_player_clan(uin)
     return (
         _v48_u64(uin)
         + _v48_u32(0)
@@ -6568,7 +6610,7 @@ def _v48_player_info(uin=10001, nickname="LocalPlayer", cur_role_gid=None):
         + _v48_dt_zero() + _v48_dt_zero()
         + _v48_u64(cur_role_gid)  # CurRoleGID (v109 real role prop)
         + _v48_u64(0)             # RoleType
-        + _v48_u64(0)
+        + _v48_u64(clan["clan_id"] if clan else 0)  # ClanID
         + _v48_u32(0) + _v48_u32(0) + _v48_u32(0) + _v48_u32(0)
         + _v48_u16(0)
         + _v48_dt_zero() + _v48_dt_zero()
@@ -6601,6 +6643,40 @@ def _v48_build_playerinfo(seq, uin=10001, cur_role_gid=None, nickname="LocalPlay
     )
     body = _v48_u16(ZONE_ERR_SUCC) + info
     return _v62_build_server_app(TGAME_ZN_MAGIC, TGAME_ZN_NTF_PLAYERINFO, body)
+
+
+def _clan_debug_hex(plain):
+    # Redact credentials even for truncated application payloads. C2ZN has
+    # its client sequence at +0, magic at +4, and command at +6.
+    if len(plain) >= 8 and plain[4:6] == b'\x32\x43':
+        cmd = struct.unpack_from('>H', plain, 6)[0]
+        if cmd in CLAN_SENSITIVE_COMMANDS:
+            return '<clan credentials redacted>'
+    return plain.hex()
+
+
+def _clan_dispatch(conn, key, app, session_uin, label):
+    replies, affected = CLAN_SERVICE.handle(app['cmd'], app['body'], int(session_uin or 0))
+    # Badge purchases debit SQLite directly, atomically with the grant. Refresh
+    # the mall working set before any later inventory save can restore old funds.
+    if app['cmd'] == 0xB04A and int(session_uin or 0) in affected:
+        _V140_PLAYER_STATE.reload(int(session_uin))
+    for cmd, body in replies:
+        _v48_send_app(conn, key, _v62_build_server_app(TGAME_ZN_MAGIC, cmd, body), label,
+                      f'CLAN response cmd=0x{cmd:04X} uin={session_uin}')
+    log('CLAN', f'cmd=0x{app["cmd"]:04X} uin={session_uin} replies={len(replies)} changed={sorted(affected)}')
+    for uin in sorted(affected):
+        session = _v150_session_snapshot(uin)
+        if not session:
+            continue
+        state = PLAYER_DB.load_player_state(uin)
+        info = _v48_player_info(uin=uin, nickname=PLAYER_DB.load_nickname(uin) or '', player_state=state)
+        profile = _v62_build_server_app(TGAME_ZN_MAGIC, TGAME_ZN_NTF_PLAYERINFO, _v48_u16(ZONE_ERR_SUCC) + info)
+        _v150_send_online(uin, profile, f'CLAN membership profile uin={uin}')
+        if CLAN_DB.get_player_clan(uin):
+            for update_cmd, update_body in CLAN_SERVICE.refresh_replies(uin):
+                packet = _v62_build_server_app(TGAME_ZN_MAGIC, update_cmd, update_body)
+                _v150_send_online(uin, packet, f'CLAN menu refresh cmd=0x{update_cmd:04X}')
 
 
 def _v48_build_empty_playerprops(seq):
@@ -9528,7 +9604,7 @@ def handle_placeholder(conn, addr, label):
                                 log(
                                     label,
                                     f"TGame mode3 follow-up cmd=0x{cmd_now:02x} "
-                                    f"total={total_now} plain={plain_now.hex()}"
+                                    f"total={total_now} plain={_clan_debug_hex(plain_now)}"
                                 )
                                 if plain_now == TGAME_SYN_RAND:
                                     log(label, "TGame SYNACK verified: challenge echo matches")
@@ -9722,7 +9798,7 @@ def handle_placeholder(conn, addr, label):
                                     label,
                                     f"TGame {phase} cmd=0x{cmd_now:02x} "
                                     f"head_len={head_now} body_len={body_len_now} "
-                                    f"plain_len={len(plain_now)} plain={plain_now.hex()}"
+                                    f"plain_len={len(plain_now)} plain={_clan_debug_hex(plain_now)}"
                                 )
 
                                 if cmd_now == 0x0D:
@@ -9736,7 +9812,7 @@ def handle_placeholder(conn, addr, label):
                                         + (
                                             f"seq=0x{close_seq:08x}"
                                             if close_seq is not None
-                                            else f"plain={plain_now.hex()}"
+                                            else f"plain={_clan_debug_hex(plain_now)}"
                                         )
                                     )
                                     continue
@@ -9775,7 +9851,7 @@ def handle_placeholder(conn, addr, label):
                                         f"cmd=0x{app['cmd']:04x} "
                                         f"head_len={app['head_len']} "
                                         f"body_len={app['body_len']} "
-                                        f"body={_short_hex(app['body'], 128)}"
+                                        f"body={'<clan credentials redacted>' if app['cmd'] in CLAN_SENSITIVE_COMMANDS else _short_hex(app['body'], 128)}"
                                     )
 
                                     if label.upper() == "DS-TCP":
@@ -9787,7 +9863,7 @@ def handle_placeholder(conn, addr, label):
                                             f"cmd=0x{app['cmd']:04x} "
                                             f"head_len={app['head_len']} "
                                             f"body_len={app['body_len']} "
-                                            f"full_plain={plain_now.hex()}"
+                                            f"full_plain={_clan_debug_hex(plain_now)}"
                                         )
                                         # Do not accidentally feed DS traffic
                                         # to GEO/ZONE handlers.  The next
@@ -10975,6 +11051,9 @@ def handle_placeholder(conn, addr, label):
                                                     f"gid=0x{_v140_current_role_gid():016x} "
                                                     f"item={int(_v140_role_subject.get('item_id',0))}"
                                                 )
+
+                                        elif app["cmd"] in CLAN_COMMANDS:
+                                            _clan_dispatch(conn, active_tgame_key, app, tgame_session_uin, label)
 
                                         elif app["cmd"] == TGAME_ZN_REQ_CHECK_NICKNAME:
                                             nick = None
@@ -13706,14 +13785,14 @@ def handle_placeholder(conn, addr, label):
                                             "v95 DS DECRYPTED NONSTANDARD PAYLOAD: "
                                             f"{type(app_e).__name__}: {app_e}; "
                                             f"plain_len={len(plain_now)} "
-                                            f"plain={plain_now.hex()}"
+                                            f"plain={_clan_debug_hex(plain_now)}"
                                         )
                                     else:
                                         log(
                                             label,
                                             f"TGame application parse/dispatch FAILED: "
                                             f"{type(app_e).__name__}: {app_e}; "
-                                            f"plain={plain_now.hex()}"
+                                            f"plain={_clan_debug_hex(plain_now)}"
                                         )
                         except Exception as e:
                             log(
