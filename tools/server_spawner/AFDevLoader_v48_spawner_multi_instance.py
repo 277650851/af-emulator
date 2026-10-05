@@ -907,14 +907,24 @@ def verify_and_patch(hproc, address, expected, replacement, label):
 
 
 def wait_for_engine(hproc, timeout):
-    deadline = time.time() + timeout
+    # Some machines need considerably longer than 20 seconds to publish
+    # GEngine even though UE3 is still making forward progress (GLog is
+    # commonly live first). Keep the dead-process fast fail, but use a
+    # configurable healthy-process deadline and report progress.
+    started = time.monotonic()
+    deadline = started + max(5.0, float(timeout))
+    next_progress = started + 10.0
     last_engine = 0
     last_log = 0
 
-    while time.time() < deadline:
+    while True:
         if not process_alive(hproc):
+            elapsed = time.monotonic() - started
             raise RuntimeError(
-                "TGame exited before GEngine became ready."
+                "TGame exited before GEngine became ready "
+                f"(elapsed={elapsed:.1f}s, "
+                f"GEngine=0x{last_engine:08X}, "
+                f"GLog=0x{last_log:08X})."
             )
 
         try:
@@ -932,13 +942,27 @@ def wait_for_engine(hproc, timeout):
         if last_engine and last_log:
             return last_engine, last_log
 
-        time.sleep(0.10)
+        now = time.monotonic()
+        if now >= deadline:
+            elapsed = now - started
+            raise RuntimeError(
+                "Timed out waiting for UE3 globals. "
+                f"elapsed={elapsed:.1f}s "
+                f"GEngine=0x{last_engine:08X} "
+                f"GLog=0x{last_log:08X}"
+            )
 
-    raise RuntimeError(
-        "Timed out waiting for UE3 globals. "
-        f"GEngine=0x{last_engine:08X} "
-        f"GLog=0x{last_log:08X}"
-    )
+        if now >= next_progress:
+            elapsed = now - started
+            print(
+                f"[AFDEV] UE3 still starting: elapsed={elapsed:.1f}s "
+                f"GEngine=0x{last_engine:08X} "
+                f"GLog=0x{last_log:08X}",
+                flush=True,
+            )
+            next_progress = now + 10.0
+
+        time.sleep(0.10)
 
 
 
@@ -6211,6 +6235,18 @@ def main():
         ),
     )
     ap.add_argument(
+        "--engine-timeout",
+        type=float,
+        default=max(
+            5.0,
+            float(os.environ.get("AF_DS_ENGINE_TIMEOUT", "60")),
+        ),
+        help=(
+            "seconds to wait for live TGame to publish GEngine/GLog "
+            "(default 60; env AF_DS_ENGINE_TIMEOUT)"
+        ),
+    )
+    ap.add_argument(
         "--resx",
         type=int,
         default=1280,
@@ -6561,7 +6597,7 @@ def main():
 
         engine_ptr, log_ptr = wait_for_engine(
             pi.hProcess,
-            timeout=20.0,
+            timeout=max(5.0, float(args.engine_timeout)),
         )
 
         print(
