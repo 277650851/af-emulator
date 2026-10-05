@@ -844,51 +844,6 @@ def _v165_seed_friend_rows(uin, friends):
             sent += 1
     return sent
 
-
-def _v150_sync_role_states(room):
-    """Refresh per-connection compatibility mirrors from the shared room."""
-    if not isinstance(room, dict):
-        return
-    room_id = int(room["room_id"])
-    by_uin = {int(m["uin"]): m for m in room.get("members") or []}
-    with _V150_ZONE_LOCK:
-        sessions = [dict(s) for u, s in _V150_ZONE_SESSIONS.items() if int(u) in by_uin]
-    for s in sessions:
-        rs = s.get("role_state")
-        if not isinstance(rs, dict):
-            continue
-        member = by_uin[int(s["uin"])]
-        rs["v79_created_match_room"] = room
-        rs["v143b_ds_room_id"] = room_id
-        rs["v83_in_match_room"] = True
-        rs["v88_match_seat"] = int(member.get("seat_index", 0))
-        rs["v88_match_camp"] = int(member.get("camp", 1))
-
-
-def _v150_broadcast_room(room_id, app_plain, desc, exclude=(), tpdu_cmd=0):
-    room = V150_ROOM_REGISTRY.get_room(int(room_id))
-    if not room:
-        return []
-    excluded = {int(x) for x in exclude}
-    sent = []
-    for member in room.get("members") or []:
-        uin = int(member["uin"])
-        if uin in excluded:
-            continue
-        if _v150_send_online(uin, app_plain, desc, tpdu_cmd=tpdu_cmd):
-            sent.append(uin)
-    return sent
-V143B_ZONE_ERR_NO_DS_CAPACITY = int(
-    os.environ.get("AF_ZONE_ERR_NO_DS_CAPACITY", "0x8101"), 0
-) & 0xFFFF
-
-
-def _v143b_tdr_ipv4(host):
-    """Convert dotted IPv4 to the byte order GameServerInfo.Ip expects."""
-    packed = socket.inet_aton(str(host))
-    return int.from_bytes(packed, "little")
-
-
 def _v143b_reserve_room_ds(role_state, create_req):
     if not V143B_DS_CONFIG.enabled:
         return None
