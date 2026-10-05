@@ -31,6 +31,14 @@ from typing import Dict, Optional
 # live AFDEV validation.  The stock client can legitimately send an empty
 # MatchSettings.MapString; in that case ModeId + MapId is the authoritative
 # fallback for the cooked world and UE3 GameInfo class.
+TANK_BATTLE_UI_MODE_ID = 0x0000020B  # 523: lobby category shown by the client
+TANK_TDM_MODE_ID = 0x00000203       # 515: TGTankTeamMatch
+TANK_SIEGE_MODE_ID = 0x00000206     # 518: TGTankDBMatch
+TANK_BATTLE_UI_MAP_ID = 0x001A      # 26: UI/default selection alias
+TANK_TDM_DEFAULT_MAP_ID = 0x0022    # 34: Wilderness Battle
+TANK_SIEGE_DEFAULT_MAP_ID = 0x002C  # 44: Tank Siege map
+TANK_GAME_MODE_IDS = frozenset((TANK_TDM_MODE_ID, TANK_SIEGE_MODE_ID))
+
 ROOM_TARGETS = {
     (0x00002001, 0x002F): ("SV-Maya_3_Main", "PVEGame.TGSVGame"),
     (0x00002001, 0x0007): ("SV-Factory_1_Main", "PVEGame.TGSVGame"),
@@ -51,6 +59,16 @@ ROOM_TARGETS = {
     # Tower Defense is its own PvE family; TDB-* belongs to Tank Siege.
     (0x00002005, 0x0060): ("ATD-Capital_17_Main", "ATDGame.ATDGameInfo"),
     (0x00002005, 0x008D): ("ATD-Capital_22_B_Main", "ATDGame.ATDGameInfo"),
+    # Stock DefaultGame.ini: TTM = Tank TDM, TDB = Tank Siege.
+    (TANK_TDM_MODE_ID, TANK_TDM_DEFAULT_MAP_ID): (
+        "TTM-Tank_01_Main", "TGTankGame.TGTankTeamMatch",
+    ),
+    (TANK_TDM_MODE_ID, 0x0069): (
+        "TTM-Tank_03_Main", "TGTankGame.TGTankTeamMatch",
+    ),
+    (TANK_SIEGE_MODE_ID, TANK_SIEGE_DEFAULT_MAP_ID): (
+        "TDB-Tank_02_Main", "TGTankGame.TGTankDBMatch",
+    ),
 }
 # Verified GameInfo classes for each AFDEV mode family. Exact MapId entries
 # above remain authoritative when the client sends an empty MapString; when it
@@ -61,14 +79,45 @@ MODE_GAME_CLASSES = {
     0x00000204: "TGBioGame.TGBioMatch",
     0x00000209: "TGBio2Game.TGBio2Match",
     0x00002005: "ATDGame.ATDGameInfo",
+    TANK_TDM_MODE_ID: "TGTankGame.TGTankTeamMatch",
+    TANK_SIEGE_MODE_ID: "TGTankGame.TGTankDBMatch",
 }
 # Backward-compatible name used by older AFDEV tooling.
 PVE_TARGETS = ROOM_TARGETS
-AFDEV_MODE_IDS = frozenset(MODE_GAME_CLASSES)
+AFDEV_MODE_IDS = frozenset(MODE_GAME_CLASSES) | {TANK_BATTLE_UI_MODE_ID}
+
+
+def normalize_tank_mode_map(mode_id: int, map_id: int, sub_mode_id: int = 0):
+    """Convert Tank Battle's UI alias to the native Tank game/map IDs.
+
+    The lobby selector exposes ModeId 523 and MapId 26. The actual game
+    families in DefaultGame.ini are 515 (Tank TDM) and 518 (Tank Siege), with
+    cooked maps 34/105 and 44 respectively. A selected subtype in SubModeId
+    or the Siege map ID takes precedence; the UI alias otherwise defaults to
+    Tank TDM.
+    """
+    mode = int(mode_id) & 0xFFFFFFFF
+    map_value = int(map_id) & 0xFFFF
+    sub_mode = int(sub_mode_id) & 0xFFFFFFFF
+
+    if mode == TANK_BATTLE_UI_MODE_ID:
+        if sub_mode in TANK_GAME_MODE_IDS:
+            mode = sub_mode
+        elif map_value == TANK_SIEGE_DEFAULT_MAP_ID:
+            mode = TANK_SIEGE_MODE_ID
+        else:
+            mode = TANK_TDM_MODE_ID
+
+    if mode == TANK_TDM_MODE_ID and map_value == TANK_BATTLE_UI_MAP_ID:
+        map_value = TANK_TDM_DEFAULT_MAP_ID
+    elif mode == TANK_SIEGE_MODE_ID and map_value == TANK_BATTLE_UI_MAP_ID:
+        map_value = TANK_SIEGE_DEFAULT_MAP_ID
+
+    return mode, map_value
 
 
 def room_target_for(mode_id: int, map_id: int):
-    key = (int(mode_id) & 0xFFFFFFFF, int(map_id) & 0xFFFF)
+    key = normalize_tank_mode_map(mode_id, map_id)
     return ROOM_TARGETS.get(key)
 
 
@@ -78,11 +127,12 @@ def resolve_room_target(
     fallback_map: str = "",
     fallback_game: str = "PVEGame.TGSVGame",
 ):
-    target = room_target_for(mode_id, map_id)
+    normalized_mode, normalized_map = normalize_tank_mode_map(mode_id, map_id)
+    target = ROOM_TARGETS.get((normalized_mode, normalized_map))
     if target is not None:
         return target
     game_class = MODE_GAME_CLASSES.get(
-        int(mode_id) & 0xFFFFFFFF,
+        normalized_mode,
         str(fallback_game or "").strip(),
     )
     return str(fallback_map or "").strip(), game_class
@@ -327,8 +377,9 @@ class DedicatedServerSpawner:
             slot = self._choose_slot_locked()
             room_id = self._next_room_id
             self._next_room_id += 1
-            normalized_mode = int(mode_id) & 0xFFFFFFFF
-            normalized_map_id = int(map_id) & 0xFFFF
+            normalized_mode, normalized_map_id = normalize_tank_mode_map(
+                mode_id, map_id, sub_mode_id
+            )
             desired_map = str(map_name or "").strip()
             desired_game = MODE_GAME_CLASSES.get(
                 normalized_mode, str(self.config.game_class or "").strip()
@@ -336,7 +387,7 @@ class DedicatedServerSpawner:
             verified_target = room_target_for(normalized_mode, normalized_map_id)
             if verified_target is not None:
                 verified_map, verified_game = verified_target
-                if not desired_map:
+                if not desired_map or normalized_mode in TANK_GAME_MODE_IDS:
                     desired_map = verified_map
                 desired_game = verified_game
             elif not desired_map and normalized_mode not in MODE_GAME_CLASSES:
@@ -427,13 +478,16 @@ class DedicatedServerSpawner:
                     f"selected DS room {int(room_id)} has been fully released"
                 )
 
-        normalized_mode = int(mode_id) & 0xFFFFFFFF
-        normalized_map_id = int(map_id) & 0xFFFF
+        normalized_mode, normalized_map_id = normalize_tank_mode_map(
+            mode_id, map_id, sub_mode_id
+        )
         normalized_sub_mode = int(sub_mode_id) & 0xFFFFFFFF
         normalized_flags = int(room_flags) & 0xFFFFFFFF
         verified_target = room_target_for(normalized_mode, normalized_map_id)
         desired_map = str(map_name or "").strip()
-        if verified_target is not None and not desired_map:
+        if verified_target is not None and (
+            not desired_map or normalized_mode in TANK_GAME_MODE_IDS
+        ):
             desired_map = verified_target[0]
         desired_game = MODE_GAME_CLASSES.get(
             normalized_mode, str(self.config.game_class or "").strip()
@@ -558,8 +612,9 @@ class DedicatedServerSpawner:
                 raise SpawnerError(
                     f"cannot change room {room_id} settings while state={allocation.state}"
                 )
-            normalized_mode = int(mode_id) & 0xFFFFFFFF
-            normalized_map_id = int(map_id) & 0xFFFF
+            normalized_mode, normalized_map_id = normalize_tank_mode_map(
+                mode_id, map_id, sub_mode_id
+            )
             desired_map = str(map_name or "").strip()
             same_target = (
                 normalized_mode == allocation.mode_id
@@ -569,6 +624,8 @@ class DedicatedServerSpawner:
             if verified_target is not None:
                 verified_map, verified_game = verified_target
                 allocation.map_name = desired_map or verified_map
+                if normalized_mode in TANK_GAME_MODE_IDS:
+                    allocation.map_name = verified_map
                 allocation.game_class = verified_game
             elif desired_map:
                 allocation.map_name = desired_map

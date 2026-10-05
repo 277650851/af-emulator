@@ -314,6 +314,9 @@ STEEL_FORTRESS_MODE_ID_V4 = 0x00002002
 BIO_MODE_ID_V49 = 0x00000204
 HERO_MUTATION_MODE_ID = 0x00000209
 TOWER_DEFENSE_MODE_ID = 0x00002005
+TANK_TDM_MODE_ID = 0x00000203
+TANK_SIEGE_MODE_ID = 0x00000206
+TANK_GAME_MODE_IDS = frozenset((TANK_TDM_MODE_ID, TANK_SIEGE_MODE_ID))
 
 
 # v45 established the legacy TGSV PvE round family with stock
@@ -6646,6 +6649,25 @@ def main():
                     }
                     print(
                         "[AFDEV-HERO-MUTATION] Native TGBio2Game.TGBio2Match startup; "
+                        "skipped PvE-specific GameSettings writes."
+                    )
+                elif int(args.mode_id) in TANK_GAME_MODE_IDS:
+                    # Tank modes use native TGTankGame settings rather than
+                    # the Survival/Defense PvE difficulty fields.
+                    tank_mode_name = (
+                        "Tank TDM"
+                        if int(args.mode_id) == TANK_TDM_MODE_ID
+                        else "Tank Siege"
+                    )
+                    pve_settings_state = {
+                        "difficulty": 0,
+                        "difficulty_name": "Native",
+                        "difficulty_applied": False,
+                        "mode_name": tank_mode_name,
+                        "advanced_hero": False,
+                    }
+                    print(
+                        f"[AFDEV-TANK] Native TGTankGame startup ({tank_mode_name}); "
                         "skipped PvE-specific GameSettings writes."
                     )
                 else:
