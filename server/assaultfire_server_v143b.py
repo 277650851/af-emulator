@@ -50,6 +50,29 @@ from assaultfire_database_logging import build_logger
 from assaultfire_auth import parse_client_dh_plaintext
 from assaultfire_boot import resolve_private_key_path, server_only_requested
 from player_db import DEFAULT_DB_PATH as PLAYER_DB_PATH, PlayerDatabase, PlayerDBError
+from friends_service import (
+    A310_WIRE_RECOVERY,
+    EPTE_ADD_BY_ALL,
+    SNS_ERR_SUCC,
+    FriendsError,
+    FriendsService,
+    build_add_friend_result,
+    build_chat_p2p_notify,
+    build_delete_friend_response,
+    build_friend_invite,
+    build_friend_status_response,
+    build_query_friend_response,
+    parse_add_friend_client_response,
+    parse_add_friend_request,
+    parse_chat_p2p_request,
+    parse_delete_friend_request,
+    parse_friend_status_request,
+    parse_query_friend_request,
+    build_friend_loginout,
+    build_player_exp_response,
+    parse_player_exp_request,
+    parse_read_offline_message_notice,
+)
 from clan_db import ClanDatabase
 from clan_service import ClanService, COMMANDS as CLAN_COMMANDS, SENSITIVE_COMMANDS as CLAN_SENSITIVE_COMMANDS
 from development_web import (
@@ -208,6 +231,33 @@ def _v139_build_registry():
 
 
 V139_PROTOCOL_REGISTRY = _v139_build_registry()
+
+# v165: active recovered social request family.
+_V165_FRIEND_BINDINGS = (
+    (0xA305, ("TGOnlineClient", "OnlineRequest_ReqAddFriend")),
+    (0xA307, ("TGOnlineClient", "OnlineRequest_ResAddFriend")),
+    (0xA309, ("TGOnlineClient", "OnlineRequest_DeleteFriend")),
+    (0xA30F, ("TGOnlineClient", "OnlineRequest_QueryFriend")),
+    (0xA405, ("TGOnlineClient", "OnlineRequest_ChatP2P")),
+    (0xA33A, ("TGOnlineClient", "OnlineRequest_GetPlayerExps")),
+)
+for _v165_cmd, _v165_key in _V165_FRIEND_BINDINGS:
+    _v165_base = V139_PROTOCOL_REGISTRY["by_key"].get(_v165_key)
+    if _v165_base is not None:
+        _v165_spec = dict(_v165_base)
+        _v165_spec.update(
+            {
+                "cmd": _v165_cmd,
+                "status": "CURRENT_PARTIAL",
+                "source": "v165-current-main-friends-bootstrap",
+                "implemented": True,
+            }
+        )
+        V139_PROTOCOL_REGISTRY["by_cmd"][_v165_cmd] = _v165_spec
+V139_CURRENT_HANDLER_IDS = frozenset(
+    set(V139_CURRENT_HANDLER_IDS)
+    | {cmd for cmd, _key in _V165_FRIEND_BINDINGS}
+)
 
 
 def _v139_lookup_wire(cmd):
@@ -523,6 +573,278 @@ def _v150_send_online(uin, app_plain, desc, tpdu_cmd=0):
     except Exception as exc:
         log("ROOM", f"r11 push failed uin={int(uin)} desc={desc}: {type(exc).__name__}: {exc}")
         return False
+def _v150_sync_role_states(room):
+    """Refresh per-connection compatibility mirrors from the shared room."""
+    if not isinstance(room, dict):
+        return
+    room_id = int(room["room_id"])
+    by_uin = {int(m["uin"]): m for m in room.get("members") or []}
+    with _V150_ZONE_LOCK:
+        sessions = [dict(s) for u, s in _V150_ZONE_SESSIONS.items() if int(u) in by_uin]
+    for s in sessions:
+        rs = s.get("role_state")
+        if not isinstance(rs, dict):
+            continue
+        member = by_uin[int(s["uin"])]
+        rs["v79_created_match_room"] = room
+        rs["v143b_ds_room_id"] = room_id
+        rs["v83_in_match_room"] = True
+        rs["v88_match_seat"] = int(member.get("seat_index", 0))
+        rs["v88_match_camp"] = int(member.get("camp", 1))
+
+
+def _v150_broadcast_room(room_id, app_plain, desc, exclude=(), tpdu_cmd=0):
+    room = V150_ROOM_REGISTRY.get_room(int(room_id))
+    if not room:
+        return []
+    excluded = {int(x) for x in exclude}
+    sent = []
+    for member in room.get("members") or []:
+        uin = int(member["uin"])
+        if uin in excluded:
+            continue
+        if _v150_send_online(uin, app_plain, desc, tpdu_cmd=tpdu_cmd):
+            sent.append(uin)
+    return sent
+V143B_ZONE_ERR_NO_DS_CAPACITY = int(
+    os.environ.get("AF_ZONE_ERR_NO_DS_CAPACITY", "0x8101"), 0
+) & 0xFFFF
+
+
+def _v143b_tdr_ipv4(host):
+    """Convert dotted IPv4 to the byte order GameServerInfo.Ip expects."""
+    packed = socket.inet_aton(str(host))
+    return int.from_bytes(packed, "little")
+
+
+# v177: transient friend room invitations; relationship remains in SQLite.
+_V177_ROOM_INVITES = {}
+_V177_INVITE_SEQUENCE = 0
+
+
+def _v177_friend_location(uin):
+    session = _v150_session_snapshot(uin)
+    if session is None:
+        return None, None, bytes(24)
+    room = V150_ROOM_REGISTRY.room_for_player(uin)
+    state = session.get('role_state') or {}
+    main = int(state.get('main_channel_id') or 1)
+    sub = int((room or {}).get('sub_channel_id') or state.get('sub_channel_id') or 1)
+    address = (_v48_u32(main) + _v48_u32(sub)
+               + _v48_u64((room or {}).get('room_id', 0))
+               + _v48_u16((room or {}).get('display_id', 0))
+               + _v48_u32((room or {}).get('mode_id', 0))
+               + _v48_u16((room or {}).get('map_id', 0)))
+    return session, room, address
+
+
+def _v177_room_invitable(room):
+    return (room is not None and not room.get('started')
+            and int(room.get('fighter_count', 0)) < int(room.get('fighter_capacity', 0)))
+
+
+def _v178_parse_trace_enter(body, role_state):
+    if len(body) < 23:
+        raise ValueError('truncated A120')
+    room_id = struct.unpack_from('>Q', body)[0]
+    password, _, off = _v79_read_lp_string(body, 8, 8)
+    if off + 10 != len(body):
+        raise ValueError('invalid A120 tail')
+    kind, friend = struct.unpack_from('>HQ', body, off)
+    actor = _v150_role_uin(role_state)
+    _, room, _ = _v177_friend_location(friend)
+    if not room or int(room['room_id']) != room_id:
+        raise ValueError('friend moved out of requested room')
+    if not FRIENDS_SERVICE.are_friends(actor, friend):
+        raise ValueError('trace target is not a friend')
+    invite_id = None
+    if kind == 2:
+        with _V150_ZONE_LOCK:
+            invite_id = next((rid for rid, entry in _V177_ROOM_INVITES.items()
+                if entry['sender'] == friend and entry['recipient'] == actor
+                and int(entry['room']) == room_id
+                and entry['expires'] > time.monotonic()), None)
+        if invite_id is None or not _v177_room_invitable(room):
+            raise ValueError('no valid invitation for requested room')
+        # A bound room invitation authorizes entering its password-protected room.
+        password = str(room.get('password') or '')
+    elif kind != 1:
+        raise ValueError('unsupported trace entry type')
+    return dict(room_id=room_id, password=password, observer=False,
+                tail=b'', invite_id=invite_id, inviter=friend)
+
+
+def _v177_friend_action(conn, key, label, role_state, app):
+    global _V177_INVITE_SEQUENCE
+    cmd, body = app['cmd'], bytes(app['body'])
+    actor = _v150_role_uin(role_state)
+    target = 0
+    response = None
+    try:
+        if cmd == 0xA317:
+            if len(body) != 10:
+                raise ValueError('A317 requires Type:u16 and FriendUin:u64')
+            kind, target = struct.unpack('>HQ', body)
+            session, room, address = _v177_friend_location(target)
+            allowed = kind == 1 and FRIENDS_SERVICE.are_friends(actor, target)
+            result = 0x8300 if allowed and session else (0x030C if not allowed else 0x0306)
+            if result != 0x8300:
+                address = bytes(24)
+            response = _v62_build_server_app(TGAME_ZN_MAGIC, 0xA318,
+                _v48_u64(target) + address + _v48_u16(result))
+        elif cmd == 0xA313:
+            if len(body) != 8:
+                raise ValueError('A313 requires FriendUin:u64')
+            target = struct.unpack('>Q', body)[0]
+            identity = FRIENDS_SERVICE.get_player_identity(target)
+            target_name = str((identity or {}).get('nickname') or '')
+            sender_session, room, address = _v177_friend_location(actor)
+            recipient_session, recipient_room, _ = _v177_friend_location(target)
+            result = 0x0300
+            if not FRIENDS_SERVICE.are_friends(actor, target):
+                result = 0x030B
+            elif recipient_session is None:
+                result = 0x0306
+            elif not _v177_room_invitable(room) or recipient_room is not None:
+                result = 0x030F
+            else:
+                now = time.monotonic()
+                with _V150_ZONE_LOCK:
+                    for rid, entry in list(_V177_ROOM_INVITES.items()):
+                        if entry['expires'] <= now:
+                            del _V177_ROOM_INVITES[rid]
+                    # Repeated outstanding invitations reuse their bound ID.
+                    existing = next(((rid, entry) for rid, entry in _V177_ROOM_INVITES.items()
+                        if entry['sender'] == actor and entry['recipient'] == target
+                        and entry['room'] == room['room_id']), None)
+                    if existing:
+                        request_id = existing[0]
+                    else:
+                        if len(_V177_ROOM_INVITES) >= 4096:
+                            raise ValueError('room invitation queue full')
+                        _V177_INVITE_SEQUENCE = (_V177_INVITE_SEQUENCE + 1) & 0xFFFFFFFF or 1
+                        while _V177_INVITE_SEQUENCE in _V177_ROOM_INVITES:
+                            _V177_INVITE_SEQUENCE = (_V177_INVITE_SEQUENCE + 1) & 0xFFFFFFFF or 1
+                        request_id = _V177_INVITE_SEQUENCE
+                        _V177_ROOM_INVITES[request_id] = dict(sender=actor, recipient=target,
+                            room=room['room_id'], expires=now+120)
+                invite_address = address[:8] + _v150_pack_basic_match_room_info(room)
+                packet = _v62_build_server_app(TGAME_ZN_MAGIC, 0xA314,
+                    _v48_u32(request_id) + _v48_u64(actor)
+                    + _v50_geo_tdr_string(_v150_role_nickname(role_state), 32) + invite_address)
+                if _v150_send_online(target, packet, f'friend room invite id={request_id} from={actor}'):
+                    return
+                with _V150_ZONE_LOCK:
+                    _V177_ROOM_INVITES.pop(request_id, None)
+                result = 0x0306
+            response = _v62_build_server_app(TGAME_ZN_MAGIC, 0xA316,
+                _v50_geo_tdr_string(target_name, 32) + _v48_u16(result) + _v48_u32(0))
+        elif cmd == 0xA315:
+            if len(body) != 18:
+                raise ValueError('A315 requires request ID, inviter UIN, result and reason')
+            request_id, inviter, result, reason = struct.unpack('>IQHi', body)
+            with _V150_ZONE_LOCK:
+                pending = _V177_ROOM_INVITES.get(request_id)
+                if (not pending or pending['sender'] != inviter or pending['recipient'] != actor
+                        or pending['expires'] <= time.monotonic()):
+                    raise ValueError('invalid or expired room invitation')
+                if result not in (0x0309, 0x0308, 0x030F):
+                    raise ValueError('invalid invitation decision')
+                if result != 0x0309:
+                    del _V177_ROOM_INVITES[request_id]
+            # The stock client joins via its ordinary room-entry request; never
+            # bypass capacity, password, started-match or room admission checks.
+            _, current_room, _ = _v177_friend_location(inviter)
+            if result == 0x0309 and (not _v177_room_invitable(current_room)
+                    or current_room['room_id'] != pending['room']
+                    or not FRIENDS_SERVICE.are_friends(actor, inviter)):
+                result = 0x030F
+            packet = _v62_build_server_app(TGAME_ZN_MAGIC, 0xA316,
+                _v50_geo_tdr_string(_v150_role_nickname(role_state), 32)
+                + _v48_u16(result) + _v48_i32(reason))
+            _v150_send_online(inviter, packet, f'friend invite decision id={request_id} from={actor}')
+            return
+    except Exception as exc:
+        log('SOCIAL', f'friend action cmd=0x{cmd:04X} actor={actor}: {type(exc).__name__}: {exc}')
+        if cmd == 0xA317:
+            response = _v62_build_server_app(TGAME_ZN_MAGIC, 0xA318,
+                _v48_u64(target) + bytes(24) + _v48_u16(0x030C))
+        elif cmd == 0xA313:
+            response = _v62_build_server_app(TGAME_ZN_MAGIC, 0xA316,
+                _v50_geo_tdr_string('', 32) + _v48_u16(0x0300) + _v48_u32(0))
+    if response is not None:
+        _v48_send_app(conn, key, response, label, f'friend action response cmd=0x{cmd:04X}')
+
+
+def _v165_online_uins():
+    with _V150_ZONE_LOCK:
+        return {int(uin) for uin in _V150_ZONE_SESSIONS}
+
+
+def _v165_deliver_pending_social(uin):
+    uin = int(uin)
+    invite_count = 0
+    message_count = 0
+
+    for req in FRIENDS_SERVICE.list_pending_friend_requests(uin):
+        proposer = FRIENDS_SERVICE.get_player_identity(int(req["from_uin"]))
+        if proposer is None:
+            continue
+        pkt = build_friend_invite(
+            request_id=int(req["request_id"]),
+            proposer_uin=int(req["from_uin"]),
+            proposer_name=str(proposer["nickname"]),
+            remark=str(req.get("remark") or ""),
+            msg_id=int(req.get("msg_id") or req["request_id"]),
+        )
+        if _v150_send_online(
+            uin,
+            pkt,
+            "ZN2C_REQ_ADDFRIEND v165-real "
+            f"request_id={int(req['request_id'])} "
+            f"from={proposer['nickname']}({int(req['from_uin'])})",
+        ):
+            invite_count += 1
+
+    for msg in FRIENDS_SERVICE.list_pending_private_messages(uin):
+        pkt = build_chat_p2p_notify(
+            int(msg["chat_type"]),
+            str(msg["message"]),
+            sender_uin=int(msg["sender_uin"]),
+            sender_name=str(msg.get("sender_nickname") or ""),
+        )
+        if _v150_send_online(
+            uin,
+            pkt,
+            "ZN2C_NTF_CHATP2P v165-real "
+            f"offline-id={int(msg['message_id'])} "
+            f"from={msg.get('sender_nickname')!r}({int(msg['sender_uin'])})",
+        ):
+            FRIENDS_SERVICE.mark_private_message_delivered(int(msg["message_id"]))
+            message_count += 1
+
+    return invite_count, message_count
+
+
+def _v165_seed_friend_rows(uin, friends):
+    sent = 0
+    for friend in friends or []:
+        pkt = build_add_friend_result(
+            friend_uin=int(friend["uin"]),
+            friend_name=str(friend["nickname"]),
+            result=0x8301,  # SNS_ADDFRID_AGREE
+            msg_id=0,
+        )
+        if _v150_send_online(
+            int(uin),
+            pkt,
+            "ZN2C_RES_ADDFRIEND v168-seed-agree "
+            f"friend={friend['nickname']}({int(friend['uin'])})",
+        ):
+            sent += 1
+    return sent
+
+
 def _v150_sync_role_states(room):
     """Refresh per-connection compatibility mirrors from the shared room."""
     if not isinstance(room, dict):
@@ -985,6 +1307,7 @@ _R12_NEXT_UID = 10001
 
 # One SQLite file remains authoritative for accounts and game persistence.
 PLAYER_DB = PlayerDatabase()
+FRIENDS_SERVICE = FriendsService(PLAYER_DB.db_path)
 CLAN_DB = ClanDatabase(PLAYER_DB.db_path)
 CLAN_SERVICE = ClanService(
     CLAN_DB, is_online=lambda uin: _v150_session_snapshot(uin) is not None,
@@ -3091,6 +3414,29 @@ TGAME_DS_KEY = b"\x00" * 16  # live AFDEV listen-server dynamic key; exactly 16 
 #
 # This restores the packet-observation/translation point that v132 accidentally
 # bypassed by advertising AFDEV:7777 directly in A11A.
+# v165: recovered friend and private-chat command IDs.
+TGAME_ZN_RES_FRIEND_STATUS = 0xA304
+TGAME_ZN_REQ_ADD_FRIEND = 0xA305
+TGAME_ZN_NTF_ADD_FRIEND = 0xA306
+TGAME_ZN_C2S_RES_ADD_FRIEND = 0xA307
+TGAME_ZN_S2C_RES_ADD_FRIEND = 0xA308
+TGAME_ZN_REQ_DEL_FRIEND = 0xA309
+TGAME_ZN_RES_DEL_FRIEND = 0xA30A
+TGAME_ZN_REQ_QUERY_FRIEND = 0xA30F
+TGAME_ZN_RES_QUERY_FRIEND = 0xA310
+TGAME_ZN_NTF_FRIEND_LOGINOUT = 0xA326
+TGAME_ZN_REQ_PLAYER_EXP = 0xA33A
+TGAME_ZN_RES_PLAYER_EXP = 0xA33B
+TGAME_ZN_NTF_READ_OFFLINE_MSG = 0xAB03
+FRIEND_PRESENCE_INBOX_PATCH = "v171-presence-01-no-login-a308-seed"
+FRIEND_PRESENCE_EDGE_PATCH = "v172-a326-edge-trigger-no-a303-loop"
+FRIEND_PRESENCE_ENUM_PATCH = "v173-friend-presence-enum-1-2"
+FRIEND_PRESENCE_SPLIT_PATCH = "v174-split-a304-status-a326-online-type"
+FRIEND_PRESENCE_TRANSPORT_PATCH = "v175-a326-cmd02-notification"
+FRIEND_ENRICHMENT_PATCH = "v170b-static-a326-a33b-friend-presence-exp"
+TGAME_ZN_REQ_CHAT_P2P = 0xA405
+TGAME_ZN_NTF_CHAT_P2P = 0xA406
+
 TGAME_PVE_MODE_ID = 0x00002001  # legacy compatibility alias
 TGAME_AFDEV_MODE_IDS = frozenset(AFDEV_MODE_IDS)
 TGAME_PVE_DIRECT_AFDEV = os.environ.get(
@@ -11930,8 +12276,8 @@ def handle_placeholder(conn, addr, label):
                                                 "enabled and stale A100/A102 suppressed"
                                             )
 
-                                        elif app["cmd"] == TGAME_ZN_REQ_ENTERMATCHROOM:
-                                            er = _v150_parse_enter_match_room(app["body"])
+                                        elif app["cmd"] in (TGAME_ZN_REQ_ENTERMATCHROOM, 0xA120):
+                                            er = (_v178_parse_trace_enter(app["body"], role_state) if app["cmd"] == 0xA120 else _v150_parse_enter_match_room(app["body"]))
                                             uin_now = _v150_role_uin(role_state)
                                             nickname_now = _v150_role_nickname(role_state)
                                             prior_room = V150_ROOM_REGISTRY.room_for_player(uin_now)
@@ -11944,7 +12290,7 @@ def handle_placeholder(conn, addr, label):
                                                     password=er["password"],
                                                     observer=er["observer"],
                                                 )
-                                                if V143B_DS_CONFIG.enabled:
+                                                if (V143B_DS_CONFIG.enabled and not (app["cmd"] == 0xA120 and er.get("invite_id") is not None)):
                                                     V143B_DS_SPAWNER.register_room_player(
                                                         int(joined_room["room_id"]),
                                                         uin_now,
@@ -11988,6 +12334,18 @@ def handle_placeholder(conn, addr, label):
                                                 _v150_sync_role_states(joined_room)
 
                                                 enter_rsp = _v150_build_res_enter_match_room(joined_room)
+                                                if app["cmd"] == 0xA120:
+                                                    # Same MatchRoomInfo layout, distinct native callback for trace entry.
+                                                    enter_rsp = _v62_build_server_app(TGAME_ZN_MAGIC, 0xA121, _v48_u16(0x8300) + enter_rsp[10:])
+                                                    invite_id = er.get('invite_id')
+                                                    if invite_id is not None:
+                                                        with _V150_ZONE_LOCK:
+                                                            _V177_ROOM_INVITES.pop(invite_id, None)
+                                                        decision = _v62_build_server_app(TGAME_ZN_MAGIC, 0xA316,
+                                                            _v50_geo_tdr_string(nickname_now, 32) + _v48_u16(0x8300) + _v48_i32(0))
+                                                        _v150_send_online(er['inviter'], decision, 'v178 invitation accepted and room joined')
+                                                log('SOCIAL', f'v178 room entry request=0x{app["cmd"]:04X} response=0x{(0xA121 if app["cmd"] == 0xA120 else TGAME_ZN_RES_ENTERMATCHROOM):04X} uin={uin_now} room={joined_room["room_id"]}')
+
                                                 _v48_send_app(
                                                     conn,
                                                     active_tgame_key,
@@ -11997,6 +12355,18 @@ def handle_placeholder(conn, addr, label):
                                                     f"cmd=0xA105 result=0x8100 room={joined_room['room_id']} "
                                                     f"players={len(joined_room['members'])} seat={member['seat_index']}",
                                                 )
+
+                                                if app["cmd"] == 0xA120:
+                                                    # A121 reports trace success; A105 drives the stock room UI transition.
+                                                    standard_enter_rsp = _v150_build_res_enter_match_room(joined_room)
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        standard_enter_rsp,
+                                                        label,
+                                                        f"ZN2C_RES_ENTERMATCHROOM invite-transition cmd=0xA105 room={joined_room['room_id']}",
+                                                    )
+                                                    log("SOCIAL", f"v182 sent normal A105 transition to accepted invitee uin={uin_now} room={joined_room['room_id']}")
 
                                                 ntf = _v150_build_ntf_enter_match_room(member)
                                                 notified = []
@@ -13430,8 +13800,415 @@ def handle_placeholder(conn, addr, label):
                                                     None,
                                                 )
 
-                                            # Deliberately leave the A303 social request itself
-                                            # unanswered in this recovery build, matching v124.
+# v165: service A303 after the existing lobby/bag operations above.
+                                            try:
+                                                social_req = parse_friend_status_request(app["body"])
+                                                social_uin = _v150_role_uin(role_state)
+                                                social_friends = FRIENDS_SERVICE.list_friends(social_uin)
+                                                social_online = _v165_online_uins()
+
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    build_friend_status_response(
+                                                        int(social_req["type"]),
+                                                        list(social_req["uins"]),
+                                                        social_friends,
+                                                        social_online,
+                                                    ),
+                                                    label,
+                                                    "ZN2C_RES_FRIENDSTATUS v165-real "
+                                                    f"cmd=0xA304 friends={len(social_friends)} "
+                                                    f"type={int(social_req['type'])}",
+                                                )
+
+                                                seeded = 0
+                                                if not role_state.get("v165_social_seeded"):
+                                                    # v171: do NOT replay A308 for already-persisted friends.
+                                                    # A308 is an add-friend completion/message, not a login seed.
+                                                    role_state["v165_social_seeded"] = True
+                                                # v172: A326 is an event notification, not part of the
+                                                # level-triggered A303 response. The PH client immediately re-issues
+                                                # A303 after receiving A326, so sending A326 on every A303 creates a
+                                                # self-sustaining refresh loop. Emit only initial state or a real
+                                                # online/offline transition for this client session.
+                                                _presence_state = role_state.setdefault("v172_presence_state", {})
+                                                presence_sent = 0
+                                                for _friend in social_friends:
+                                                    _friend_uin = int(_friend["uin"])
+                                                    _friend_online = bool(_friend_uin in social_online)
+                                                    _previous = _presence_state.get(_friend_uin)
+                                                    if _previous is None or bool(_previous) != _friend_online:
+                                                        _v48_send_app(
+                                                            conn,
+                                                            active_tgame_key,
+                                                            build_friend_loginout(
+                                                                _friend_uin,
+                                                                _friend_online,
+                                                            ),
+                                                            label,
+                                                            "ZN2C_NTF_FRIENDLOGINOUT v172-edge "
+                                                            f"friend={_friend_uin} "
+                                                            f"online={_friend_online} "
+                                                            f"type={1 if _friend_online else 2} "
+                                                            f"previous={_previous}",
+                                                            tpdu_cmd=2,
+                                                        )
+                                                        _presence_state[_friend_uin] = _friend_online
+                                                        presence_sent += 1
+
+                                                # Forget removed friends so a later re-add gets a fresh initial edge.
+                                                _friend_uin_set = {int(_f["uin"]) for _f in social_friends}
+                                                for _old_uin in list(_presence_state):
+                                                    if int(_old_uin) not in _friend_uin_set:
+                                                        _presence_state.pop(_old_uin, None)
+
+                                                pending_req, pending_pm = _v165_deliver_pending_social(social_uin)
+                                                log(
+                                                    "SOCIAL",
+                                                    "v165 social-ready "
+                                                    f"uin={social_uin} friends={len(social_friends)} "
+                                                    f"seeded={seeded} friend_requests={pending_req} "
+                                                    f"private_messages={pending_pm}",
+                                                )
+                                            except Exception as social_e:
+                                                log(
+                                                    "SOCIAL",
+                                                    "A303 social processing FAILED: "
+                                                    f"{type(social_e).__name__}: {social_e}; "
+                                                    f"body={app['body'].hex()}",
+                                                )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_ADD_FRIEND:
+                                            try:
+                                                social_uin = _v150_role_uin(role_state)
+                                                social_name = _v150_role_nickname(role_state)
+                                                req = parse_add_friend_request(app["body"])
+                                                target = FRIENDS_SERVICE.find_player(
+                                                    uin=int(req["respondent_uin"] or 0),
+                                                    nickname=str(req["respondent_name"] or ""),
+                                                )
+                                                if target is None:
+                                                    log(
+                                                        "SOCIAL",
+                                                        "A305 target not found; no fabricated failure enum sent "
+                                                        f"uin={req['respondent_uin']} name={req['respondent_name']!r}",
+                                                    )
+                                                    continue
+                                                if int(target["uin"]) == social_uin:
+                                                    log("SOCIAL", f"A305 self-add ignored uin={social_uin}")
+                                                    continue
+
+                                                created = FRIENDS_SERVICE.create_friend_request(
+                                                    social_uin,
+                                                    int(target["uin"]),
+                                                    str(req["remark"] or ""),
+                                                )
+
+                                                if created.get("already_friends"):
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        build_add_friend_result(
+                                                            friend_uin=int(target["uin"]),
+                                                            friend_name=str(target["nickname"]),
+                                                            result=0x8301,  # SNS_ADDFRID_AGREE
+                                                            msg_id=0,
+                                                        ),
+                                                        label,
+                                                        "ZN2C_RES_ADDFRIEND v168-already-friends-agree "
+                                                        f"peer={target['nickname']}({int(target['uin'])})",
+                                                    )
+                                                elif created.get("opposite_pending"):
+                                                    proposer = FRIENDS_SERVICE.get_player_identity(int(created["from_uin"]))
+                                                    if proposer is not None:
+                                                        _v48_send_app(
+                                                            conn,
+                                                            active_tgame_key,
+                                                            build_friend_invite(
+                                                                request_id=int(created["request_id"]),
+                                                                proposer_uin=int(created["from_uin"]),
+                                                                proposer_name=str(proposer["nickname"]),
+                                                                remark=str(created.get("remark") or ""),
+                                                                msg_id=int(created.get("msg_id") or created["request_id"]),
+                                                            ),
+                                                            label,
+                                                            "ZN2C_REQ_ADDFRIEND v165-opposite-pending "
+                                                            f"request_id={int(created['request_id'])}",
+                                                        )
+                                                else:
+                                                    invite = build_friend_invite(
+                                                        request_id=int(created["request_id"]),
+                                                        proposer_uin=social_uin,
+                                                        proposer_name=social_name,
+                                                        remark=str(created.get("remark") or ""),
+                                                        msg_id=int(created.get("msg_id") or created["request_id"]),
+                                                    )
+                                                    delivered = _v150_send_online(
+                                                        int(target["uin"]),
+                                                        invite,
+                                                        "ZN2C_REQ_ADDFRIEND v165-real "
+                                                        f"request_id={int(created['request_id'])} "
+                                                        f"from={social_name}({social_uin})",
+                                                    )
+                                                    log(
+                                                        "SOCIAL",
+                                                        "A305 friend request persisted "
+                                                        f"id={int(created['request_id'])} from={social_uin} "
+                                                        f"to={int(target['uin'])} delivered_now={delivered}",
+                                                    )
+                                            except Exception as social_e:
+                                                log(
+                                                    "SOCIAL",
+                                                    "A305 FAILED: "
+                                                    f"{type(social_e).__name__}: {social_e}; "
+                                                    f"body={app['body'].hex()}",
+                                                )
+
+                                        elif app["cmd"] == TGAME_ZN_C2S_RES_ADD_FRIEND:
+                                            try:
+                                                social_uin = _v150_role_uin(role_state)
+                                                rsp = parse_add_friend_client_response(app["body"])
+                                                accepted = int(rsp["result"]) == 0x8301  # PH A307: live Accept button decision code
+                                                request_row = FRIENDS_SERVICE.resolve_friend_request(
+                                                    int(rsp["request_id"]),
+                                                    social_uin,
+                                                    accepted,
+                                                )
+                                                proposer_uin = int(request_row["from_uin"])
+
+                                                if accepted:
+                                                    proposer = FRIENDS_SERVICE.get_player_identity(proposer_uin)
+                                                    acceptor = FRIENDS_SERVICE.get_player_identity(social_uin)
+                                                    if proposer is None or acceptor is None:
+                                                        raise FriendsError("accepted friend request identity disappeared")
+                                                    msg_id = int(request_row.get("msg_id") or rsp["request_id"])
+
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        build_add_friend_result(
+                                                            friend_uin=proposer_uin,
+                                                            friend_name=str(proposer["nickname"]),
+                                                            result=0x8301,  # SNS_ADDFRID_AGREE
+                                                            msg_id=msg_id,
+                                                        ),
+                                                        label,
+                                                        "ZN2C_RES_ADDFRIEND v168-agree-self "
+                                                        f"peer={proposer['nickname']}({proposer_uin})",
+                                                    )
+                                                    _v150_send_online(
+                                                        proposer_uin,
+                                                        build_add_friend_result(
+                                                            friend_uin=social_uin,
+                                                            friend_name=str(acceptor["nickname"]),
+                                                            result=0x8301,  # SNS_ADDFRID_AGREE
+                                                            msg_id=msg_id,
+                                                        ),
+                                                        "ZN2C_RES_ADDFRIEND v168-agree-peer "
+                                                        f"peer={acceptor['nickname']}({social_uin})",
+                                                    )
+
+                                                log(
+                                                    "SOCIAL",
+                                                    "A307 friend request resolved "
+                                                    f"id={int(rsp['request_id'])} acceptor={social_uin} "
+                                                    f"accepted={accepted} result=0x{int(rsp['result']):04x}",
+                                                )
+                                            except Exception as social_e:
+                                                log(
+                                                    "SOCIAL",
+                                                    "A307 FAILED: "
+                                                    f"{type(social_e).__name__}: {social_e}; "
+                                                    f"body={app['body'].hex()}",
+                                                )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_DEL_FRIEND:
+                                            try:
+                                                social_uin = _v150_role_uin(role_state)
+                                                friend_uin = parse_delete_friend_request(app["body"])
+                                                existed = FRIENDS_SERVICE.delete_friendship(social_uin, int(friend_uin))
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    build_delete_friend_response(int(friend_uin), SNS_ERR_SUCC),
+                                                    label,
+                                                    "ZN2C_RES_DELFRIEND v165-real "
+                                                    f"cmd=0xA30A friend_uin={int(friend_uin)}",
+                                                )
+                                                log(
+                                                    "SOCIAL",
+                                                    f"A309 friendship deleted uin={social_uin} "
+                                                    f"friend={int(friend_uin)} existed={existed}",
+                                                )
+                                            except Exception as social_e:
+                                                log(
+                                                    "SOCIAL",
+                                                    "A309 FAILED: "
+                                                    f"{type(social_e).__name__}: {social_e}; "
+                                                    f"body={app['body'].hex()}",
+                                                )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_QUERY_FRIEND:
+                                            try:
+                                                query = parse_query_friend_request(app["body"])
+                                                qtype = int(query["query_type"])
+                                                qu = int(query["query_uin"] or 0)
+                                                qc = str(query["query_content"] or "")
+
+                                                if qtype == 2:
+                                                    target = FRIENDS_SERVICE.find_player(nickname=qc)
+                                                else:
+                                                    target_uin = qu
+                                                    if not target_uin and qc.strip().isdigit():
+                                                        target_uin = int(qc.strip())
+                                                    target = FRIENDS_SERVICE.find_player(uin=target_uin) if target_uin else None
+
+                                                if target is None:
+                                                    log(
+                                                        "SOCIAL",
+                                                        "A30F Find Player unresolved; no unverified not-found A310 sent "
+                                                        f"type={qtype} query_uin={qu} content={qc!r}",
+                                                    )
+                                                else:
+                                                    out = build_query_friend_response(
+                                                        target,
+                                                        result=0x8100,  # QueryFriend stock-UI success
+                                                        privacy_flags=EPTE_ADD_BY_ALL,
+                                                    )
+                                                    _v48_send_app(
+                                                        conn,
+                                                        active_tgame_key,
+                                                        out,
+                                                        label,
+                                                        "ZN2C_RES_FINDFRIEND v166-ui-success "
+                                                        f"cmd=0xA310 uin={int(target['uin'])} "
+                                                        f"nickname={target['nickname']!r} "
+                                                        f"exp={int(target.get('experience') or 0)} "
+                                                        "privacy_flags=0x0001",
+                                                    )
+                                                    log(
+                                                        "SOCIAL",
+                                                        "A30F Find Player resolved -> A310 v166 UI-success response sent "
+                                                        f"type={qtype} query_uin={qu} content={qc!r} resolved={target}",
+                                                    )
+                                            except Exception as social_e:
+                                                log(
+                                                    "SOCIAL",
+                                                    "A30F FAILED: "
+                                                    f"{type(social_e).__name__}: {social_e}; "
+                                                    f"body={app['body'].hex()}",
+                                                )
+
+                                        elif app["cmd"] in (0xA313, 0xA315, 0xA317):
+                                            _v177_friend_action(conn, active_tgame_key, label, role_state, app)
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_CHAT_P2P:
+                                            try:
+                                                social_uin = _v150_role_uin(role_state)
+                                                social_name = _v150_role_nickname(role_state)
+                                                chat = parse_chat_p2p_request(app["body"])
+                                                target = FRIENDS_SERVICE.find_player(
+                                                    uin=int(chat["recipient_uin"] or 0),
+                                                    nickname=str(chat["recipient_name"] or ""),
+                                                )
+                                                if target is None:
+                                                    raise FriendsError("chat recipient does not exist")
+
+                                                stored = FRIENDS_SERVICE.store_private_message(
+                                                    social_uin,
+                                                    int(target["uin"]),
+                                                    int(chat["chat_type"]),
+                                                    str(chat["message"]),
+                                                )
+                                                ntf = build_chat_p2p_notify(
+                                                    int(chat["chat_type"]),
+                                                    str(chat["message"]),
+                                                    sender_uin=social_uin,
+                                                    sender_name=social_name,
+                                                )
+                                                delivered = _v150_send_online(
+                                                    int(target["uin"]),
+                                                    ntf,
+                                                    "ZN2C_NTF_CHATP2P v165-real "
+                                                    f"message_id={int(stored['message_id'])} "
+                                                    f"from={social_name}({social_uin})",
+                                                )
+                                                if delivered:
+                                                    FRIENDS_SERVICE.mark_private_message_delivered(int(stored["message_id"]))
+
+                                                log(
+                                                    "SOCIAL",
+                                                    "A405 private chat "
+                                                    f"id={int(stored['message_id'])} from={social_uin} "
+                                                    f"to={int(target['uin'])} delivered_now={delivered}",
+                                                )
+                                            except Exception as social_e:
+                                                log(
+                                                    "SOCIAL",
+                                                    "A405 FAILED: "
+                                                    f"{type(social_e).__name__}: {social_e}; "
+                                                    f"body={app['body'].hex()}",
+                                                )
+
+                                        elif app["cmd"] == TGAME_ZN_NTF_READ_OFFLINE_MSG:
+                                            try:
+                                                _read = parse_read_offline_message_notice(app["body"])
+                                                log(
+                                                    "SOCIAL",
+                                                    "AB03 NtfReadOfflineMessage v171 "
+                                                    f"uin={_v150_role_uin(role_state)} "
+                                                    f"count={int(_read['count'])} "
+                                                    f"msg_ids={list(_read['msg_ids'])}",
+                                                )
+                                            except Exception as social_e:
+                                                log(
+                                                    "SOCIAL",
+                                                    "AB03 NtfReadOfflineMessage FAILED: "
+                                                    f"{type(social_e).__name__}: {social_e}; "
+                                                    f"body={app['body'].hex()}",
+                                                )
+
+                                        elif app["cmd"] == TGAME_ZN_REQ_PLAYER_EXP:
+                                            try:
+                                                exp_req = parse_player_exp_request(app["body"])
+                                                exp_uins = [int(v) for v in exp_req["uins"]]
+                                                exp_values = []
+                                                for _exp_uin in exp_uins:
+                                                    _identity = FRIENDS_SERVICE.get_player_identity(
+                                                        _exp_uin
+                                                    )
+                                                    exp_values.append(
+                                                        int((_identity or {}).get("experience") or 0)
+                                                    )
+
+                                                _v48_send_app(
+                                                    conn,
+                                                    active_tgame_key,
+                                                    build_player_exp_response(
+                                                        int(exp_req["type"]),
+                                                        exp_uins,
+                                                        exp_values,
+                                                    ),
+                                                    label,
+                                                    "ZN2C_RES_PLAYEREXP v170-static "
+                                                    f"cmd=0xA33B type={int(exp_req['type'])} "
+                                                    f"uins={exp_uins} exps={exp_values}",
+                                                )
+                                                log(
+                                                    "SOCIAL",
+                                                    "A33A GetPlayerExps v170-static "
+                                                    f"requester={_v150_role_uin(role_state)} "
+                                                    f"type={int(exp_req['type'])} "
+                                                    f"uins={exp_uins} exps={exp_values}",
+                                                )
+                                            except Exception as social_e:
+                                                log(
+                                                    "SOCIAL",
+                                                    "A33A GetPlayerExps FAILED: "
+                                                    f"{type(social_e).__name__}: {social_e}; "
+                                                    f"body={app['body'].hex()}",
+                                                )
 
                                         elif app["cmd"] == TGAME_ZN_REQ_STARTROOMALLOC:
                                             requester_uin = _v150_role_uin(role_state)
