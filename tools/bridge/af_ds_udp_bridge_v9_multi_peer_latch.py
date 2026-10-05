@@ -382,7 +382,7 @@ def main():
     ap.add_argument("--loader-pid-file", default="")
     ap.add_argument("--loader-log", default="")
     ap.add_argument("--state-file", default="")
-    ap.add_argument("--startup-timeout", type=float, default=90.0)
+    ap.add_argument("--startup-timeout", type=float, default=120.0)
     ap.add_argument("--buffer-max-packets", type=int, default=256)
     ap.add_argument("--buffer-max-bytes", type=int, default=512 * 1024)
     ap.add_argument("--buffer-max-age", type=float, default=45.0)
