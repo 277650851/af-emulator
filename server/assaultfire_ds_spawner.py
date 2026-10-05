@@ -39,10 +39,32 @@ ROOM_TARGETS = {
     (0x00000204, 0x0027): ("Bio-Capital_4_Main", "TGBioGame.TGBioMatch"),
     (0x00000204, 0x0048): ("Bio2-Capital_12_Main", "TGBioGame.TGBioMatch"),
     (0x00000204, 0x0076): ("Bio-Capital_12_Main", "TGBioGame.TGBioMatch"),
+    (0x00000204, 0x003C): ("Bio-Maya_6_Main", "TGBioGame.TGBioMatch"),
+    (0x00000204, 0x004A): ("Bio-Factory_22_Main", "TGBioGame.TGBioMatch"),
+    (0x00000204, 0x007A): ("Bio-Maya_7_Main", "TGBioGame.TGBioMatch"),
+    # Hero Mutation owns the Queen mechanics in TGBio2Game, not TGBioGame.
+    (0x00000209, 0x0048): ("Bio2-Capital_12_Main", "TGBio2Game.TGBio2Match"),
+    (0x00000209, 0x0073): ("Bio2-Capital_4_Main", "TGBio2Game.TGBio2Match"),
+    (0x00000209, 0x0074): ("Bio2-Factory_22_Main", "TGBio2Game.TGBio2Match"),
+    (0x00000209, 0x0075): ("Bio2-Maya_6_Main", "TGBio2Game.TGBio2Match"),
+    (0x00000209, 0x0090): ("Bio2-Maya_7_Main", "TGBio2Game.TGBio2Match"),
+    # Tower Defense is its own PvE family; TDB-* belongs to Tank Siege.
+    (0x00002005, 0x0060): ("ATD-Capital_17_Main", "ATDGame.ATDGameInfo"),
+    (0x00002005, 0x008D): ("ATD-Capital_22_B_Main", "ATDGame.ATDGameInfo"),
+}
+# Verified GameInfo classes for each AFDEV mode family. Exact MapId entries
+# above remain authoritative when the client sends an empty MapString; when it
+# sends a map name, any map in these known families can use the matching class.
+MODE_GAME_CLASSES = {
+    0x00002001: "PVEGame.TGSVGame",
+    0x00002002: "PVEGame.TGIFGame",
+    0x00000204: "TGBioGame.TGBioMatch",
+    0x00000209: "TGBio2Game.TGBio2Match",
+    0x00002005: "ATDGame.ATDGameInfo",
 }
 # Backward-compatible name used by older AFDEV tooling.
 PVE_TARGETS = ROOM_TARGETS
-AFDEV_MODE_IDS = frozenset(mode_id for mode_id, _map_id in ROOM_TARGETS)
+AFDEV_MODE_IDS = frozenset(MODE_GAME_CLASSES)
 
 
 def room_target_for(mode_id: int, map_id: int):
@@ -59,7 +81,11 @@ def resolve_room_target(
     target = room_target_for(mode_id, map_id)
     if target is not None:
         return target
-    return str(fallback_map or "").strip(), str(fallback_game or "").strip()
+    game_class = MODE_GAME_CLASSES.get(
+        int(mode_id) & 0xFFFFFFFF,
+        str(fallback_game or "").strip(),
+    )
+    return str(fallback_map or "").strip(), game_class
 
 
 class SpawnerError(RuntimeError):
@@ -303,14 +329,21 @@ class DedicatedServerSpawner:
             self._next_room_id += 1
             normalized_mode = int(mode_id) & 0xFFFFFFFF
             normalized_map_id = int(map_id) & 0xFFFF
-            desired_map = str(map_name or self.config.default_map or "").strip()
-            desired_game = str(self.config.game_class or "").strip()
+            desired_map = str(map_name or "").strip()
+            desired_game = MODE_GAME_CLASSES.get(
+                normalized_mode, str(self.config.game_class or "").strip()
+            )
             verified_target = room_target_for(normalized_mode, normalized_map_id)
             if verified_target is not None:
                 verified_map, verified_game = verified_target
                 if not desired_map:
                     desired_map = verified_map
                 desired_game = verified_game
+            elif not desired_map and normalized_mode not in MODE_GAME_CLASSES:
+                # Keep the configured default for legacy/unclassified modes.
+                # For a known family, an unknown empty MapString must fail closed
+                # instead of silently launching the default map.
+                desired_map = str(self.config.default_map or "").strip()
 
             allocation = DSAllocation(
                 slot=slot,
@@ -402,11 +435,11 @@ class DedicatedServerSpawner:
         desired_map = str(map_name or "").strip()
         if verified_target is not None and not desired_map:
             desired_map = verified_target[0]
-        desired_game = (
-            verified_target[1]
-            if verified_target is not None
-            else str(self.config.game_class or "").strip()
+        desired_game = MODE_GAME_CLASSES.get(
+            normalized_mode, str(self.config.game_class or "").strip()
         )
+        if verified_target is not None:
+            desired_game = verified_target[1]
 
         settings_match = (
             allocation.mode_id == normalized_mode
@@ -539,14 +572,17 @@ class DedicatedServerSpawner:
                 allocation.game_class = verified_game
             elif desired_map:
                 allocation.map_name = desired_map
-                if not same_target:
-                    allocation.game_class = self.config.game_class
+                allocation.game_class = MODE_GAME_CLASSES.get(
+                    normalized_mode, self.config.game_class
+                )
             elif not same_target:
                 # Do not carry a stale cooked world into a different, unresolved
                 # ModeId/MapId pair.  arm_lobby() will fail closed with a precise
                 # diagnostic instead of advertising a dead DS endpoint.
                 allocation.map_name = ""
-                allocation.game_class = self.config.game_class
+                allocation.game_class = MODE_GAME_CLASSES.get(
+                    normalized_mode, self.config.game_class
+                )
 
             allocation.mode_id = normalized_mode
             allocation.map_id = normalized_map_id

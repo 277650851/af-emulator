@@ -541,11 +541,10 @@ def _v143b_reserve_room_ds(role_state, create_req):
         "1", "true", "yes", "on"
     )
     client_map = str(create_req.get("map_string") or "").strip()
-    map_name = (
-        client_map
-        if (use_client_map and client_map)
-        else V143B_DS_CONFIG.default_map
-    )
+    if use_client_map:
+        map_name = client_map or None
+    else:
+        map_name = V143B_DS_CONFIG.default_map
     max_players = max(2, int(create_req.get("fighter_capacity") or 0))
 
     allocation = V143B_DS_SPAWNER.reserve_lobby(
@@ -11774,6 +11773,7 @@ def handle_placeholder(conn, addr, label):
                                                 f"room_name={cr['name']!r} "
                                                 f"mode=0x{cr['mode_id']:08x} "
                                                 f"map=0x{cr['map_id']:04x} "
+                                                f"map_string={cr.get('map_string', '')!r} "
                                                 f"submode=0x{cr['sub_mode_id']:08x} "
                                                 f"flags=0x{cr['flags']:08x} "
                                                 f"fighters={cr['fighter_capacity']} "

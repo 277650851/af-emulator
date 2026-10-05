@@ -17,14 +17,14 @@ LISTEN_PORT = 65008
 TARGET = ("127.0.0.1", 7777)
 
 # The current AFDEV listen server selected the dynamic all-zero 128-bit DS key.
-# This key is used ONLY to decode a diagnostic copy.  Packets are relayed
-# byte-for-byte unchanged.
+# The key also decodes per-UIN Login Name updates.
+# Other packets are forwarded unchanged.
 DECODE_KEY = b"\x00" * 16
 
 SIO_UDP_CONNRESET = 0x9800000C
 
-# v5 diagnostic actor-channel capture.  The relay itself remains transparent:
-# datagrams are still forwarded byte-for-byte unchanged.
+# v5 diagnostic actor-channel capture. Login Name is rewritten per UIN;
+# other datagrams are forwarded unchanged.
 ACTOR_DUMP_PATH = Path(__file__).with_name("af_actor_payloads.log")
 ACTOR_SEEN = {}
 CH2_DUMP_LIMIT = 12
@@ -350,6 +350,10 @@ def valid_ds_client_packet(wire):
 
 
 def main():
+    from af_login_names import LoginNameRewriter
+    nickname_rewriter = LoginNameRewriter(Path(__file__).resolve().parents[2])
+    os.environ["AF_DYNAMIC_LOGIN_NAMES"] = "1"
+    print(f"[LOGIN-PATCH] Dynamic per-UIN nicknames enabled DB={nickname_rewriter.db_path}", flush=True)
     global ACTOR_DUMP_PATH
     ap = argparse.ArgumentParser(description="Assault Fire PH per-instance UDP bridge v9 multi-peer first-packet-latch AFDEV spawn")
     ap.add_argument("--listen-ip", default=LISTEN_IP)
@@ -790,6 +794,7 @@ def main():
                     except ConnectionResetError as exc:
                         print(f"[C->S] UDP reset ignored: {exc}", flush=True)
                         continue
+                    wire = nickname_rewriter.rewrite(wire, addr)
                     c2s += 1
                     if args.packet_diagnostics:
                         print(

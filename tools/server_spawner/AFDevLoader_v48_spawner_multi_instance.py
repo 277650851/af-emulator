@@ -312,6 +312,8 @@ STEEL_FORTRESS_MODE_ID_V4 = 0x00002002
 # Mutation keeps its own settings path below. Its controller also reaches the
 # shared ServerMove entry, so no movement-specific vtable patch is required.
 BIO_MODE_ID_V49 = 0x00000204
+HERO_MUTATION_MODE_ID = 0x00000209
+TOWER_DEFENSE_MODE_ID = 0x00002005
 
 
 # v45 established the legacy TGSV PvE round family with stock
@@ -5635,12 +5637,14 @@ def apply_pve_game_settings(hproc, hthread, authority, mode_id, map_id, sub_mode
     supported_modes = {
         0x00002001: "Survival",
         0x00002002: "Defense",
+        0x00002005: "Tower Defense",
     }
     mode_name = supported_modes.get(mode_id)
     if mode_name is None:
         raise RuntimeError(
             f"unsupported AFDEV ModeId 0x{mode_id:08X}; "
-            "verified modes are 0x00002001 (Survival) and 0x00002002 (Defense)"
+            "settings families are Survival (0x2001), Defense (0x2002), "
+            "and Tower Defense (0x2005)"
         )
     if sub_mode_id not in (0x00001001, 0x00001002, 0x00001003):
         raise RuntimeError(f"unsupported PvE SubModeId 0x{sub_mode_id:08X}")
@@ -6556,7 +6560,7 @@ def main():
                     "expected GIsClient=0 GIsServer=1."
                 )
 
-                if int(args.mode_id) in (0x00002001, 0x00002002):
+                if int(args.mode_id) in (0x00002001, 0x00002002, TOWER_DEFENSE_MODE_ID):
                     # r12: apply the room's real PvE settings before the client
                     # handshake is released.  This is early enough that PVE GameStart
                     # / difficulty Kismet consumes the captured SubModeId instead of
@@ -6630,6 +6634,20 @@ def main():
                         "[AFDEV-MUTATION] Native TGBioGame.TGBioMatch startup; "
                         "skipped PvE-specific GameSettings writes."
                     )
+                elif int(args.mode_id) == HERO_MUTATION_MODE_ID:
+                    # TGBio2Match owns the Queen/hero match state. Its submode
+                    # is not a Survival/Defense difficulty selection.
+                    pve_settings_state = {
+                        "difficulty": 0,
+                        "difficulty_name": "Native",
+                        "difficulty_applied": False,
+                        "mode_name": "Hero Mutation",
+                        "advanced_hero": False,
+                    }
+                    print(
+                        "[AFDEV-HERO-MUTATION] Native TGBio2Game.TGBio2Match startup; "
+                        "skipped PvE-specific GameSettings writes."
+                    )
                 else:
                     raise RuntimeError(
                         f"unsupported AFDEV ModeId 0x{int(args.mode_id) & 0xFFFFFFFF:08X}"
@@ -6690,17 +6708,20 @@ def main():
                         f"zero_dskey={bool(zero_dskey_state.get('verified'))}"
                     )
 
-                try:
-                    r20_sync_remote_pri_name(
-                        pi.hProcess,
-                        pi.hThread,
-                        os.environ.get("AF_PLAYER_NICKNAME", ""),
-                        timeout=45.0,
-                    )
-                except Exception as exc:
-                    print(
-                        f"[AFDEV-PROFILE-r20] nonfatal PRI sync error: {exc}"
-                    )
+                if os.environ.get("AF_DYNAMIC_LOGIN_NAMES") != "1":
+                    try:
+                        r20_sync_remote_pri_name(
+                            pi.hProcess,
+                            pi.hThread,
+                            os.environ.get("AF_PLAYER_NICKNAME", ""),
+                            timeout=45.0,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[AFDEV-PROFILE-r20] nonfatal PRI sync error: {exc}"
+                        )
+                else:
+                    print("[AFDEV-PROFILE] UIN-based login nicknames active; owner-only PRI rename skipped.")
 
                 print(
                     "[AFDEV-v41] Press Ctrl+C in this loader only when you "
