@@ -86,7 +86,7 @@ class SpawnerConfig:
     game_dir_source: str = ""
     default_map: str = ""
     game_class: str = "PVEGame.TGSVGame"
-    ready_timeout: float = 90.0
+    ready_timeout: float = 120.0
     bridge_ready_timeout: float = 3.0
     create_cooldown: float = 1.5
     buffer_max_packets: int = 256
@@ -138,7 +138,7 @@ class SpawnerConfig:
             game_dir_source=game_dir_source,
             default_map=os.environ.get("AF_DS_DEFAULT_MAP", "").strip(),
             game_class=os.environ.get("AF_DS_GAME_CLASS", "PVEGame.TGSVGame"),
-            ready_timeout=max(5.0, float(os.environ.get("AF_DS_READY_TIMEOUT", "90"))),
+            ready_timeout=max(5.0, float(os.environ.get("AF_DS_READY_TIMEOUT", "120"))),
             bridge_ready_timeout=max(0.25, float(os.environ.get("AF_DS_BRIDGE_READY_TIMEOUT", "3"))),
             create_cooldown=max(0.0, float(os.environ.get("AF_DS_CREATE_COOLDOWN", "1.5"))),
             buffer_max_packets=max(8, int(os.environ.get("AF_DS_BUFFER_MAX_PACKETS", "256"))),
