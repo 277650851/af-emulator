@@ -8,6 +8,21 @@ import struct
 import select
 import time
 from pathlib import Path
+from collections import deque
+
+DS_DIAGNOSTICS = None
+LOADER_DIAGNOSTIC_TAIL = deque(maxlen=14)
+LOADER_DIAGNOSTIC_THREAD = None
+if os.environ.get("AF_DS_DIAGNOSTICS_DB"):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "server"))
+    from assaultfire_ds_diagnostics import from_environment, capture_pipe
+    DS_DIAGNOSTICS = from_environment()
+
+
+def diagnostic_context():
+    return (os.environ.get("AF_DS_DIAGNOSTICS_SESSION"),
+            int(os.environ.get("AF_DS_DIAGNOSTICS_ROOM", "0")),
+            int(os.environ.get("AF_DS_DIAGNOSTICS_UIN", "0")))
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -32,6 +47,9 @@ OTHER_CHANNEL_EARLY_DUMP_LIMIT = 2
 
 
 def append_actor_dump(line):
+    if DS_DIAGNOSTICS:
+        DS_DIAGNOSTICS.append(*diagnostic_context(), "actor", line)
+        return
     try:
         with ACTOR_DUMP_PATH.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -583,7 +601,9 @@ def main():
         child_env.setdefault("PYTHONUTF8", "1")
         child_env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        if loader_log:
+        if DS_DIAGNOSTICS:
+            stdout_target = subprocess.PIPE
+        elif loader_log:
             loader_log_handle = loader_log.open("a", encoding="utf-8", buffering=1)
             stdout_target = loader_log_handle
         else:
@@ -613,6 +633,11 @@ def main():
             creationflags=creationflags,
             env=child_env,
         )
+        if DS_DIAGNOSTICS:
+            global LOADER_DIAGNOSTIC_THREAD
+            LOADER_DIAGNOSTIC_TAIL.clear()
+            LOADER_DIAGNOSTIC_THREAD = capture_pipe(loader_proc.stdout, DS_DIAGNOSTICS,
+                *diagnostic_context(), "loader", LOADER_DIAGNOSTIC_TAIL)
         loader_pid_file.write_text(str(loader_proc.pid), encoding="utf-8")
         spawn_started = time.time()
         trigger_client = addr
@@ -663,6 +688,10 @@ def main():
             return
         if loader_proc.poll() is not None:
             detail = f"loader exited rc={loader_proc.returncode}"
+            if DS_DIAGNOSTICS:
+                if LOADER_DIAGNOSTIC_THREAD:
+                    LOADER_DIAGNOSTIC_THREAD.join(timeout=1)
+                detail += "; loader_log_tail=" + " | ".join(LOADER_DIAGNOSTIC_TAIL)[-3500:]
             # r14 diagnostics: surface the loader's actual failure in the bridge
             # error instead of forcing the user to hunt a second file.
             try:

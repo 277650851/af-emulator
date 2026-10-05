@@ -318,6 +318,37 @@ TANK_TDM_MODE_ID = 0x00000203
 TANK_SIEGE_MODE_ID = 0x00000206
 TANK_GAME_MODE_IDS = frozenset((TANK_TDM_MODE_ID, TANK_SIEGE_MODE_ID))
 
+# Stock modes whose match state is owned by their native GameInfo classes.
+# They must not pass through the Survival/Defense difficulty writer.
+NATIVE_GAME_MODE_NAMES = {
+    0x00001001: "Bomb Match",
+    0x00001002: "Team Deathmatch",
+    0x00001003: "Annihilation",
+    0x00001004: "Individual Match",
+    0x00001005: "Team Relay",
+    0x00001006: "Capture Point",
+    0x00001007: "Escape",
+    0x00001008: "Super Team",
+    0x00000201: "Mech War",
+    0x00000202: "Mecha Team",
+    0x00000205: "Crazy Team",
+    0x00000207: "Mecha Doom",
+    0x00002003: "Learning",
+    0x00002004: "Story",
+    0x00000801: "Power Mode Team",
+    0x00000802: "Power Mode Bomb",
+    0x00000803: "Power Mode Annihilation",
+    0x00000804: "Power Mode Individual",
+    0x00000401: "Clan Match Team",
+    0x00000402: "Clan Match Bomb",
+    0x00000403: "Clan Match Annihilation",
+    0x00000404: "Clan Match Capture Point",
+    0x00000101: "Zombie Scavenge",
+    0x00000102: "Zombie Mild",
+    0x00000103: "Survival 3",
+}
+NATIVE_GAME_MODE_IDS = frozenset(NATIVE_GAME_MODE_NAMES)
+
 
 # v45 established the legacy TGSV PvE round family with stock
 # movement/ServerMove code untouched. v48 preserves that round flow and
@@ -6668,6 +6699,20 @@ def main():
                     }
                     print(
                         f"[AFDEV-TANK] Native TGTankGame startup ({tank_mode_name}); "
+                        "skipped PvE-specific GameSettings writes."
+                    )
+                elif int(args.mode_id) in NATIVE_GAME_MODE_IDS:
+                    native_mode_name = NATIVE_GAME_MODE_NAMES[int(args.mode_id)]
+                    pve_settings_state = {
+                        "difficulty": 0,
+                        "difficulty_name": "Native",
+                        "difficulty_applied": False,
+                        "mode_name": native_mode_name,
+                        "advanced_hero": False,
+                    }
+                    print(
+                        f"[AFDEV-NATIVE-MODE] {native_mode_name} startup "
+                        f"mode=0x{int(args.mode_id) & 0xFFFFFFFF:08X}; "
                         "skipped PvE-specific GameSettings writes."
                     )
                 else:

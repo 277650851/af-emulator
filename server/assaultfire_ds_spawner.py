@@ -19,11 +19,20 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
 import threading
 import time
+import tempfile
+import shutil
+import uuid
+from collections import deque
+try:
+    from .assaultfire_ds_diagnostics import DiagnosticsStore, capture_pipe
+except ImportError:
+    from assaultfire_ds_diagnostics import DiagnosticsStore, capture_pipe
 from typing import Dict, Optional
 
 
@@ -70,21 +79,178 @@ ROOM_TARGETS = {
         "TDB-Tank_02_Main", "TGTankGame.TGTankDBMatch",
     ),
 }
-# Verified GameInfo classes for each AFDEV mode family. Exact MapId entries
-# above remain authoritative when the client sends an empty MapString; when it
-# sends a map name, any map in these known families can use the matching class.
+# Explicit overrides for the verified PH world/class pairs below. Other stock
+# combinations are resolved from the installed DefaultGame.ini catalog.
+# Native mode IDs and GameInfo classes from the stock DefaultGame.ini.
+# Mode 8194 appears twice (Defense and IF2); the map prefix resolves that one
+# duplicated ID to the right class after the map name is loaded.
 MODE_GAME_CLASSES = {
-    0x00002001: "PVEGame.TGSVGame",
-    0x00002002: "PVEGame.TGIFGame",
-    0x00000204: "TGBioGame.TGBioMatch",
-    0x00000209: "TGBio2Game.TGBio2Match",
-    0x00002005: "ATDGame.ATDGameInfo",
+    0x00001001: "UTGame.TGBombMatch",
+    0x00001002: "UTGame.TGTeamMatch",
+    0x00001003: "UTGame.TGAnlMatch",
+    0x00001004: "UTGame.TGIndMatch",
+    0x00001005: "UTGame.TGTRGame",
+    0x00001006: "UTGame.TGCPMatch",
+    0x00001007: "UTGame.TGEscapeMatch",
     TANK_TDM_MODE_ID: "TGTankGame.TGTankTeamMatch",
     TANK_SIEGE_MODE_ID: "TGTankGame.TGTankDBMatch",
+    0x00000205: "PVEGame.TGCrazyTeamMatch",
+    0x00000201: "PVEGame.TGMechaHumanMatch",
+    0x00002001: "PVEGame.TGSVGame",
+    0x00002002: "PVEGame.TGIFGame",
+    0x00002003: "LDGame.TGLDGame",
+    0x00002004: "StoryGame.TGStoryGame",
+    0x00002005: "ATDGame.ATDGameInfo",
+    0x00000801: "UTGame.TGPMTeamMatch",
+    0x00000802: "UTGame.TGPMBombMatch",
+    0x00000803: "UTGame.TGPMAnlMatch",
+    0x00000804: "UTGame.TGPMIndMatch",
+    0x00000401: "UTGame.TGCMTeamMatch",
+    0x00000402: "UTGame.TGCMBombMatch",
+    0x00000403: "UTGame.TGCMAnlMatch",
+    0x00000404: "UTGame.TGCMCPMatch",
+    0x00000204: "TGBioGame.TGBioMatch",
+    0x00000202: "MechaGame.TGMechaTeamMatch",
+    0x00000207: "MechaGame.TGMechaDoomMatch",
+    0x00001008: "UTGame.TGSuperTeamMatch",
+    0x00000101: "PZGame.PZMatch_Scavenge",
+    0x00000102: "PZGame.PZMatch_Mild",
+    0x00000209: "TGBio2Game.TGBio2Match",
+    0x00000103: "TGSVGame.TGSV3Game",
 }
 # Backward-compatible name used by older AFDEV tooling.
 PVE_TARGETS = ROOM_TARGETS
 AFDEV_MODE_IDS = frozenset(MODE_GAME_CLASSES) | {TANK_BATTLE_UI_MODE_ID}
+
+_CATALOG_FIELD_RE = re.compile(
+    r'([A-Za-z_]\w*)\s*=\s*(?:"([^"]*)"|([^,\)\s]+))'
+)
+_GAME_CATALOG_CACHE = {}
+
+
+def _default_game_ini_candidates(game_dir: str):
+    raw = str(game_dir or "").strip()
+    if not raw:
+        return []
+    path = Path(raw).expanduser()
+    try:
+        path = path.resolve()
+    except OSError:
+        pass
+    candidates = [
+        path.parent.parent / "TGame" / "Config" / "DefaultGame.ini",
+        path / "TGame" / "Config" / "DefaultGame.ini",
+        path / "Config" / "DefaultGame.ini",
+        path.parent.parent / "Config" / "DefaultGame.ini",
+    ]
+    result = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate).casefold()
+        if key not in seen:
+            seen.add(key)
+            result.append(candidate)
+    return result
+
+
+def load_stock_game_catalog(game_dir: str):
+    """Load mode, map, and map-prefix catalogs from the installed game config."""
+    mode_classes = dict(MODE_GAME_CLASSES)
+    map_names = {
+        map_id: map_name
+        for (mode_id, map_id), (map_name, _game_class) in ROOM_TARGETS.items()
+    }
+    # The original config has two GameModeSettings entries for 8194. Keep the
+    # first (Defense) as the default; the IF2 prefix selects its distinct class.
+    map_prefixes = {"IF": "PVEGame.TGIFGame", "IF2": "TGIFGame.TGIF2Game"}
+    # Retail PH configs may be encoded containers rather than ordinary text.
+    # Keep the recovered stock catalog available without decoding client files.
+    catalog_file = Path(__file__).with_name("stock_mode_map_catalog.json")
+    if not catalog_file.is_file():
+        raise RuntimeError(f"missing required stock map catalog: {catalog_file}")
+    bundled = json.loads(catalog_file.read_text(encoding="utf-8"))
+    for map_id, map_name in bundled["map_names"].items():
+        map_names.setdefault(int(map_id), str(map_name))
+    map_prefixes.update(bundled["map_prefixes"])
+    ini = next((item for item in _default_game_ini_candidates(game_dir) if item.is_file()), None)
+    if ini is None:
+        return mode_classes, map_names, map_prefixes, None
+
+    try:
+        stat = ini.stat()
+        cache_key = (str(ini.resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = (str(ini), 0, 0)
+    cached = _GAME_CATALOG_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        text = _decode_game_config(ini.read_bytes())
+    except OSError:
+        return mode_classes, map_names, map_prefixes, None
+    seen_mode_ids = set()
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith(";"):
+            continue
+        match = re.search(r"\b(GameModeSettings|GameMapSettings|DefaultMapPrefixes)\s*=\s*\((.*)\)", line)
+        if not match:
+            continue
+        kind, payload = match.groups()
+        fields = {key.lower(): (quoted or bare)
+                  for key, quoted, bare in _CATALOG_FIELD_RE.findall(payload)}
+        if kind == "GameModeSettings":
+            try:
+                mode_id = _catalog_int(fields["modeid"]) & 0xFFFFFFFF
+            except (KeyError, TypeError, ValueError):
+                continue
+            # Installed mode classes override the fallback. Preserve the first
+            # duplicate ID; the map prefix disambiguates IF2 below.
+            if mode_id not in seen_mode_ids:
+                mode_classes[mode_id] = fields.get("modename", "").strip()
+                seen_mode_ids.add(mode_id)
+        elif kind == "GameMapSettings":
+            try:
+                map_id = _catalog_int(fields["mapid"]) & 0xFFFF
+            except (KeyError, TypeError, ValueError):
+                continue
+            map_name = fields.get("mapname", "").strip()
+            if map_name:
+                map_names[map_id] = map_name
+        else:
+            prefix = fields.get("prefix", "").strip()
+            game_type = fields.get("gametype", "").strip()
+            if prefix and game_type:
+                map_prefixes[prefix.upper()] = game_type
+
+    catalog = (mode_classes, map_names, map_prefixes, ini)
+    _GAME_CATALOG_CACHE.clear()
+    _GAME_CATALOG_CACHE[cache_key] = catalog
+    return catalog
+
+
+def _game_class_for_map(map_name: str, map_prefixes: dict):
+    upper = str(map_name or "").strip().upper()
+    for prefix in sorted(map_prefixes, key=len, reverse=True):
+        if upper.startswith(prefix + "-"):
+            return map_prefixes[prefix]
+    return ""
+
+
+def _catalog_int(value: str) -> int:
+    try:
+        return int(str(value).strip(), 0)
+    except ValueError:
+        return int(str(value).strip(), 10)
+
+
+def _decode_game_config(raw: bytes) -> str:
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="ignore")
+    if raw and raw.count(b"\x00") > len(raw) // 5:
+        return raw.decode("utf-16le", errors="ignore")
+    return raw.decode("utf-8-sig", errors="ignore")
 
 
 def normalize_tank_mode_map(mode_id: int, map_id: int, sub_mode_id: int = 0):
@@ -126,16 +292,41 @@ def resolve_room_target(
     map_id: int,
     fallback_map: str = "",
     fallback_game: str = "PVEGame.TGSVGame",
+    *,
+    game_dir: str = "",
 ):
     normalized_mode, normalized_map = normalize_tank_mode_map(mode_id, map_id)
     target = ROOM_TARGETS.get((normalized_mode, normalized_map))
     if target is not None:
         return target
-    game_class = MODE_GAME_CLASSES.get(
-        normalized_mode,
-        str(fallback_game or "").strip(),
-    )
-    return str(fallback_map or "").strip(), game_class
+
+    fallback_map = str(fallback_map or "").strip()
+    if normalized_mode in MODE_GAME_CLASSES:
+        mode_classes, map_names, map_prefixes, _source = load_stock_game_catalog(game_dir)
+        resolved_map = str(map_names.get(normalized_map) or fallback_map).strip()
+        game_class = str(
+            mode_classes.get(normalized_mode)
+            or MODE_GAME_CLASSES[normalized_mode]
+        ).strip()
+
+        # Mode 8194 is shared by standard Defense and the IF2 map family.
+        # DefaultMapPrefixes gives IF2 its native alternate GameInfo class.
+        if normalized_mode == 0x00002002 and resolved_map:
+            prefix_class = _game_class_for_map(resolved_map, map_prefixes)
+            if prefix_class and prefix_class.endswith("TGIF2Game"):
+                game_class = prefix_class
+
+        # The old map catalog stores Canyon without its cooked mode prefix,
+        # while the installed package is MHM-Canyon_Main.udk.
+        if (
+            normalized_mode == 0x00000201
+            and normalized_map == 0x0019
+            and resolved_map.casefold() == "canyon_main"
+        ):
+            resolved_map = "MHM-Canyon_Main"
+        return resolved_map, game_class
+
+    return fallback_map, str(fallback_game or "").strip()
 
 
 class SpawnerError(RuntimeError):
@@ -171,7 +362,9 @@ class SpawnerConfig:
     first_reply_retry: float = 1.25
     first_reply_max_retries: int = 3
     first_reply_timeout: float = 8.0
-    runtime_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1] / "runtime" / "ds_runtime")
+    runtime_dir: Path = field(default_factory=lambda: Path(tempfile.mkdtemp(prefix="assaultfire-ds-")))
+    diagnostics_db_path: Optional[Path] = None
+    runtime_is_temporary: bool = False
     loader_script: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1] / "tools" / "server_spawner" / "AFDevLoader_v48_spawner_multi_instance.py")
     bridge_script: Path = field(default_factory=lambda: Path(__file__).resolve().parents[1] / "tools" / "bridge" / "af_ds_udp_bridge_v9_multi_peer_latch.py")
     python_exe: str = sys.executable
@@ -223,7 +416,9 @@ class SpawnerConfig:
             first_reply_retry=max(0.25, float(os.environ.get("AF_DS_FIRST_REPLY_RETRY", "1.25"))),
             first_reply_max_retries=max(1, int(os.environ.get("AF_DS_FIRST_REPLY_MAX_RETRIES", "3"))),
             first_reply_timeout=max(1.0, float(os.environ.get("AF_DS_FIRST_REPLY_TIMEOUT", "8.0"))),
-            runtime_dir=Path(os.environ.get("AF_DS_RUNTIME_DIR", str(repo_root / "runtime" / "ds_runtime"))).resolve(),
+            runtime_dir=Path(os.environ["AF_DS_RUNTIME_DIR"]).resolve() if os.environ.get("AF_DS_RUNTIME_DIR") else Path(tempfile.mkdtemp(prefix="assaultfire-ds-")),
+            diagnostics_db_path=Path(os.environ.get("AF_ACCOUNT_DB", str(here / "assaultfire_accounts.sqlite3"))).resolve(),
+            runtime_is_temporary=not bool(os.environ.get("AF_DS_RUNTIME_DIR")),
             loader_script=Path(os.environ.get("AF_DS_LOADER", str(repo_root / "tools" / "server_spawner" / "AFDevLoader_v48_spawner_multi_instance.py"))).resolve(),
             bridge_script=Path(os.environ.get("AF_DS_BRIDGE", str(repo_root / "tools" / "bridge" / "af_ds_udp_bridge_v9_multi_peer_latch.py"))).resolve(),
             python_exe=os.environ.get("AF_DS_PYTHON", sys.executable),
@@ -286,6 +481,11 @@ class DedicatedServerSpawner:
         self._next_room_id = 1
         self._shutdown = False
         self.config.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._diagnostics = DiagnosticsStore(self.config.diagnostics_db_path or self.config.runtime_dir / "diagnostics.sqlite3")
+        self._diagnostic_run = uuid.uuid4().hex
+        self._pipe_tails = {}
+        self._pipe_threads = {}
+        self._diagnostic_snapshots = {}
         atexit.register(self.shutdown_all)
 
     def _emit(self, label: str, message: str) -> None:
@@ -298,7 +498,17 @@ class DedicatedServerSpawner:
         print(f"[{label}] {message}", flush=True)
 
     def _log(self, message: str) -> None:
+        match = re.search(r"\broom=(\d+)", message)
+        allocation = self._allocations.get(int(match.group(1))) if match else None
+        uin_match = re.search(r"\buin=(\d+)", message)
+        self._diagnostics.append(self._diagnostic_session(allocation) if allocation else None,
+            allocation.room_id if allocation else None,
+            int(uin_match.group(1)) if uin_match else allocation.owner_id if allocation else None,
+            "spawner", message)
         self._emit("DS-SPAWNER", message)
+
+    def _diagnostic_session(self, allocation):
+        return f"{self._diagnostic_run}:{allocation.instance_id}:{allocation.round_generation}"
 
     @staticmethod
     def _udp_port_available(host: str, port: int) -> bool:
@@ -380,21 +590,16 @@ class DedicatedServerSpawner:
             normalized_mode, normalized_map_id = normalize_tank_mode_map(
                 mode_id, map_id, sub_mode_id
             )
-            desired_map = str(map_name or "").strip()
-            desired_game = MODE_GAME_CLASSES.get(
-                normalized_mode, str(self.config.game_class or "").strip()
+            fallback_map = str(map_name or "").strip()
+            if not fallback_map and normalized_mode not in MODE_GAME_CLASSES:
+                fallback_map = str(self.config.default_map or "").strip()
+            desired_map, desired_game = resolve_room_target(
+                normalized_mode,
+                normalized_map_id,
+                fallback_map,
+                str(self.config.game_class or "").strip(),
+                game_dir=self.config.game_dir,
             )
-            verified_target = room_target_for(normalized_mode, normalized_map_id)
-            if verified_target is not None:
-                verified_map, verified_game = verified_target
-                if not desired_map or normalized_mode in TANK_GAME_MODE_IDS:
-                    desired_map = verified_map
-                desired_game = verified_game
-            elif not desired_map and normalized_mode not in MODE_GAME_CLASSES:
-                # Keep the configured default for legacy/unclassified modes.
-                # For a known family, an unknown empty MapString must fail closed
-                # instead of silently launching the default map.
-                desired_map = str(self.config.default_map or "").strip()
 
             allocation = DSAllocation(
                 slot=slot,
@@ -483,17 +688,13 @@ class DedicatedServerSpawner:
         )
         normalized_sub_mode = int(sub_mode_id) & 0xFFFFFFFF
         normalized_flags = int(room_flags) & 0xFFFFFFFF
-        verified_target = room_target_for(normalized_mode, normalized_map_id)
-        desired_map = str(map_name or "").strip()
-        if verified_target is not None and (
-            not desired_map or normalized_mode in TANK_GAME_MODE_IDS
-        ):
-            desired_map = verified_target[0]
-        desired_game = MODE_GAME_CLASSES.get(
-            normalized_mode, str(self.config.game_class or "").strip()
+        desired_map, desired_game = resolve_room_target(
+            normalized_mode,
+            normalized_map_id,
+            str(map_name or "").strip(),
+            str(self.config.game_class or "").strip(),
+            game_dir=self.config.game_dir,
         )
-        if verified_target is not None:
-            desired_game = verified_target[1]
 
         settings_match = (
             allocation.mode_id == normalized_mode
@@ -615,31 +816,34 @@ class DedicatedServerSpawner:
             normalized_mode, normalized_map_id = normalize_tank_mode_map(
                 mode_id, map_id, sub_mode_id
             )
-            desired_map = str(map_name or "").strip()
+            fallback_map = str(map_name or "").strip()
             same_target = (
                 normalized_mode == allocation.mode_id
                 and normalized_map_id == allocation.map_id
             )
-            verified_target = room_target_for(normalized_mode, normalized_map_id)
-            if verified_target is not None:
-                verified_map, verified_game = verified_target
-                allocation.map_name = desired_map or verified_map
-                if normalized_mode in TANK_GAME_MODE_IDS:
-                    allocation.map_name = verified_map
-                allocation.game_class = verified_game
-            elif desired_map:
-                allocation.map_name = desired_map
-                allocation.game_class = MODE_GAME_CLASSES.get(
-                    normalized_mode, self.config.game_class
-                )
+            resolved_map, resolved_game = resolve_room_target(
+                normalized_mode,
+                normalized_map_id,
+                fallback_map,
+                str(self.config.game_class or "").strip(),
+                game_dir=self.config.game_dir,
+            )
+            if resolved_map:
+                allocation.map_name = resolved_map
+                allocation.game_class = resolved_game
+            elif normalized_mode in MODE_GAME_CLASSES:
+                if not same_target:
+                    allocation.map_name = ""
+                allocation.game_class = resolved_game
+            elif fallback_map:
+                allocation.map_name = fallback_map
+                allocation.game_class = resolved_game
             elif not same_target:
                 # Do not carry a stale cooked world into a different, unresolved
                 # ModeId/MapId pair.  arm_lobby() will fail closed with a precise
                 # diagnostic instead of advertising a dead DS endpoint.
                 allocation.map_name = ""
-                allocation.game_class = MODE_GAME_CLASSES.get(
-                    normalized_mode, self.config.game_class
-                )
+                allocation.game_class = resolved_game
 
             allocation.mode_id = normalized_mode
             allocation.map_id = normalized_map_id
@@ -681,8 +885,9 @@ class DedicatedServerSpawner:
         except Exception:
             return {}
 
-    @staticmethod
-    def _tail_file(path: Path, max_lines: int = 12, max_chars: int = 2600) -> str:
+    def _tail_file(self, path: Path, max_lines: int = 12, max_chars: int = 2600) -> str:
+        if path in self._pipe_tails:
+            return " | ".join(list(self._pipe_tails[path])[-max_lines:])[-max_chars:]
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
@@ -791,8 +996,12 @@ class DedicatedServerSpawner:
                 except FileNotFoundError:
                     pass
 
-            allocation.bridge_log_handle = p["bridge_log"].open("a", encoding="utf-8", buffering=1)
             child_env = os.environ.copy()
+            child_env.update(AF_DS_DIAGNOSTICS_DB=str(self._diagnostics.path.resolve()),
+                AF_DS_DIAGNOSTICS_SESSION=self._diagnostic_session(allocation),
+                AF_DS_DIAGNOSTICS_ROOM=str(allocation.room_id),
+                AF_DS_DIAGNOSTICS_UIN=str(allocation.owner_id))
+            child_env["PYTHONUNBUFFERED"] = "1"
             child_env.setdefault("PYTHONUTF8", "1")
             child_env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
             # AFDEV loader already has the verified r20 PRI.PlayerName writer.
@@ -844,12 +1053,17 @@ class DedicatedServerSpawner:
             allocation.bridge_proc = subprocess.Popen(
                 cmd,
                 cwd=str(self.config.bridge_script.parent),
-                stdout=allocation.bridge_log_handle,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 creationflags=creationflags,
                 env=child_env,
             )
             allocation.bridge_pid = allocation.bridge_proc.pid
+            tail = deque(maxlen=14)
+            self._pipe_tails[p["bridge_log"]] = tail
+            self._pipe_threads[p["bridge_log"]] = capture_pipe(allocation.bridge_proc.stdout,
+                self._diagnostics, self._diagnostic_session(allocation), allocation.room_id,
+                allocation.owner_id, "bridge", tail)
             allocation.armed_at = time.time()
             allocation.state = "ARMED"
             allocation.last_error = None
@@ -1322,6 +1536,16 @@ class DedicatedServerSpawner:
         allocation.bridge_pid = None
         allocation.loader_pid = None
         allocation.afdev_pid = None
+        thread = self._pipe_threads.pop(p["bridge_log"], None)
+        if thread:
+            thread.join(timeout=2)
+        self._pipe_tails.pop(p["bridge_log"], None)
+        try:
+            shutil.rmtree(p["dir"])
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            self._log(f"temporary IPC cleanup failed room={allocation.room_id}: {exc}")
         with self._lock:
             self._write_snapshot_locked()
 
@@ -1366,17 +1590,18 @@ class DedicatedServerSpawner:
 
     def _write_snapshot_locked(self) -> None:
         try:
-            payload = {
-                "updated_at": time.time(),
-                "mode": "bridge_packet_lazy_first_packet_latch_multiplayer_cleanup",
-                "max_instances": self.config.max_instances,
-                "rooms": [self._room_dict(a) for a in self._allocations.values()],
-                "standbys": [],
-            }
-            path = self.config.runtime_dir / "spawner_state.json"
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-            os.replace(tmp, path)
+            for allocation in self._allocations.values():
+                key = self._diagnostic_session(allocation)
+                room = self._room_dict(allocation)
+                version = json.dumps({key: room.get(key) for key in (
+                    'owner_id','owner_nickname','state','mode_id','map_id',
+                    'map_name','game_class','round_generation','last_error',
+                    'room_players','match_players')}, sort_keys=True)
+                if self._diagnostic_snapshots.get(key) == version:
+                    continue
+                self._diagnostics.snapshot(self._diagnostic_session(allocation),
+                    self._room_dict(allocation), allocation.room_players | allocation.match_players | {allocation.owner_id})
+                self._diagnostic_snapshots[key] = version
         except Exception as exc:
             self._log(f"state snapshot write failed: {exc}")
 
@@ -1395,3 +1620,10 @@ class DedicatedServerSpawner:
         with self._lock:
             self._owner_to_room.clear()
             self._write_snapshot_locked()
+        if self.config.runtime_is_temporary:
+            try:
+                shutil.rmtree(self.config.runtime_dir)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                self._log(f"temporary IPC root cleanup failed: {exc}")

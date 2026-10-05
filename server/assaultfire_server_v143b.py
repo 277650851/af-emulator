@@ -46,7 +46,7 @@ from assaultfire_preflight import (
     run_server_preflight,
     update_launch_gate_status,
 )
-from assaultfire_logging import build_logger
+from assaultfire_database_logging import build_logger
 from assaultfire_auth import parse_client_dh_plaintext
 from assaultfire_boot import resolve_private_key_path, server_only_requested
 from player_db import DEFAULT_DB_PATH as PLAYER_DB_PATH, PlayerDatabase, PlayerDBError

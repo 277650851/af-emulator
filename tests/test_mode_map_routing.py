@@ -1,9 +1,12 @@
+import ast
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from server.assaultfire_ds_spawner import (
     AFDEV_MODE_IDS,
     DedicatedServerSpawner,
+    MODE_GAME_CLASSES,
     SpawnerConfig,
     TANK_BATTLE_UI_MODE_ID,
     TANK_SIEGE_MODE_ID,
@@ -14,6 +17,84 @@ from server.assaultfire_ds_spawner import (
 MAPS = [(39, 'Bio-Capital_4_Main', 'TGBioGame'), (60, 'Bio-Maya_6_Main', 'TGBioGame'), (74, 'Bio-Factory_22_Main', 'TGBioGame'), (118, 'Bio-Capital_12_Main', 'TGBioGame'), (122, 'Bio-Maya_7_Main', 'TGBioGame'), (72, 'Bio2-Capital_12_Main', 'TGBio2Game'), (115, 'Bio2-Capital_4_Main', 'TGBio2Game'), (116, 'Bio2-Factory_22_Main', 'TGBio2Game'), (117, 'Bio2-Maya_6_Main', 'TGBio2Game'), (144, 'Bio2-Maya_7_Main', 'TGBio2Game'), (96, 'ATD-Capital_17_Main', 'ATDGame'), (141, 'ATD-Capital_22_B_Main', 'ATDGame')]
 
 class ModeRoutingTests(unittest.TestCase):
+    def setUp(self):
+        # These tests exercise room routing, independently of UDP availability.
+        probe = patch.object(DedicatedServerSpawner, '_udp_port_available', return_value=True)
+        probe.start()
+        self.addCleanup(probe.stop)
+
+    def test_snd_aztec_routes_without_readable_installed_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = Path(td) / 'TGame' / 'Config' / 'DefaultGame.ini'
+            config.parent.mkdir(parents=True)
+            config.write_bytes(b'\xf3\xf3\xf3\xf3opaque retail config')
+            self.assertEqual(
+                resolve_room_target(0x1001, 0x003b, game_dir=td),
+                ('BM-Maya_4_Main', 'UTGame.TGBombMatch'),
+            )
+            spawner = DedicatedServerSpawner(SpawnerConfig(
+                runtime_dir=Path(td) / 'runtime', game_dir=td, create_cooldown=0))
+            room = spawner.reserve_lobby(owner_id=10001, mode_id=0x1001,
+                map_id=59, sub_mode_id=0, max_players=16)
+            self.assertEqual((room.map_name, room.game_class),
+                ('BM-Maya_4_Main', 'UTGame.TGBombMatch'))
+            spawner.shutdown_all()
+
+    def test_all_stock_mode_ids_have_a_native_or_pve_loader_route(self):
+        loader_path = (Path(__file__).resolve().parents[1] / 'tools' / 'server_spawner'
+                       / 'AFDevLoader_v48_spawner_multi_instance.py')
+        tree = ast.parse(loader_path.read_text(encoding='utf-8'))
+        names_node = next(
+            node.value for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name)
+                    and target.id == 'NATIVE_GAME_MODE_NAMES'
+                    for target in node.targets)
+        )
+        native_modes = set(ast.literal_eval(names_node))
+        explicit_settings_modes = {
+            0x00002001, 0x00002002, 0x00002005,
+            0x00000203, 0x00000204, 0x00000206, 0x00000209,
+        }
+        self.assertEqual(set(MODE_GAME_CLASSES), native_modes | explicit_settings_modes)
+        self.assertEqual(AFDEV_MODE_IDS, set(MODE_GAME_CLASSES) | {TANK_BATTLE_UI_MODE_ID})
+
+    def test_installed_catalog_routes_native_maps_and_duplicate_if2_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            game_dir = Path(td) / 'Binaries' / 'Win32'
+            config = Path(td) / 'TGame' / 'Config' / 'DefaultGame.ini'
+            config.parent.mkdir(parents=True)
+            config.write_bytes('\n'.join((
+                '+GameModeSettings=(ModeName="UTGame.TGTeamMatch",ModeId=4098)',
+                '+GameModeSettings=(ModeName="PVEGame.TGIFGame",ModeId=8194)',
+                '+GameModeSettings=(ModeName="TGIFGame.TGIF2Game",ModeId=8194)',
+                '+GameModeSettings=(ModeName="PVEGame.TGCrazyTeamMatch",ModeId=517)',
+                '+GameModeSettings=(ModeName="PVEGame.TGMechaHumanMatch",ModeId=513)',
+                '+GameMapSettings=(MapId=107,MapName="TM-Factory_28_Main")',
+                '+GameMapSettings=(MapId=95,MapName="IF2-Factory_83_main")',
+                '+GameMapSettings=(MapId=35,MapName="CTM-Seashore_6_Main")',
+                '+GameMapSettings=(MapId=25,MapName="Canyon_Main")',
+                '+DefaultMapPrefixes=(Prefix="IF",GameType="PVEGame.TGIFGame")',
+                '+DefaultMapPrefixes=(Prefix="IF2",GameType="TGIFGame.TGIF2Game")',
+            )).encode('utf-16'))
+
+            self.assertEqual(
+                resolve_room_target(0x1002, 107, game_dir=str(game_dir)),
+                ('TM-Factory_28_Main', 'UTGame.TGTeamMatch'),
+            )
+            self.assertEqual(
+                resolve_room_target(0x2002, 95, game_dir=str(game_dir)),
+                ('IF2-Factory_83_main', 'TGIFGame.TGIF2Game'),
+            )
+            self.assertEqual(
+                resolve_room_target(0x205, 35, game_dir=str(game_dir)),
+                ('CTM-Seashore_6_Main', 'PVEGame.TGCrazyTeamMatch'),
+            )
+            self.assertEqual(
+                resolve_room_target(0x201, 25, game_dir=str(game_dir)),
+                ('MHM-Canyon_Main', 'PVEGame.TGMechaHumanMatch'),
+            )
+
     def test_every_uploaded_catalog_target_routes_to_its_family(self):
         modes = {'TGBioGame': (0x204, 'TGBioMatch'),
                  'TGBio2Game': (0x209, 'TGBio2Match'),
@@ -86,6 +167,8 @@ class ModeRoutingTests(unittest.TestCase):
                   / 'AFDevLoader_v48_spawner_multi_instance.py').read_text(encoding='utf-8')
         self.assertIn('elif int(args.mode_id) in TANK_GAME_MODE_IDS:', loader)
         self.assertIn('[AFDEV-TANK] Native TGTankGame startup', loader)
+        self.assertIn('elif int(args.mode_id) in NATIVE_GAME_MODE_IDS:', loader)
+        self.assertIn('[AFDEV-NATIVE-MODE]', loader)
 
 
 if __name__=='__main__':unittest.main()
