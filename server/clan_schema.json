@@ -2272,6 +2272,84 @@
         "nested": null,
         "count_field": null
       }
+    ],
+    "C2ZN_ReqDismissClan": [
+      {
+        "name": "Uin",
+        "type": 12,
+        "element_size": 8,
+        "capacity": 1,
+        "string_capacity": 0,
+        "nested": null,
+        "count_field": null
+      },
+      {
+        "name": "SafeCode",
+        "type": 21,
+        "element_size": 1,
+        "capacity": 1,
+        "string_capacity": 12,
+        "nested": null,
+        "count_field": null
+      }
+    ],
+    "ZN2C_ResDismissClan": [
+      {
+        "name": "ErrorCode",
+        "type": 7,
+        "element_size": 4,
+        "capacity": 1,
+        "string_capacity": 0,
+        "nested": null,
+        "count_field": null
+      }
+    ],
+    "ZN2C_NtfRefreshPlayer": [
+      {
+        "name": "OfflineMsgId",
+        "type": 12,
+        "element_size": 8,
+        "capacity": 1,
+        "string_capacity": 0,
+        "nested": null,
+        "count_field": null
+      },
+      {
+        "name": "PlayerInfoA",
+        "type": 1,
+        "element_size": 116,
+        "capacity": 1,
+        "string_capacity": 0,
+        "nested": "ClanPlayer",
+        "count_field": null
+      },
+      {
+        "name": "PlayerInfoB",
+        "type": 1,
+        "element_size": 116,
+        "capacity": 1,
+        "string_capacity": 0,
+        "nested": "ClanPlayer",
+        "count_field": null
+      },
+      {
+        "name": "RefreshType",
+        "type": 3,
+        "element_size": 1,
+        "capacity": 1,
+        "string_capacity": 0,
+        "nested": null,
+        "count_field": null
+      },
+      {
+        "name": "Extend",
+        "type": 21,
+        "element_size": 1,
+        "capacity": 1,
+        "string_capacity": 128,
+        "nested": null,
+        "count_field": null
+      }
     ]
   }
 }

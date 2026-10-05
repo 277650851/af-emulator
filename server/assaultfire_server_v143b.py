@@ -142,6 +142,7 @@ V139_WIRE_BINDINGS += (
     {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_InvitePlayerJoin', 'cmd': 45099, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan metadata', 'implemented': True},
     {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_PromotionMember', 'cmd': 45088, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan metadata', 'implemented': True},
     {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_DemotionMember', 'cmd': 45090, 'status': 'CURRENT_PARTIAL', 'source': 'PH proto_c2zn.tdr clan metadata', 'implemented': True},
+    {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_DissolveTeam', 'cmd': 0xB039, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture and TDR schema', 'implemented': True},
     {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_ExtendTeam', 'cmd': 0xB025, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
     {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_GetBulletin', 'cmd': 0xB02D, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
     {'owner': 'TGOnlineTeamRoom', 'name': 'OnlineRequest_SetBulletin', 'cmd': 0xB02F, 'status': 'CURRENT_PARTIAL', 'source': 'October 5 PH capture + metalib', 'implemented': True},
@@ -6659,8 +6660,10 @@ def _clan_dispatch(conn, key, app, session_uin, label):
     replies, affected = CLAN_SERVICE.handle(app['cmd'], app['body'], int(session_uin or 0))
     # Badge purchases debit SQLite directly, atomically with the grant. Refresh
     # the mall working set before any later inventory save can restore old funds.
-    if app['cmd'] == 0xB04A and int(session_uin or 0) in affected:
+    if app['cmd'] in (0xB04A, 0xB025) and int(session_uin or 0) in affected:
         _V140_PLAYER_STATE.reload(int(session_uin))
+        if app['cmd'] == 0xB025:
+            _v140_send_wallet_sync(conn, key, label, reason=0, prefix='clan expansion')
     for cmd, body in replies:
         _v48_send_app(conn, key, _v62_build_server_app(TGAME_ZN_MAGIC, cmd, body), label,
                       f'CLAN response cmd=0x{cmd:04X} uin={session_uin}')
@@ -6677,6 +6680,10 @@ def _clan_dispatch(conn, key, app, session_uin, label):
             for update_cmd, update_body in CLAN_SERVICE.refresh_replies(uin):
                 packet = _v62_build_server_app(TGAME_ZN_MAGIC, update_cmd, update_body)
                 _v150_send_online(uin, packet, f'CLAN menu refresh cmd=0x{update_cmd:04X}')
+        elif app['cmd'] == 0xB039:
+            for update_cmd, update_body in CLAN_SERVICE.disband_replies(uin):
+                packet = _v62_build_server_app(TGAME_ZN_MAGIC, update_cmd, update_body)
+                _v150_send_online(uin, packet, f'CLAN disband refresh cmd=0x{update_cmd:04X}')
 
 
 def _v48_build_empty_playerprops(seq):

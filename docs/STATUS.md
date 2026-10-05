@@ -43,7 +43,7 @@ Experimental or unverified work is excluded from `main` until it is reproducibly
 | Room create/list behavior | ✅ | Core two-client create/list/join/leave/ready/camp-switch behavior is live-verified. Stock A103 room entry, shared A105/A106 state, cleanup/owner transfer, and the With32 sparse camp-seat layout are integrated. Larger-scale production policy remains separate. |
 | Friends | 🟡 | v143b includes A303-A30A foundation and a local test friend path; real two-client persisted social behavior belongs to later experimental work and is not part of the public baseline. |
 | Private chat | 🟡 | v143b uses a LocalFriend echo/test path. Real friend-to-friend online/offline delivery is not part of this stable baseline. |
-| Clans | 🟡 | Persistent creation, rosters, announcements, expansion, catalog badge purchases/defaults/equipment and invitations are integrated. Creation, expansion, badge setting and invitations confirmed in-game; dynamic appointments await live confirmation. See [CLANS.md](CLANS.md). |
+| Clans | 🟡 | Persistent creation, rosters, announcements, expansion, catalog badge purchases/defaults/equipment and invitations are integrated. Creation, expansion, badge setting and invitations confirmed in-game; dynamic appointments, immediate disband and paid expansion are implemented with live confirmation pending. See [CLANS.md](CLANS.md). |
 | Inventory/equipment | 🟡 | The stable profile/property path works, but not every item/equipment/UI edge case is verified. |
 | Match allocation / capacity policy | 🟡 | The stock A10A/A11A handoff and lazy per-room DS path are integrated, but production-grade pooling, capacity policy, abuse limits, and large-scale multi-host orchestration still need work. |
 | Legacy kernel security-driver compatibility | 🟡 | The original client security driver can cause startup/crash problems on modern Windows independently of the emulator. Track separately in Issue #4; system-level changes are outside the supported emulator implementation. |
@@ -61,7 +61,7 @@ Experimental or unverified work is excluded from `main` until it is reproducibly
 | New-account starter inventory/profile lifecycle | 🔴 | Depends on the experimental account-creation work and is intentionally excluded. |
 | Real multi-account login lifecycle | 🟡 | Native AP login now verifies the registered account's password token and uses its SQLite UIN. Full multi-account game-session and inventory isolation still needs end-to-end validation. |
 | Real two-client friends/private chat | 🔴 | Not included in v143b; later work still needs proper stock-client validation before promotion. |
-| Full clan UI/detail/member rendering | 🟡 | Metadata-based detail/roster responses and reopen refresh are integrated. Captain transfer, dissolution, named groups, offline notifications and progression remain pending. |
+| Full clan UI/detail/member rendering | 🟡 | Metadata-based detail/roster responses and reopen refresh are integrated. Immediate disband clears all members; captain transfer, named groups, offline notifications and progression remain pending. |
 | Survival enemy/round backend lifecycle | 🔴 | Not implemented as a complete public stable backend. |
 | Full match start → gameplay → result lifecycle | 🔴 | Not complete in v143b. |
 | Match history / ranking / player-card stock UI | 🔴 | Later backend experiments exist, but exact retail-client wire/UI integration is not part of v143b. |
@@ -79,7 +79,7 @@ These are good contribution targets:
 2. **Tests** — add unit tests and sanitized packet fixtures for VERSION, AUTH, DIR, ROLE, and ZONE behavior.
 3. **PvE result/reward lifecycle** — recover authoritative completion plus the stock results/rewards presentation for every supported stock-selected PvE map, then award/persist EXP/AP exactly once.
 4. **Two-client social verification** — implement and verify friends, presence, friend requests, private chat, and reconnect behavior without depending on the broken first-login work.
-5. **Clan completion** — confirm promotion/demotion in the PH client, then finish captain transfer, dissolution, offline notifications and progression.
+5. **Clan completion** — confirm promotion/demotion in the PH client, confirm disband/paid expansion, then finish captain transfer, offline notifications and progression.
 6. **Existing-account persistence cleanup** — make stable existing-profile persistence easier to configure and test.
 7. **PvE lifecycle follow-up** — current priority: authoritative round completion, reward calculation/persistence, and stock client result/reward UI now that the lobby/room and generic DS handoff paths are integrated.
 8. **Dedicated-server scaling and capacity controls** — harden DS pooling, capacity rejection, one-lobby-per-player rules, rate limits, idempotency, and multi-host orchestration.

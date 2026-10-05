@@ -633,6 +633,21 @@ class ClanDatabase:
             self._audit(c, member['clan_id'], actor, target, 'kick')
             return member['clan_id']
 
+    def disband(self, actor, safe_code):
+        """Immediately dissolve the actor's clan and return its former members."""
+        with self.transaction() as c:
+            manager = self._membership(c, actor, captain=True)
+            cid = manager['clan_id']
+            if not self.verify_safe_code(cid, safe_code):
+                raise ClanDBError('invalid SafeCode', 0x101A)
+            members = [r['uin'] for r in c.execute(
+                'SELECT uin FROM clan_members WHERE clan_id=?', (cid,))]
+            self._audit(c, cid, actor, None, 'disband')
+            # All clan-owned tables have ON DELETE CASCADE; account profiles,
+            # wallets and the independent audit history remain intact.
+            c.execute('DELETE FROM clans WHERE clan_id=?', (cid,))
+            return members
+
     def set_member_role(self, actor, target, role):
         """Persist an appointment for any non-captain member of this clan."""
         if role not in ('vicecaptain', 'instructor', 'player',
@@ -690,8 +705,21 @@ class ClanDatabase:
                             (member['clan_id'],)).fetchone()[0]
             if not old <= maximum <= self.MAX_EXPANDED_MEMBERS:
                 raise ClanDBError('invalid expansion size')
-            # Emulator policy: expansion is free until stock pricing is recovered.
-            # Repeating the same target never charges or changes membership.
+            if maximum == old:
+                return member['clan_id']
+            # Stock UI: 471 -> 764 quotes 2930 AP, i.e. 10 AP per new seat.
+            cost = (maximum - old) * 10
+            wallet = c.execute('SELECT ap FROM player_wallets WHERE uin=?',
+                               (actor,)).fetchone()
+            if wallet is None or wallet['ap'] < cost:
+                raise ClanDBError('insufficient expansion AP', 0x820B)
+            now = _utc_now()
+            c.execute('UPDATE player_wallets SET ap=ap-?,updated_at=? WHERE uin=?',
+                      (cost, now, actor))
+            c.execute('INSERT INTO player_moneyflow(uin,occurred_at,money_type,number,current_balance,'
+                      'reason,details,commodity_ids,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                      (actor, int(time.time()), 1, -cost, wallet['ap']-cost, 8,
+                       f'clan expansion {old}->{maximum}', '[]', now))
             c.execute('UPDATE clans SET max_members=?, updated_at=? WHERE clan_id=?',
                       (maximum, _utc_now(), member['clan_id']))
             if maximum != old:

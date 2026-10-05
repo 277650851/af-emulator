@@ -33,6 +33,7 @@ creation IDs are not aliases: PH creation uses B001/B002.
 | B02B | B02C + B01C to recipient | Invite an online player |
 | B017 | B018 | Accept/decline invitation |
 | B020 / B022 | B021 / B023 | Promote/demote selected member |
+| B039 | B03A + B01D | Immediately disband the captain's clan |
 | B01E | B01F | Remove member with SafeCode |
 | B024 | B08E | Leave clan |
 | B025 | B026 | Expand capacity |
@@ -103,9 +104,8 @@ Invitations and appointments validate recipient membership and clan scope
 inside their transactions. Online members receive fresh profiles/menu state
 after clan changes; offline players receive their stored membership at login.
 
-Creation and expansion are free emulator policies because stock fees have
-not been recovered. Initial capacity is 20, maximum expansion is 1,000.
-Clan progression, captain transfer, dissolution, named groups, offline
+Creation is free; expansion costs 10 AP per added member slot. Initial capacity is 20, maximum expansion is 1,000.
+Clan progression, captain transfer, named groups, offline
 notification delivery, clan chat, rewards, warehouses, timed badges and
 renewal remain pending. Other operation permissions still require the captain;
 full delegation by rank has not been implemented.
@@ -113,3 +113,37 @@ full delegation by rank has not been implemented.
 No new tests were added or run for this public integration, as requested.
 Python syntax and JSON parsing were checked. Prior badge development had
 local checks; they do not establish live acceptance of appointments.
+
+## Immediate disband (v11)
+
+The captured B039 request contains Uin:u64 and SafeCode:TDR string (capacity
+12). B03A contains ErrorCode:i32, with 0x9000 success. The captain's session
+and persisted SafeCode are validated before removal; invalid credentials
+return 0x101A. The operation runs inside one database transaction and captures
+all former member UINs before deleting the clan. Foreign-key cascades delete
+membership, badge ownership, join applications and invitations. Independent
+account profiles, wallets and audit history are preserved.
+
+This emulator implements immediate dissolution, rather than a cancellation
+window. B03B cancellation is not implemented. After B03A, online former
+members receive PlayerInfo with ClanID=0, B01D RefreshType=11
+(ECLANPLAYERREFRESH_CLANDISMISS), and an empty complete roster. Offline former
+members receive ClanID=0 at login. No refunds are issued for purchased badges.
+The updater patches only the existing clan refresh branch and generic
+credential redaction in the local main server, preserving unrelated changes.
+No tests were added or run; Python syntax and JSON parsing were checked.
+Live disband UI validation remains pending.
+
+## Dynamic paid expansion (v12)
+
+B025 supplies the requested total capacity, not an increment. The October 5
+screenshot quotes 2930 AP for 471 -> 764: 10 AP per added slot. The server
+computes `(requested_total - stored_capacity) * 10` for the authenticated
+captain's own clan. No fixed UIN, clan ID or capacity is used. Capacity must
+not shrink or exceed 1000; a repeat of the stored total succeeds without a
+second charge. Insufficient AP leaves both capacity and wallet unchanged.
+Wallet debit, capacity update and moneyflow/audit records commit atomically.
+The local main server reloads the buyer's wallet cache and sends native wallet
+updates after expansion, followed by the existing clan refresh. Previous
+free expansions are retained and are not charged retroactively.
+No tests were added or run; Python syntax was checked.

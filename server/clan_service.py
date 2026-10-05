@@ -38,6 +38,7 @@ COMMANDS = {
     0xB02B: ('C2ZN_ReqInviteJoin', 0xB02C, 'ZN2C_ResInviteJoin'),
     0xB02D: ('C2ZN_ReqClanPost', 0xB02E, 'ZN2C_ResClanPost'),
     0xB02F: ('C2ZN_ReqUpdateClanPost', 0xB030, 'ZN2C_ResUpdateClanPost'),
+    0xB039: ('C2ZN_ReqDismissClan', 0xB03A, 'ZN2C_ResDismissClan'),
     0xB04A: ('C2ZN_ReqBuyClanBadge', 0xB04B, 'ZN2C_ResBuyClanBadge'),
     0xB04E: ('C2ZN_ReqSetClanBadge', 0xB04F, 'ZN2C_ResSetClanBadge'),
     0xB050: ('C2ZN_ReqClanBadge', 0xB049, 'ZN2C_NtfClanBadgeProps'),
@@ -118,6 +119,15 @@ class ClanService:
                 (0xB02E, encode('ZN2C_ResClanPost', {'Result': SUCCESS, 'PostCount': 1, 'Post': [clan['notice']]})),
                 (0xB049, encode('ZN2C_NtfClanBadgeProps', self._badge_values(clan)))]
 
+    def disband_replies(self, actor):
+        """Clear the stock clan cache after the success reply and ClanID=0."""
+        return [(0xB01D, encode('ZN2C_NtfRefreshPlayer', {
+                    'PlayerInfoA': {'Uin': actor}, 'PlayerInfoB': {'Uin': actor},
+                    'RefreshType': 11})),
+                (0xB00C, encode('ZN2C_ResClanMembers', {
+                    'Result': SUCCESS, 'IsAll': 1, 'TotalCount': 0,
+                    'PackageFlag': 3, 'MemberInfo': self._members([])}))]
+
     def handle(self, cmd, body, actor):
         """Return replies and UINs whose membership/roster projection changed.
 
@@ -127,7 +137,7 @@ class ClanService:
         """
         req_name, res_cmd, res_name = COMMANDS[cmd]
         req, response, affected = {}, {}, set()
-        result_field = 'ErrorCode' if cmd == 0xB02B else 'Result'
+        result_field = 'ErrorCode' if cmd in (0xB02B, 0xB039) else 'Result'
         result_code = SUCCESS
         replies = []
         try:
@@ -253,6 +263,8 @@ class ClanService:
                     raise ClanDBError('invalid appointment role', 0x1004)
                 cid = self.db.set_member_role(actor, req['ObjUin'], role)
                 affected.update(r['uin'] for r in self.db.list_clan_members(cid))
+            elif cmd == 0xB039:
+                affected.update(self.db.disband(actor, req['SafeCode']))
             elif cmd == 0xB080:
                 cid = self.db.update_introduction(actor, req['Introduction'])
                 response['Introduction'] = req['Introduction']
