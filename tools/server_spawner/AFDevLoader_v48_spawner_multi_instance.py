@@ -6647,6 +6647,10 @@ def main():
                             permanent = (
                                 "unsupported AFDEV ModeId" in msg
                                 or "unsupported PvE SubModeId" in msg
+                                # A failed injected FName call may still be
+                                # executing. Restart the whole AFDEV process
+                                # instead of retrying injection into it.
+                                or "FName(" in msg
                             )
                             if permanent or not process_alive(pi.hProcess):
                                 raise
