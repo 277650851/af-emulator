@@ -1,55 +1,69 @@
-# Stock item icon catalog audit
+# Item and Mall icon audit
 
-The item catalog stores an icon ID for each inventory item. This audit checks
-those IDs against numeric Unreal package name-table entries and cross-checks
-single-item commodity entries against the item's inventory icon ID.
+`repair_item_icon_catalog.py` reads the encrypted item and commodity catalogs,
+scans Unreal package name tables, and writes one CSV covering every catalog
+row. It derives routine repairs from the catalogs and scanned assets instead
+of keeping a fixed list of item IDs.
 
-For the supplied PH 1.0.0.24 files, the audit found 511 item rows and 471
-unique nonzero icon IDs across `DefaultItemLibrary.ini`. Of 433 items with a
-direct single-item commodity entry, 432 matched and one icon ID disagreed. The
-CSV records the supplied catalogs before the proposed changes. The confirmed
-test changes are:
+The supplied files contain 563 `RawItemDatas` rows and 517
+`RawCommodityDatas` Mall rows, for 1,080 audit rows. The item file has 511
+`nItemIconID` fields and 52 model-part rows without that field. The attached
+commodity file adds 93 GP rows over its 424-row `.bak` copy. Among 433
+single-item commodity rows linked to items in `DefaultItemLibrary.ini`, 432
+share the item icon ID and one differs.
 
-| Item ID | Existing icon | Test icon | Evidence |
-| ---: | ---: | ---: | --- |
-| 100026 (default backpack) | 1000006 | 3000026 | `1000006` is absent from supplied `TG_Shop.upk`; `3000026` is present and is the No. 3 Backpack graphic. Both the item and its direct shop commodity entry are updated to keep them aligned. |
-| 110004 (`SCAR_PHL`) | 3010004 | 3010006 | The direct commodity entry for item 110004 uses `3010006`, which exists in the shop package. |
+## Repair rules
 
-The backpack test image visibly has a green “3”, because the available stock
-graphic belongs to No. 3 Backpack. This is an explicit visual tradeoff while
-the original generic icon asset is absent from the supplied package.
+For each item whose icon is zero or absent from scanned packages, the tool
+checks its single-item commodity rows. It proposes a data-derived repair only
+when those rows agree on one nonzero icon ID and that icon exists in a scanned
+package. Bundles are excluded. Existing item icons are left alone even if a
+shop commodity uses another icon, since shop artwork can intentionally differ
+from inventory artwork.
 
-The original package scan found 11 referenced IDs not present in the uploaded
-shop/UI package name tables. The proposed two item fixes use IDs that are
-present, leaving these nine unresolved: `1000021`, `1000022`, `1000023`,
-`1000041`, `1000042`, `3000294`, `3000501`, `3000601`, and `3000607`. Their
-correct replacement images were not established, so the repair tool leaves
-them alone. Some may live in other packages; absence from these three files is
-not proof that the full client lacks a matching texture.
+The supplied catalogs produce one data-derived repair: `SCAR_PHL` item
+`110004` points to missing icon `3010004`, while its unique direct commodity
+uses available icon `3010006`.
 
-The CSV checks all 511 item rows for numeric icon-name presence in the three
-provided packages and compares direct single-item commodity mappings. It is a
-catalog consistency audit, not a visual review of every rendered icon. Rows
-with icon ID zero and items without a direct commodity row are called out
-separately.
+The default backpack needs one reviewed fallback. Both its item row and direct
+commodity row point to missing icon `1000006`, so those catalogs cannot infer a
+replacement from one another. The available stock image `3000026` is the No. 3
+Backpack graphic. The tool updates both references to it; the image shows a
+green “3”.
+
+The three supplied shop/UI packages have 45 distinct Mall icon IDs that are
+not found in their name tables. Forty belong to badge borders, backgrounds,
+and insignia (`3000032`–`3000061` and `3000221`–`3000230`); these may be in the
+separate badge packages. The other five are on newly added GP Mall rows. The
+normal game-root scan also checks `TG_TeamBadge.upk`, `TG_TeamBadgeAvatar.upk`,
+`TG_RankIcons.upk`, and other known UI packages. Missing from the three
+uploaded packages does not prove the installed client lacks an icon.
+
+The CSV reports icon presence and item/commodity relationships for all 1,080
+rows. It does not visually confirm every rendered texture. Rows without an
+icon field and bundles are labeled separately.
 
 ## Test the change
 
-Preview and generate the audit CSV:
+Preview against the installed catalogs and generate the audit CSV:
 
 ```powershell
 py -3.12 .\tools\patches\repair_item_icon_catalog.py --game-root "D:\AssaultFirePH - Copy"
 ```
 
-After reviewing the preview, apply the two item corrections and the aligned
-backpack commodity correction:
+To audit an alternate commodity catalog such as the attached patched copy,
+pass it explicitly:
+
+```powershell
+py -3.12 .\tools\patches\repair_item_icon_catalog.py --game-root "D:\AssaultFirePH - Copy" --commodities "D:\AssaultFirePH - Copy\TGame\CookedPC\Config\DefaultCommodityLibrary(4).ini" --audit-only
+```
+
+Apply after checking the preview:
 
 ```powershell
 py -3.12 .\tools\patches\repair_item_icon_catalog.py --game-root "D:\AssaultFirePH - Copy" --apply
 ```
 
-The tool backs up both `DefaultItemLibrary.ini` and
-`DefaultCommodityLibrary.ini` before writing, and restores the original files
-if either write or verification fails. Restart `TGame` to reload the catalogs.
-Python package `cryptography` is required for the game's AES-wrapped config
-format.
+The tool makes timestamped backups of both encrypted catalogs and restores
+the originals if either write fails verification. Restart `TGame` to reload
+the catalogs. Python package `cryptography` is required.

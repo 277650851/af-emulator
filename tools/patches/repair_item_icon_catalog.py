@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Audit and repair confirmed stock Assault Fire PH item-icon catalog errors.
+"""Audit and repair item icons using the live item and commodity catalogs.
 
-The tool previews by default. It edits only the guarded fields listed in
-ITEM_FIXES and COMMODITY_FIXES, verifies each replacement icon exists in a
-scanned Unreal package, preserves both catalog encodings, and keeps timestamped
-backups before applying changes.
+The tool previews by default. It scans every RawItemDatas row, derives safe
+repairs from unique single-item commodity entries whose icon exists in the
+scanned Unreal packages, and keeps a small reviewed fallback for the backpack
+whose item and commodity rows both point to a missing icon.
 """
 
 from __future__ import annotations
@@ -23,33 +23,16 @@ import zlib
 MAGIC = bytes.fromhex("f3f3f3f3")
 AES_KEY = bytes.fromhex("5447414d451fe92c9a971a0cd1f610fb")
 
-# Each item change is guarded by the exact stock value observed in the decoded
-# DefaultItemLibrary.ini. The backpack graphic is an existing No. 3 bag image,
-# so it removes the Img: placeholder but displays a green 3 on that card.
-ITEM_FIXES = (
+# Most repairs are generated from DefaultCommodityLibrary.ini. This fallback
+# is separate because both catalogs agree on 1000006, but that ID is absent
+# from the supplied packages; 3000026 is the visually verified No. 3 bag image.
+# Match by item name and old icon so the rest of the catalog remains data-driven.
+MANUAL_ICON_FALLBACKS = (
     {
-        "item_id": 100026,
+        "item_name": "Package",
         "expected_icon_id": 1000006,
         "replacement_icon_id": 3000026,
-        "reason": "1000006 is absent from TG_Shop; 3000026 is the existing No. 3 Backpack icon",
-    },
-    {
-        "item_id": 110004,
-        "expected_icon_id": 3010004,
-        "replacement_icon_id": 3010006,
-        "reason": "direct commodity entry for item 110004 uses icon 3010006",
-    },
-)
-
-# Keep the backpack's shop/commodity card on the same available icon as its
-# inventory entry. This is the one direct commodity row for item 100026.
-COMMODITY_FIXES = (
-    {
-        "commodity_id": 1000026,
-        "item_id": 100026,
-        "expected_icon_id": 1000006,
-        "replacement_icon_id": 3000026,
-        "reason": "keep the default backpack shop icon aligned with its inventory icon",
+        "reason": "reviewed fallback: existing No. 3 Backpack image",
     },
 )
 
@@ -107,33 +90,94 @@ def fields(row: bytes) -> dict[str, str]:
 
 def parse_items(raw: bytes) -> list[dict[str, object]]:
     text, _, _ = decode_text(raw)
-    rows = []
+    rows: list[dict[str, object]] = []
     encoded = text.encode("gbk", errors="replace")
     for match in ITEM_ROW.finditer(encoded):
         data = fields(match.group(1))
-        if "nItemID" not in data or "nItemIconID" not in data:
+        if "nItemID" not in data:
             continue
         rows.append({
             "item_id": int(data["nItemID"]),
             "item_name": data.get("ItemName", ""),
-            "icon_id": int(data["nItemIconID"]),
+            "icon_id": int(data["nItemIconID"]) if "nItemIconID" in data else None,
+        })
+    return rows
+
+
+def parse_commodity_rows(raw: bytes) -> list[dict[str, object]]:
+    """Return every commodity row, preserving multi-item bundles as such."""
+    text, _, _ = decode_text(raw)
+    encoded = text.encode("gbk", errors="replace")
+    rows: list[dict[str, object]] = []
+    for match in COMMODITY_ROW.finditer(encoded):
+        row = match.group(1)
+        data = fields(row)
+        if "nCommodityID" not in data or "IconID" not in data:
+            continue
+        array = re.search(rb"\bnItemIDArray=\(([^)]*)\)", row)
+        item_ids = [int(value) for value in re.findall(rb"\d+", array.group(1))] if array else []
+        rows.append({
+            "commodity_id": int(data["nCommodityID"]),
+            "commodity_name": data.get("sItemName", ""),
+            "icon_id": int(data["IconID"]),
+            "item_ids": item_ids,
         })
     return rows
 
 
 def parse_direct_commodities(raw: bytes) -> dict[int, set[int]]:
-    text, _, _ = decode_text(raw)
-    encoded = text.encode("gbk", errors="replace")
     direct: dict[int, set[int]] = {}
-    for match in COMMODITY_ROW.finditer(encoded):
-        row = match.group(1)
-        data = fields(row)
-        array = re.search(rb"\bnItemIDArray=\(([^)]*)\)", row)
-        raw_items = re.findall(r"\d+", array.group(1).decode("ascii", errors="ignore")) if array else []
-        if len(raw_items) != 1 or "IconID" not in data:
+    for row in parse_commodity_rows(raw):
+        item_ids = row["item_ids"]
+        if len(item_ids) != 1:
             continue
-        direct.setdefault(int(raw_items[0]), set()).add(int(data["IconID"]))
+        direct.setdefault(int(item_ids[0]), set()).add(int(row["icon_id"]))
     return direct
+
+
+def derive_icon_repairs(
+    item_raw: bytes,
+    commodity_raw: bytes | None,
+    asset_ids: set[int],
+) -> dict[int, dict[str, object]]:
+    """Build safe, data-derived repair candidates for all item rows.
+
+    An automatic candidate requires a single distinct icon ID across that
+    item's single-item commodity rows, and that icon must exist in a scanned
+    package. Bundle icons never participate. If both catalogs point at the
+    same absent image, only an explicit reviewed fallback can resolve it.
+    """
+    direct = parse_direct_commodities(commodity_raw) if commodity_raw else {}
+    repairs: dict[int, dict[str, object]] = {}
+    for item in parse_items(item_raw):
+        item_id = int(item["item_id"])
+        current = item["icon_id"]
+        if current is None or (int(current) != 0 and int(current) in asset_ids):
+            continue
+
+        direct_ids = direct.get(item_id, set())
+        available = {icon for icon in direct_ids if icon != 0 and icon in asset_ids}
+        if len(direct_ids) == 1 and len(available) == 1:
+            target = next(iter(available))
+            if target != current:
+                repairs[item_id] = {
+                    "expected_icon_id": current,
+                    "replacement_icon_id": target,
+                    "source": "unique direct single-item commodity icon present in scanned packages",
+                }
+                continue
+
+        for fallback in MANUAL_ICON_FALLBACKS:
+            if (item["item_name"] == fallback["item_name"]
+                    and current == fallback["expected_icon_id"]
+                    and fallback["replacement_icon_id"] in asset_ids):
+                repairs[item_id] = {
+                    "expected_icon_id": current,
+                    "replacement_icon_id": fallback["replacement_icon_id"],
+                    "source": fallback["reason"],
+                }
+                break
+    return repairs
 
 
 def package_numeric_names(path: Path) -> set[int]:
@@ -186,7 +230,12 @@ def find_assets(root: Path, extra: list[Path]) -> list[Path]:
     return result
 
 
-def apply_confirmed_fixes(raw: bytes, asset_ids: set[int]) -> tuple[bytes, list[str]]:
+def apply_dynamic_item_repairs(
+    raw: bytes,
+    repairs: dict[int, dict[str, object]],
+    asset_ids: set[int],
+) -> tuple[bytes, list[str]]:
+    """Apply generated repairs after checking every target still matches its source value."""
     text, encoding, bom = decode_text(raw)
     changes = []
     seen = set()
@@ -201,47 +250,48 @@ def apply_confirmed_fixes(raw: bytes, asset_ids: set[int]) -> tuple[bytes, list[
         if "nItemID" not in data:
             continue
         item_id = int(data["nItemID"])
-        fix = next((entry for entry in ITEM_FIXES if entry["item_id"] == item_id), None)
-        if fix is None:
+        repair = repairs.get(item_id)
+        if repair is None or "nItemIconID" not in data:
             continue
         seen.add(item_id)
+        old_icon = int(repair["expected_icon_id"])
+        new_icon = int(repair["replacement_icon_id"])
         icon_id = int(data["nItemIconID"])
-        if icon_id == fix["replacement_icon_id"]:
+        if icon_id == new_icon:
             continue
-        if icon_id != fix["expected_icon_id"]:
+        if icon_id != old_icon:
             raise ValueError(
-                f"Item {item_id} has icon {icon_id}; expected {fix['expected_icon_id']} "
-                f"or already-fixed {fix['replacement_icon_id']}. Refusing to overwrite local edits."
+                f"Item {item_id} now has icon {icon_id}; expected {old_icon} or already-fixed "
+                f"{new_icon}. Refusing to overwrite local edits."
             )
-        if fix["replacement_icon_id"] not in asset_ids:
-            raise ValueError(
-                f"Replacement icon {fix['replacement_icon_id']} was not found in scanned packages"
-            )
+        if new_icon not in asset_ids:
+            raise ValueError(f"Replacement icon {new_icon} was not found in scanned packages")
         new_line = re.sub(
-            rf"(\bnItemIconID=){fix['expected_icon_id']}\b",
-            rf"\g<1>{fix['replacement_icon_id']}",
+            rf"(\bnItemIconID=){old_icon}\b",
+            rf"\g<1>{new_icon}",
             line,
             count=1,
         )
         if new_line == line:
             raise ValueError(f"Could not replace icon field for item {item_id}")
         lines[index] = new_line
-        changes.append(
-            f"item {item_id}: {fix['expected_icon_id']} -> {fix['replacement_icon_id']}"
-        )
-    missing_rows = {fix["item_id"] for fix in ITEM_FIXES} - seen
-    if missing_rows:
-        raise ValueError(f"Expected catalog rows are missing for items: {sorted(missing_rows)}")
+        changes.append(f"item {item_id}: {old_icon} -> {new_icon} ({repair['source']})")
     if not changes:
         return raw, []
+    missing_repairs = set(repairs) - seen
+    if missing_repairs:
+        raise ValueError(f"Expected item rows are missing for repairs: {sorted(missing_repairs)}")
     return bom + "".join(lines).encode(encoding), changes
 
 
-def apply_confirmed_commodity_fixes(raw: bytes, asset_ids: set[int]) -> tuple[bytes, list[str]]:
-    """Patch only the confirmed direct commodity row, guarded by ID and item list."""
+def align_direct_commodity_icons(
+    raw: bytes,
+    repairs: dict[int, dict[str, object]],
+    asset_ids: set[int],
+) -> tuple[bytes, list[str]]:
+    """Align direct commodity rows that still copy the replaced item icon."""
     text, encoding, bom = decode_text(raw)
-    changes = []
-    seen = set()
+    changed = []
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if "RawCommodityDatas=(" not in line:
@@ -251,105 +301,148 @@ def apply_confirmed_commodity_fixes(raw: bytes, asset_ids: set[int]) -> tuple[by
             continue
         row = match.group(1)
         data = fields(row)
-        if "nCommodityID" not in data:
+        if "IconID" not in data:
             continue
-        commodity_id = int(data["nCommodityID"])
-        fix = next((entry for entry in COMMODITY_FIXES
-                    if entry["commodity_id"] == commodity_id), None)
-        if fix is None:
-            continue
-        seen.add(commodity_id)
         item_array = re.search(rb"\bnItemIDArray=\(([^)]*)\)", row)
         item_ids = [int(value) for value in re.findall(rb"\d+", item_array.group(1))] if item_array else []
-        if item_ids != [fix["item_id"]]:
-            raise ValueError(
-                f"Commodity {commodity_id} targets item IDs {item_ids}; expected only "
-                f"{fix['item_id']}. Refusing to overwrite local edits."
-            )
-        icon_id = int(data["IconID"])
-        if icon_id == fix["replacement_icon_id"]:
+        if len(item_ids) != 1 or item_ids[0] not in repairs:
             continue
-        if icon_id != fix["expected_icon_id"]:
-            raise ValueError(
-                f"Commodity {commodity_id} has icon {icon_id}; expected "
-                f"{fix['expected_icon_id']} or already-fixed {fix['replacement_icon_id']}. "
-                "Refusing to overwrite local edits."
+        repair = repairs[item_ids[0]]
+        old_icon = int(repair["expected_icon_id"])
+        new_icon = int(repair["replacement_icon_id"])
+        icon_id = int(data["IconID"])
+        if icon_id == old_icon and new_icon in asset_ids:
+            new_line = re.sub(
+                rf"(\bIconID=){old_icon}\b",
+                rf"\g<1>{new_icon}",
+                line,
+                count=1,
             )
-        if fix["replacement_icon_id"] not in asset_ids:
-            raise ValueError(
-                f"Replacement icon {fix['replacement_icon_id']} was not found in scanned packages"
-            )
-        new_line = re.sub(
-            rf"(\bIconID=){fix['expected_icon_id']}\b",
-            rf"\g<1>{fix['replacement_icon_id']}",
-            line,
-            count=1,
-        )
-        if new_line == line:
-            raise ValueError(f"Could not replace icon field for commodity {commodity_id}")
-        lines[index] = new_line
-        changes.append(
-            f"commodity {commodity_id} (item {fix['item_id']}): "
-            f"{fix['expected_icon_id']} -> {fix['replacement_icon_id']}"
-        )
-    missing_rows = {fix["commodity_id"] for fix in COMMODITY_FIXES} - seen
-    if missing_rows:
-        raise ValueError(f"Expected commodity rows are missing: {sorted(missing_rows)}")
-    if not changes:
+            if new_line != line:
+                lines[index] = new_line
+                commodity_id = data.get("nCommodityID", "?")
+                changed.append(
+                    f"commodity {commodity_id} (item {item_ids[0]}): "
+                    f"{old_icon} -> {new_icon}"
+                )
+    if not changed:
         return raw, []
-    return bom + "".join(lines).encode(encoding), changes
+    return bom + "".join(lines).encode(encoding), changed
 
 
 def write_audit(
     item_raw: bytes,
     commodity_raw: bytes | None,
     package_names: dict[str, set[int]],
+    repairs: dict[int, dict[str, object]],
     report: Path,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int, int, int, int, int]:
     items = parse_items(item_raw)
+    commodities = parse_commodity_rows(commodity_raw) if commodity_raw else []
     direct = parse_direct_commodities(commodity_raw) if commodity_raw else {}
+    items_by_id = {int(item["item_id"]): item for item in items}
     all_asset_ids = set().union(*package_names.values()) if package_names else set()
     fields_out = [
-        "item_id", "item_name", "icon_id", "icon_found_in_scanned_packages",
-        "packages_with_icon", "direct_commodity_icon_ids", "direct_match_status",
-        "confirmed_test_fix_icon_id",
+        "catalog_type", "record_id", "name", "icon_id", "item_ids",
+        "related_icon_ids", "icon_resource_status", "packages_with_icon",
+        "mapping_status", "suggested_icon_id", "repair_source",
     ]
+    missing_icon_field_rows = 0
     with report.open("w", newline="", encoding="utf-8-sig") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields_out)
         writer.writeheader()
+
+        def emit(record_type, record_id, name, icon_id, item_ids, related_icon_ids,
+                 mapping_status, suggestion=None):
+            nonlocal missing_icon_field_rows
+            if icon_id is None:
+                resource_status = "NO_ICON_FIELD"
+                packages = ""
+                missing_icon_field_rows += 1
+            elif int(icon_id) == 0:
+                resource_status = "ZERO_ICON_ID"
+                packages = ""
+            else:
+                icon = int(icon_id)
+                resource_status = "FOUND" if icon in all_asset_ids else "NOT_FOUND_IN_SCANNED_PACKAGES"
+                packages = ";".join(
+                    Path(filename).name
+                    for filename, ids in package_names.items()
+                    if icon in ids
+                )
+            repair = suggestion or {}
+            writer.writerow({
+                "catalog_type": record_type,
+                "record_id": record_id,
+                "name": name,
+                "icon_id": "" if icon_id is None else icon_id,
+                "item_ids": ";".join(map(str, item_ids)),
+                "related_icon_ids": ";".join(map(str, sorted(set(related_icon_ids)))),
+                "icon_resource_status": resource_status,
+                "packages_with_icon": packages,
+                "mapping_status": mapping_status,
+                "suggested_icon_id": repair.get("replacement_icon_id", ""),
+                "repair_source": repair.get("source", ""),
+            })
+
+        item_icon_ids: dict[int, int | None] = {}
         for item in items:
             item_id = int(item["item_id"])
-            icon_id = int(item["icon_id"])
+            raw_icon_id = item["icon_id"]
+            icon_id = int(raw_icon_id) if raw_icon_id is not None else None
+            item_icon_ids[item_id] = icon_id
             direct_ids = sorted(direct.get(item_id, set()))
-            if icon_id == 0:
+            if icon_id is None:
+                status = "NO_ICON_FIELD"
+            elif icon_id == 0:
                 status = "ZERO_ICON_ID"
             elif not direct_ids:
                 status = "NO_DIRECT_COMMODITY_CROSSCHECK"
             elif icon_id in direct_ids:
-                status = "DIRECT_COMMODITY_MATCH"
+                status = "DIRECT_COMMODITY_ICON_MATCH"
             else:
-                status = "DIRECT_COMMODITY_MISMATCH"
-            writer.writerow({
-                "item_id": item_id,
-                "item_name": item["item_name"],
-                "icon_id": icon_id,
-                "icon_found_in_scanned_packages": "yes" if icon_id in all_asset_ids else "no",
-                "packages_with_icon": ";".join(
-                    Path(name).name for name, ids in package_names.items() if icon_id in ids
-                ),
-                "direct_commodity_icon_ids": ";".join(map(str, direct_ids)),
-                "direct_match_status": status,
-                "confirmed_test_fix_icon_id": next(
-                    (fix["replacement_icon_id"] for fix in ITEM_FIXES if fix["item_id"] == item_id), ""
-                ),
-            })
-    present_unique = len({int(item["icon_id"]) for item in items if item["icon_id"] and int(item["icon_id"]) in all_asset_ids})
-    nonzero_unique = len({int(item["icon_id"]) for item in items if item["icon_id"]})
-    missing_unique = nonzero_unique - present_unique
-    mismatches = sum(1 for item in items if
-        item["icon_id"] and direct.get(int(item["item_id"])) and
-        int(item["icon_id"]) not in direct[int(item["item_id"])])
-    return len(items), missing_unique, mismatches
+                status = "DIRECT_COMMODITY_ICON_DIFFERS"
+            emit("ITEM", item_id, item["item_name"], icon_id, [item_id], direct_ids, status, repairs.get(item_id))
+
+        for commodity in commodities:
+            item_ids = [int(value) for value in commodity["item_ids"]]
+            related_icons = [item_icon_ids[item_id] for item_id in item_ids
+                             if item_id in item_icon_ids and item_icon_ids[item_id] not in (None, 0)]
+            if len(item_ids) > 1:
+                status = "BUNDLE"
+            elif not item_ids:
+                status = "NO_ITEM_LINK"
+            elif item_ids[0] not in items_by_id:
+                status = "ITEM_NOT_IN_ITEM_CATALOG"
+            else:
+                item_icon = item_icon_ids.get(item_ids[0])
+                if item_icon is None:
+                    status = "ITEM_HAS_NO_ICON_FIELD"
+                elif int(commodity["icon_id"]) == item_icon:
+                    status = "SINGLE_ITEM_ICON_MATCH"
+                else:
+                    status = "SINGLE_ITEM_ICON_DIFFERS"
+            suggestion = None
+            if len(item_ids) == 1 and item_ids[0] in repairs:
+                repair = repairs[item_ids[0]]
+                if int(commodity["icon_id"]) == int(repair["expected_icon_id"]):
+                    suggestion = repair
+            emit(
+                "COMMODITY", commodity["commodity_id"], commodity["commodity_name"],
+                commodity["icon_id"], item_ids, related_icons, status, suggestion,
+            )
+
+    item_nonzero = {int(row["icon_id"]) for row in items if row["icon_id"] not in (None, 0)}
+    item_missing = len(item_nonzero - all_asset_ids)
+    commodity_nonzero = {int(row["icon_id"]) for row in commodities if int(row["icon_id"]) != 0}
+    commodity_missing = len(commodity_nonzero - all_asset_ids)
+    matched = sum(1 for item in items if
+                  item["icon_id"] not in (None, 0) and direct.get(int(item["item_id"])) and
+                  int(item["icon_id"]) in direct[int(item["item_id"])])
+    differs = sum(1 for item in items if
+                  item["icon_id"] not in (None, 0) and direct.get(int(item["item_id"])) and
+                  int(item["icon_id"]) not in direct[int(item["item_id"])])
+    return len(items), len(commodities), item_missing, commodity_missing, matched, differs, len(repairs), missing_icon_field_rows
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -375,7 +468,7 @@ def main() -> int:
                         help="Extra .upk to scan; may be repeated")
     parser.add_argument("--report", type=Path, default=Path("item_icon_audit.csv"))
     parser.add_argument("--audit-only", action="store_true", help="Write the audit without previewing fixes")
-    parser.add_argument("--apply", action="store_true", help="Apply the confirmed item and commodity icon fixes")
+    parser.add_argument("--apply", action="store_true", help="Apply data-derived safe repairs and the reviewed backpack fallback")
     args = parser.parse_args()
 
     if args.catalog:
@@ -396,35 +489,41 @@ def main() -> int:
     asset_ids = set().union(*package_names.values())
     original_blob = catalog.read_bytes()
     raw = decrypt_catalog(original_blob)
+    commodity_raw = decrypt_catalog(commodity.read_bytes()) if commodity else None
+    repairs = derive_icon_repairs(raw, commodity_raw, asset_ids)
     report = args.report.resolve()
     report.parent.mkdir(parents=True, exist_ok=True)
-    total, missing_unique, mismatches = write_audit(
+    item_rows, commodity_rows, item_missing, commodity_missing, direct_matches, direct_differs, repair_count, no_icon_field_rows = write_audit(
         raw,
-        decrypt_catalog(commodity.read_bytes()) if commodity else None,
+        commodity_raw,
         package_names,
+        repairs,
         report,
     )
-    print(f"[ITEM-ICON] Catalog rows audited: {total}")
-    print(f"[ITEM-ICON] Unique referenced icon IDs absent from scanned packages: {missing_unique}")
-    print(f"[ITEM-ICON] Direct item-to-commodity icon disagreements: {mismatches}")
+    print(f"[ITEM-ICON] RawItemDatas rows audited: {item_rows}")
+    print(f"[ITEM-ICON] RawCommodityDatas Mall rows audited: {commodity_rows}")
+    print(f"[ITEM-ICON] Item icon IDs absent from scanned packages: {item_missing}")
+    print(f"[ITEM-ICON] Mall commodity icon IDs absent from scanned packages: {commodity_missing}")
+    print(f"[ITEM-ICON] Direct item/commodity matches: {direct_matches}; differing IDs: {direct_differs}")
+    print(f"[ITEM-ICON] Safe repair candidates: {repair_count}")
+    print(f"[ITEM-ICON] Rows without an icon field (usually model parts): {no_icon_field_rows}")
     print(f"[ITEM-ICON] Audit CSV: {report}")
     print(f"[ITEM-ICON] Packages scanned: {len(package_names)}")
 
     if args.audit_only:
         return 0
-    changed_raw, changes = apply_confirmed_fixes(raw, asset_ids)
-    commodity_raw = decrypt_catalog(commodity.read_bytes()) if commodity else None
     if commodity is None:
         raise FileNotFoundError(
             "DefaultCommodityLibrary.ini is required to apply coordinated icon fixes; "
             "pass --commodities"
         )
-    changed_commodity_raw, commodity_changes = apply_confirmed_commodity_fixes(
-        commodity_raw, asset_ids
+    changed_raw, changes = apply_dynamic_item_repairs(raw, repairs, asset_ids)
+    changed_commodity_raw, commodity_changes = align_direct_commodity_icons(
+        commodity_raw, repairs, asset_ids
     )
     all_changes = changes + commodity_changes
     if not all_changes:
-        print("[ITEM-ICON] Confirmed fixes are already applied")
+        print("[ITEM-ICON] No safe repairs remain; catalog is already corrected or needs a reviewed mapping")
         return 0
     for change in all_changes:
         print(f"[ITEM-ICON] Planned: {change}")
