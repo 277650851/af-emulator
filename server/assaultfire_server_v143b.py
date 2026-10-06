@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 import socket
 import copy
+import functools
 import threading
 import time
 import struct
@@ -4889,6 +4890,33 @@ V140_MALL_STATE = _V140StateProxy(_V140_PLAYER_STATE)
 V111_INVENTORY = _V140InventoryProxy(_V140_PLAYER_STATE)
 
 
+def _v140_uin_atomic(fn=None, *, rollback=False):
+    """Run a player-state mutator under the per-UIN lock.
+
+    ROLE and ZONE connections (and reconnects) for the same UIN run on
+    different threads and share one in-memory state dict; unlocked
+    read-modify-write sequences such as ``V111_INVENTORY[:] = [...]`` can lose
+    a concurrent purchase. With rollback=True the state is restored if the
+    function raises (e.g. the SQLite save fails) so cache and DB stay equal.
+    """
+    def wrap(f):
+        @functools.wraps(f)
+        def inner(*args, **kwargs):
+            with _V140_PLAYER_STATE.uin_lock():
+                if not rollback:
+                    return f(*args, **kwargs)
+                state = _V140_PLAYER_STATE.state()
+                snapshot = copy.deepcopy(state)
+                try:
+                    return f(*args, **kwargs)
+                except BaseException:
+                    state.clear()
+                    state.update(snapshot)
+                    raise
+        return inner
+    return wrap(fn) if fn is not None else wrap
+
+
 def _v140_current_role_gid():
     gid = int(V140_MALL_STATE.get("current_role_gid", V109_ROLE_GID))
     if any(int(p.get("gid", 0)) == gid for p in V111_INVENTORY):
@@ -5272,6 +5300,7 @@ def _v140_prop_is_expired(prop, now=None):
     return expires_at > 0 and expires_at <= now
 
 
+@_v140_uin_atomic
 def _v140_expire_due_items(now=None, reason="item-expiration"):
     """Expire Mall props without deleting equipment stored inside backpacks."""
     now = int(time.time() if now is None else now)
@@ -5372,6 +5401,7 @@ def _v140_expire_due_items(now=None, reason="item-expiration"):
     return removed_props
 
 
+@_v140_uin_atomic
 def _v170_reconcile_progression_skills():
     """Synchronize normal PVE skill ownership to persisted Experience.
 
@@ -6562,6 +6592,7 @@ def _v160_find_inventory_item(item_id):
     return min(candidates, key=_sort_key)
 
 
+@_v140_uin_atomic(rollback=True)
 def _v160_consume_inventory_item(item_id, reason):
     prop = _v160_find_inventory_item(item_id)
     if prop is None:
@@ -6761,6 +6792,7 @@ def _v143b_resolve_null_subject_unequip(op):
     return None
 
 
+@_v140_uin_atomic(rollback=True)
 def _v111_apply_prop_operation(op):
     """Apply one live A008 operation to the v110 starter inventory.
 
