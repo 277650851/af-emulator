@@ -9973,6 +9973,12 @@ def handle_placeholder(conn, addr, label):
                 except socket.timeout:
                     continue
 
+                if rx_chunk and label.upper() in ("ZONE", "DS-TCP"):
+                    # Treat the lifetime as an IDLE timeout for long-lived
+                    # sessions: activity extends it instead of cutting an
+                    # active player off at a fixed wall-clock hour.
+                    deadline = time.time() + followup_seconds
+
                 if not rx_chunk:
                     log(label, "Client closed connection; if this was client.exe after TACC-RSP, that can be normal. Watch for next VERSION/ROLE owner=TGame.exe.")
                     break
@@ -15604,7 +15610,7 @@ def _bind_tcp_listener(port):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("0.0.0.0", int(port)))
-    s.listen(10)
+    s.listen(128)
     return s
 
 
@@ -15645,8 +15651,19 @@ def _prepare_listener_sockets():
         raise
 
 
+_MAX_CONNS_PER_PORT = max(8, int(os.environ.get("AF_MAX_CONNS_PER_PORT", "512")))
+
+
+def _run_connection(target, args, slots):
+    try:
+        target(*args)
+    finally:
+        slots.release()
+
+
 def listen_on_port(port, label, sock=None):
     s = sock if sock is not None else _bind_tcp_listener(port)
+    slots = threading.BoundedSemaphore(_MAX_CONNS_PER_PORT)
 
     log(
         label,
@@ -15654,6 +15671,7 @@ def listen_on_port(port, label, sock=None):
     )
 
     while True:
+        conn = None
         try:
             conn, addr = s.accept()
 
@@ -15673,17 +15691,42 @@ def listen_on_port(port, label, sock=None):
                 target = handle_placeholder
                 args = (conn, addr, label)
 
-            threading.Thread(
-                target=target,
-                args=args,
-                daemon=True
-            ).start()
+            # Cap concurrent handler threads per port so a connection flood
+            # (or many idle sockets) cannot exhaust threads/memory.
+            if not slots.acquire(blocking=False):
+                log(label, f"connection limit {_MAX_CONNS_PER_PORT} reached; "
+                           f"dropping {addr}")
+                conn.close()
+                continue
+
+            try:
+                threading.Thread(
+                    target=_run_connection,
+                    args=(target, args, slots),
+                    daemon=True
+                ).start()
+            except Exception:
+                slots.release()
+                raise
 
         except Exception as e:
+            # Never leak the accepted socket if the handler thread could not
+            # be started.
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             log(
                 label,
                 f"accept error: {e}"
             )
+            if s.fileno() == -1:
+                log(label, "listener socket closed; stopping accept loop")
+                return
+            # Persistent accept() failures (e.g. EMFILE) used to spin at
+            # 100% CPU and flood the log; back off briefly.
+            time.sleep(0.2)
 
 
 # ---------------------------------------------------------------------------
