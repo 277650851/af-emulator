@@ -9,6 +9,7 @@
 import re
 from pathlib import Path
 import socket
+import copy
 import threading
 import time
 import struct
@@ -1164,6 +1165,9 @@ def recv_ap_frame(conn, timeout=15.0):
         body_len,
         timeout=timeout
     )
+
+    if body_len == 0:
+        raise ValueError("empty AP body")
 
     if len(ciphertext) != body_len:
         raise ValueError(
@@ -4739,12 +4743,41 @@ class _V140PlayerStateManager:
         self._tls = threading.local()
         self._lock = threading.RLock()
         self._cache = {}
+        self._uin_locks = {}
+        self._warned_default_uin = set()
         self._last_active_uin = None
+
+    def uin_lock(self, uin=None):
+        """Per-UIN re-entrant lock: serialises check-then-spend sequences."""
+        uin = self.current_uin() if uin is None else int(uin)
+        with self._lock:
+            lock = self._uin_locks.get(uin)
+            if lock is None:
+                lock = self._uin_locks[uin] = threading.RLock()
+            return lock
 
     def current_uin(self):
         # Runtime packet threads explicitly select their authenticated UIN.
         # 10001 is a compatibility fallback for legacy helper/self-test code.
-        return int(getattr(self._tls, "uin", 10001))
+        uin = getattr(self._tls, "uin", None)
+        if uin is None:
+            # A thread that never called select() would silently read/write
+            # player 10001's state. Fail loudly when AF_STRICT_UIN=1, and
+            # otherwise warn once per thread so the leak is visible.
+            if os.environ.get("AF_STRICT_UIN") == "1":
+                raise RuntimeError(
+                    "no player UIN selected on this thread (AF_STRICT_UIN=1)"
+                )
+            name = threading.current_thread().name
+            if name not in self._warned_default_uin:
+                self._warned_default_uin.add(name)
+                print(
+                    f"[MALL-SQLITE] WARNING: thread {name!r} has no selected "
+                    "UIN; falling back to 10001",
+                    flush=True,
+                )
+            return 10001
+        return int(uin)
 
     def select(self, uin):
         uin = int(uin)
@@ -6060,6 +6093,57 @@ def _v140_plan_purchase(req, self_uin=V109_UIN):
         "consume_gp": totals["GP"],
         "consume_mp": totals["MP"],
     }
+
+
+def _v140_commit_purchase(req, self_uin=V109_UIN):
+    """Plan, apply and persist a purchase under the per-UIN lock.
+
+    The balance check and the spend happen in one critical section (no
+    double-spend across sessions), and the in-memory state is rolled back if
+    the SQLite save fails so the cache never diverges from the database.
+    Returns (plan, moneyflow_rows). Raises _v140_ShopReject on any failure.
+    """
+    with _V140_PLAYER_STATE.uin_lock():
+        plan = _v140_plan_purchase(req, self_uin=self_uin)
+
+        state = _V140_PLAYER_STATE.state()
+        snapshot = copy.deepcopy(state)
+        try:
+            all_new_props = []
+            for row in plan["staged"]:
+                all_new_props.extend(row["props"])
+            V111_INVENTORY.extend(dict(p) for p in all_new_props)
+
+            wallet = _v140_wallet()
+            wallet["ap"] -= int(plan["consume_tp"])
+            wallet["gp"] -= int(plan["consume_gp"])
+            wallet["mp"] -= int(plan["consume_mp"])
+
+            purchase_time = int(time.time())
+            details = "; ".join(
+                str(r.get("commodity_name", ""))
+                for r in plan["staged"]
+                if str(r.get("commodity_name", ""))
+            )
+            moneyflow_rows = _v140_make_purchase_moneyflow_rows(
+                session_uin=self_uin,
+                consume_tp=plan["consume_tp"],
+                consume_gp=plan["consume_gp"],
+                consume_mp=plan["consume_mp"],
+                occurred_at=purchase_time,
+                details=details,
+                commodity_ids=[int(r["commodity_id"]) for r in plan["staged"]],
+            )
+            _v140_save_state("buy", moneyflow_rows=moneyflow_rows)
+        except Exception as e:
+            state.clear()
+            state.update(snapshot)
+            log("MALL", f"purchase rolled back after error: {e!r}")
+            raise _v140_ShopReject(
+                SHOP_ERR_FAIL, f"purchase commit failed: {e!r}"
+            ) from e
+
+        return plan, moneyflow_rows
 
 
 def _v140_build_buy_response(
@@ -10696,9 +10780,13 @@ def handle_placeholder(conn, addr, label):
                                             )
 
                                             try:
-                                                plan = _v140_plan_purchase(
-                                                    req,
-                                                    self_uin=_v150_role_uin(role_state),
+                                                plan, purchase_moneyflow_rows = (
+                                                    _v140_commit_purchase(
+                                                        req,
+                                                        self_uin=_v150_role_uin(
+                                                            role_state
+                                                        ),
+                                                    )
                                                 )
                                             except _v140_ShopReject as reject:
                                                 log(
@@ -10726,46 +10814,8 @@ def handle_placeholder(conn, addr, label):
                                                 for row in plan["staged"]:
                                                     all_new_props.extend(row["props"])
 
-                                                # Atomic commit point.
-                                                V111_INVENTORY.extend(
-                                                    dict(p) for p in all_new_props
-                                                )
+                                                # Commit already applied atomically by _v140_commit_purchase.
                                                 wallet = _v140_wallet()
-                                                wallet["ap"] -= int(plan["consume_tp"])
-                                                wallet["gp"] -= int(plan["consume_gp"])
-                                                wallet["mp"] -= int(plan["consume_mp"])
-
-                                                purchase_uin = _v150_role_uin(
-                                                    role_state
-                                                )
-                                                purchase_time = int(time.time())
-                                                purchase_details = "; ".join(
-                                                    str(row.get("commodity_name", ""))
-                                                    for row in plan["staged"]
-                                                    if str(row.get("commodity_name", ""))
-                                                )
-                                                purchase_commodity_ids = [
-                                                    int(row["commodity_id"])
-                                                    for row in plan["staged"]
-                                                ]
-                                                purchase_moneyflow_rows = (
-                                                    _v140_make_purchase_moneyflow_rows(
-                                                        session_uin=purchase_uin,
-                                                        consume_tp=plan["consume_tp"],
-                                                        consume_gp=plan["consume_gp"],
-                                                        consume_mp=plan["consume_mp"],
-                                                        occurred_at=purchase_time,
-                                                        details=purchase_details,
-                                                        commodity_ids=purchase_commodity_ids,
-                                                    )
-                                                )
-
-                                                # Wallet, inventory and Consumer List rows
-                                                # become durable in one SQLite transaction.
-                                                _v140_save_state(
-                                                    "buy",
-                                                    moneyflow_rows=purchase_moneyflow_rows,
-                                                )
 
                                                 rsp = _v140_build_buy_response(
                                                     req,
