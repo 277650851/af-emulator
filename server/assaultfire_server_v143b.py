@@ -674,6 +674,49 @@ def _v178_parse_trace_enter(body, role_state):
                 tail=b'', invite_id=invite_id, inviter=friend)
 
 
+def _v178_reject_pending_invite(actor, nickname, invite_id=None, body=None):
+    """Discard a failed room invite and tell its sender the room was unusable."""
+    actor = int(actor)
+    pending = []
+    with _V150_ZONE_LOCK:
+        if invite_id is not None:
+            entry = _V177_ROOM_INVITES.get(int(invite_id))
+            if entry and int(entry.get('recipient', 0)) == actor:
+                pending.append(_V177_ROOM_INVITES.pop(int(invite_id)))
+        elif body is not None:
+            try:
+                raw = bytes(body)
+                if len(raw) < 18:
+                    raise ValueError('short A120')
+                room_id = struct.unpack_from('>Q', raw)[0]
+                _, _, off = _v79_read_lp_string(raw, 8, 8)
+                if off + 10 != len(raw):
+                    raise ValueError('invalid A120 tail')
+                kind, inviter = struct.unpack_from('>HQ', raw, off)
+            except Exception:
+                kind, inviter, room_id = 0, 0, 0
+            if kind == 2:
+                for rid, entry in list(_V177_ROOM_INVITES.items()):
+                    if (int(entry.get('sender', 0)) == int(inviter)
+                            and int(entry.get('recipient', 0)) == actor
+                            and int(entry.get('room', 0)) == int(room_id)):
+                        pending.append(_V177_ROOM_INVITES.pop(rid))
+
+    for entry in pending:
+        failure = _v62_build_server_app(
+            TGAME_ZN_MAGIC,
+            0xA316,
+            _v50_geo_tdr_string(str(nickname or ''), 32)
+            + _v48_u16(0x030F)
+            + _v48_i32(0),
+        )
+        _v150_send_online(
+            int(entry['sender']),
+            failure,
+            f'friend room invite failed id={invite_id or 0} recipient={actor}',
+        )
+
+
 def _v177_friend_action(conn, key, label, role_state, app):
     global _V177_INVITE_SEQUENCE
     cmd, body = app['cmd'], bytes(app['body'])
@@ -12316,9 +12359,18 @@ def handle_placeholder(conn, addr, label):
                                             )
 
                                         elif app["cmd"] in (TGAME_ZN_REQ_ENTERMATCHROOM, 0xA120):
-                                            er = (_v178_parse_trace_enter(app["body"], role_state) if app["cmd"] == 0xA120 else _v150_parse_enter_match_room(app["body"]))
                                             uin_now = _v150_role_uin(role_state)
                                             nickname_now = _v150_role_nickname(role_state)
+                                            try:
+                                                er = (_v178_parse_trace_enter(app["body"], role_state)
+                                                      if app["cmd"] == 0xA120
+                                                      else _v150_parse_enter_match_room(app["body"]))
+                                            except Exception:
+                                                if app["cmd"] == 0xA120:
+                                                    _v178_reject_pending_invite(
+                                                        uin_now, nickname_now, body=app["body"]
+                                                    )
+                                                raise
                                             prior_room = V150_ROOM_REGISTRY.room_for_player(uin_now)
                                             joined_new_member = prior_room is None
                                             try:
@@ -12329,7 +12381,7 @@ def handle_placeholder(conn, addr, label):
                                                     password=er["password"],
                                                     observer=er["observer"],
                                                 )
-                                                if (V143B_DS_CONFIG.enabled and not (app["cmd"] == 0xA120 and er.get("invite_id") is not None)):
+                                                if V143B_DS_CONFIG.enabled:
                                                     V143B_DS_SPAWNER.register_room_player(
                                                         int(joined_room["room_id"]),
                                                         uin_now,
@@ -12352,6 +12404,12 @@ def handle_placeholder(conn, addr, label):
                                                             f"r11 A104 rollback failed uin={uin_now} "
                                                             f"room={er['room_id']}: {rollback_e}",
                                                         )
+                                                if app["cmd"] == 0xA120 and er.get("invite_id") is not None:
+                                                    _v178_reject_pending_invite(
+                                                        uin_now,
+                                                        nickname_now,
+                                                        invite_id=er.get("invite_id"),
+                                                    )
                                                 log(
                                                     "ROOM",
                                                     f"r11 A104 join rejected uin={uin_now} "
@@ -14014,6 +14072,8 @@ def handle_placeholder(conn, addr, label):
                                                     social_uin,
                                                     accepted,
                                                 )
+                                                requested_accept = accepted
+                                                accepted = str(request_row.get("status")) == "accepted"
                                                 proposer_uin = int(request_row["from_uin"])
 
                                                 if accepted:
@@ -14052,7 +14112,9 @@ def handle_placeholder(conn, addr, label):
                                                     "SOCIAL",
                                                     "A307 friend request resolved "
                                                     f"id={int(rsp['request_id'])} acceptor={social_uin} "
-                                                    f"accepted={accepted} result=0x{int(rsp['result']):04x}",
+                                                    f"accepted={accepted} requested_accept={requested_accept} "
+                                                    f"duplicate={bool(request_row.get('duplicate'))} "
+                                                    f"result=0x{int(rsp['result']):04x}",
                                                 )
                                             except Exception as social_e:
                                                 log(
