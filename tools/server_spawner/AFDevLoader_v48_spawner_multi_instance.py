@@ -6028,6 +6028,7 @@ def main():
     cmd = [
         str(exe),
         "-log",
+	"-ABSLOG=D:\\afdev_engine.log",
         "-windowed",
         f"-port={port}",
         f"ResX={args.resx}",
